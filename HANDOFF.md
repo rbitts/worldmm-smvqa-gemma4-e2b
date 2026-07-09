@@ -111,9 +111,27 @@ export WORLDMM_DDP_LAUNCHER='python -m torch.distributed.run'
 export REMOTE_JOB_ID_OR_PROCESS_REF=...
 export WORLDMM_RUN_ID=...
 export WORLDMM_REMOTE_REPO=...
+export WORLDMM_MODEL_ID=google/gemma-4-E2B-it  # optional, this is the default
+export HF_TOKEN=...  # remote only, gated Gemma download
 ```
 
 `configs/remote.example.yaml` must resolve to `runtime.location=remote`.
+
+Remote host one-time setup (through bastion/head node):
+
+```bash
+uv sync --extra remote
+```
+
+The dry-run plan prints, in order: repo rsync to `$WORLDMM_REMOTE_REPO`, plan
+rsync to `$WORLDMM_REMOTE_REPO/remote-plan/`, and the ssh launch command. The
+remote script cds into `$WORLDMM_REMOTE_REPO` and downloads the model with
+`hf download` (stage 0) before building memories and running DDP QA.
+
+Still open: no SuperMemory-VQA dataset download/ingest step exists.
+`$SMVQA_DATA_ROOT` must already contain `sources.jsonl` / `questions.jsonl` /
+`labels.jsonl` in the fixture schema, with captions/OCR/objects/frame refs
+precomputed. Defining that ingest (raw dataset -> schema) is the next task.
 
 ## Next Step: Produce Real Numbers
 

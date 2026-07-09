@@ -45,9 +45,31 @@ Exact environment variables used by remote config and scripts:
 - `REMOTE_JOB_ID_OR_PROCESS_REF`
 - `WORLDMM_RUN_ID`
 - `WORLDMM_REMOTE_REPO`
+- `WORLDMM_MODEL_ID` (optional, default `google/gemma-4-E2B-it`)
+- `HF_TOKEN` (remote only, required for the gated Gemma download)
 
 Remote-only commands also require `runtime.location=remote` in the selected
 config.
+
+## Remote Setup
+
+On the remote host (via bastion/head node), install the inference stack once:
+
+```bash
+uv sync --extra remote
+```
+
+The generated plan prints three copy/paste commands, in order:
+
+1. `rsync` the repo to `$WORLDMM_REMOTE_REPO` on company storage.
+2. `rsync` the generated plan directory to `$WORLDMM_REMOTE_REPO/remote-plan/`.
+3. `ssh` through `$BASTION_HOST` to run the plan script with the job launcher.
+
+The remote script `cd`s into `$WORLDMM_REMOTE_REPO`, downloads
+`$WORLDMM_MODEL_ID` to `$GEMMA_MODEL_PATH` via `hf download` if missing
+(stage 0), then runs memory build, retrieval, DDP QA, and evaluation. All
+remote-side environment variables must be set in the remote execution
+environment.
 
 ## No Local Downloads
 
