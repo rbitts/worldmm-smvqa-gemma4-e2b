@@ -6,19 +6,27 @@ def script_text() -> str:
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         "",
+        ': "${WORLDMM_REMOTE_REPO:?WORLDMM_REMOTE_REPO is required}"',
         ': "${SMVQA_DATA_ROOT:?SMVQA_DATA_ROOT is required}"',
         ': "${GEMMA_MODEL_PATH:?GEMMA_MODEL_PATH is required}"',
         ': "${WORLDMM_OUTPUT_ROOT:?WORLDMM_OUTPUT_ROOT is required}"',
         ': "${WORLDMM_REMOTE_NODES:=1}"',
         ': "${WORLDMM_GPUS_PER_NODE:=8}"',
         ': "${WORLDMM_DDP_LAUNCHER:=python -m torch.distributed.run}"',
+        ': "${WORLDMM_MODEL_ID:=google/gemma-4-E2B-it}"',
         "export WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST=1",
+        'cd "$WORLDMM_REMOTE_REPO"',
         'read -r -a worldmm_ddp_launcher_argv <<< "$WORLDMM_DDP_LAUNCHER"',
         "",
         (
             'mkdir -p "$WORLDMM_OUTPUT_ROOT"/'
             "{manifests,chunks,source_refs,memory,retrieval,qa,metrics,logs,summary}"
         ),
+        "",
+        "# stage 0: fetch Gemma 4 E2B model onto company storage",
+        'if [ ! -e "$GEMMA_MODEL_PATH/config.json" ]; then',
+        '  hf download "$WORLDMM_MODEL_ID" --local-dir "$GEMMA_MODEL_PATH"',
+        "fi",
         "",
         "# stage 1: prepare source manifests",
         (

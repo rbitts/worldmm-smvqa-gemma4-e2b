@@ -20,6 +20,7 @@ REMOTE_ENV_NAMES = frozenset(
     },
 )
 REQUIRED_STAGES = (
+    "fetch Gemma 4 E2B model",
     "prepare source manifests",
     "build 30s/30m chunks",
     "generate/load captions OCR object frame refs",
@@ -77,6 +78,10 @@ def test_launch_remote_dry_run_writes_full_plan_contract(tmp_path: Path) -> None
     assert "ssh " not in script_text
     assert "sbatch " not in script_text
     assert "torchrun " not in script_text
+    assert 'cd "$WORLDMM_REMOTE_REPO"' in script_text
+    assert 'hf download "$WORLDMM_MODEL_ID" --local-dir "$GEMMA_MODEL_PATH"' in (
+        script_text
+    )
     assert "$WORLDMM_OUTPUT_ROOT" in script_text
     assert "$SMVQA_DATA_ROOT" in script_text
     assert "$GEMMA_MODEL_PATH" in script_text

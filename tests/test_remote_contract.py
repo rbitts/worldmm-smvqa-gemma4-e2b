@@ -256,19 +256,24 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
         str(out_dir),
     )
 
-    # Then: the rendered command parses to a safe argv without eval.
+    # Then: sync and launch commands parse to safe argv without eval.
     assert result.returncode == 0, result.stderr
-    script = out_dir / "run_worldmm_smvqa.sh"
-    command_line = result.stdout.splitlines()[-1]
-    argv = shlex.split(command_line)
+    lines = result.stdout.splitlines()
+    plan_sync_argv = shlex.split(lines[-2])
+    assert plan_sync_argv[0] == "rsync"
+    assert plan_sync_argv[2] == f"{out_dir}/"
+    argv = shlex.split(lines[-1])
     assert argv[:4] == [
         "ssh",
         "$BASTION_HOST",
         "$REMOTE_JOB_LAUNCHER",
         "$HEAD_NODE",
     ]
-    assert shlex.split(argv[4]) == ["bash", str(script)]
-    assert f"bash {script}" not in result.stdout
+    assert shlex.split(argv[4]) == [
+        "bash",
+        "$WORLDMM_REMOTE_REPO/remote-plan/run_worldmm_smvqa.sh",
+    ]
+    assert f"bash {out_dir}" not in result.stdout
 
 
 def test_checked_in_remote_script_delegates_without_printing_paths() -> None:

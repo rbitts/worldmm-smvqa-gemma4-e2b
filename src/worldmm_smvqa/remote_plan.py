@@ -87,7 +87,14 @@ def write_remote_plan(
 
 
 def plan_stdout(result: RemotePlanResult) -> str:
-    remote_shell_command = f"bash {shlex.quote(str(result.script))}"
+    plan_dir = shlex.quote(str(result.script.parent))
+    remote_plan_dir = "$WORLDMM_REMOTE_REPO/remote-plan"
+    sync_repo = (
+        "rsync -az --exclude .git --exclude .venv --exclude .omo ./ "
+        '"$BASTION_HOST:$WORLDMM_REMOTE_REPO/"'
+    )
+    sync_plan = f'rsync -az {plan_dir}/ "$BASTION_HOST:{remote_plan_dir}/"'
+    remote_shell_command = f"bash {remote_plan_dir}/{REMOTE_SCRIPT_NAME}"
     remote_command = (
         'ssh "$BASTION_HOST" '
         '"$REMOTE_JOB_LAUNCHER" "$HEAD_NODE" '
@@ -99,6 +106,8 @@ def plan_stdout(result: RemotePlanResult) -> str:
         f"wrote {result.expected_outputs}\n"
         f"wrote {result.copyback_policy}\n"
         "# dry-run/plan only; no ssh, remote shell, or job submission opened locally\n"
+        f"{sync_repo}\n"
+        f"{sync_plan}\n"
         f"{remote_command}\n"
     )
 
