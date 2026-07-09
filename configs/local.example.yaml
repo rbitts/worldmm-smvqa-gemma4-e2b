@@ -1,0 +1,6 @@
+runtime:
+  location: local
+paths:
+  fixture: tests/fixtures/tiny_smvqa
+model:
+  backend: mock

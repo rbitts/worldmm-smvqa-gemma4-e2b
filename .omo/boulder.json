@@ -1,0 +1,34 @@
+{
+  "schema_version": 2,
+  "active_work_id": "worldmm-smvqa-gemma4-e2b",
+  "plan_path": ".omo/plans/worldmm-smvqa-gemma4-e2b.md",
+  "status": "completed",
+  "current_todo": null,
+  "session_ids": [
+    "codex:worldmm-smvqa-gemma4-e2b"
+  ],
+  "evidence_dir": ".omo/evidence/worldmm-smvqa",
+  "started_at": "2026-07-08T23:24:56+09:00",
+  "notes": [
+    "Root orchestrator only: no product code, tests, or QA directly.",
+    "Workspace is not a git repository; commit labels from plan are tracked as intended checkpoints only.",
+    "Todo 1 confirmed by replacement gate reviewer 019f422f-b060-7d01-87f8-84feb060f7dc.",
+    "Todo 2 confirmed by gate reviewer 019f4247-d43b-70b1-a6f6-0aa35be72251.",
+    "Todo 3 confirmed by rerun gate reviewer 019f4266-e979-7a53-b793-57408717c822.",
+    "Todo 4 confirmed by final gate reviewer 019f4291-b208-7af0-b0b3-4285432cd2e9.",
+    "Todo 5 and Todo 6 are independent after Todo 4 and may run in parallel.",
+    "Todo 5 confirmed by final gate reviewer 019f42b0-6a6a-7d93-9b0d-73c05eb5e238.",
+    "Todo 6 confirmed by final gate reviewer 019f42b0-a71e-72f2-b380-cd48ca8e0b79.",
+    "Todo 7 confirmed by final gate reviewer 019f42e8-707c-7920-8458-cfbf99172009.",
+    "Todo 8 confirmed by final gate reviewer 019f4307-017c-7593-a78f-f0b98a1360cc.",
+    "Todo 9 confirmed by final gate reviewer 019f4323-53f3-77e2-b324-a80386717cbe.",
+    "Todo 10 confirmed by final gate reviewer 019f434c-4bb7-7f31-aae5-9b809f953bf9.",
+    "Todo 11 confirmed by gate reviewer 019f4360-4c3e-7580-bc2a-af267b7673e1.",
+    "Todo 12 confirmed by final gate reviewer 019f4384-2cf4-7692-a657-421bc596c362.",
+    "Todo 13 confirmed by final gate reviewer 019f43a8-860f-7c72-8920-9eefa947145c.",
+    "Todo 14 confirmed by final gate reviewer 019f43ce-bdae-7a73-9710-e4b9826091fb.",
+    "Final verification F1-F4 confirmed.",
+    "Review-work final rerun passed all five lanes.",
+    "Runtime audit passed: causal frame refs, DDP QA shards, and shell/path injection hypotheses ruled out."
+  ]
+}

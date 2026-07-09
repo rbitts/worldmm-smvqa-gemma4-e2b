@@ -1,0 +1,9 @@
+runtime:
+  location: remote
+remote:
+  bastion_host: ${BASTION_HOST}
+  head_node: ${HEAD_NODE}
+  job_launcher: ${REMOTE_JOB_LAUNCHER}
+  data_root: ${SMVQA_DATA_ROOT}
+  model_path: ${GEMMA_MODEL_PATH}
+  output_root: ${WORLDMM_OUTPUT_ROOT}
