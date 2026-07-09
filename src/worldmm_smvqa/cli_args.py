@@ -27,6 +27,10 @@ class ParsedArgs:
     store: str | None
     real_model: bool
     backend: str
+    retrieval_protocol: str
+    max_frame_refs: int
+    ablation_stores: str | None
+    ablation_protocol: str | None
     local: bool
     dry_run: bool
     submit: bool
@@ -46,6 +50,10 @@ class ParsedValueArgs:
     stage: str | None
     store: str | None
     backend: str
+    retrieval_protocol: str
+    max_frame_refs: int
+    ablation_stores: str | None
+    ablation_protocol: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +104,10 @@ def parse_args(
         None,
         None,
         "mock",
+        "worldmm-smvqa",
+        32,
+        None,
+        None,
     )
     real_model = False
     local = False
@@ -115,6 +127,10 @@ def parse_args(
         "--pred",
         "--labels",
         "--backend",
+        "--retrieval-protocol",
+        "--max-frame-refs",
+        "--ablation-stores",
+        "--ablation-protocol",
     }
 
     index = 0
@@ -157,6 +173,10 @@ def parse_args(
         value_args.store,
         real_model,
         value_args.backend,
+        value_args.retrieval_protocol,
+        value_args.max_frame_refs,
+        value_args.ablation_stores,
+        value_args.ablation_protocol,
         local,
         dry_run,
         submit,
@@ -179,11 +199,22 @@ def parse_value_option(
         "--pred",
         "--labels",
     }
-    text_options = {"--question", "--stage", "--store", "--stores", "--backend"}
+    text_options = {
+        "--question",
+        "--stage",
+        "--store",
+        "--stores",
+        "--backend",
+        "--retrieval-protocol",
+        "--ablation-stores",
+        "--ablation-protocol",
+    }
     if option in path_options:
         return _parse_path_option(args, option, value)
     if option in text_options:
         return _parse_text_option(args, option, value)
+    if option == "--max-frame-refs":
+        return _parse_max_frame_refs(args, value)
     return args
 
 
@@ -225,4 +256,18 @@ def _parse_text_option(
         updated = replace(args, store=value)
     elif option == "--backend":
         updated = replace(args, backend=value)
+    elif option == "--retrieval-protocol":
+        updated = replace(args, retrieval_protocol=value)
+    elif option == "--ablation-stores":
+        updated = replace(args, ablation_stores=value)
+    elif option == "--ablation-protocol":
+        updated = replace(args, ablation_protocol=value)
     return updated
+
+
+def _parse_max_frame_refs(args: ParsedValueArgs, value: str) -> ParsedValueArgs:
+    try:
+        max_frame_refs = int(value)
+    except ValueError as exc:
+        raise CliUsageError(detail=f"invalid --max-frame-refs: {value}") from exc
+    return replace(args, max_frame_refs=max_frame_refs)

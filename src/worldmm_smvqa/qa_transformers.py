@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, Literal, override
 
 from pydantic import ValidationError
 
+from worldmm_smvqa.chunking import read_source_streams
 from worldmm_smvqa.config import REMOTE_ENV_FLAG, RemoteOnlyError
 from worldmm_smvqa.fixtures import read_fixture_questions
 from worldmm_smvqa.qa_shards import (
@@ -21,6 +22,7 @@ from worldmm_smvqa.qa_shards import (
 )
 from worldmm_smvqa.retrieval_types import EvidencePack
 from worldmm_smvqa.transformers_backend import TransformersGenerationError
+from worldmm_smvqa.video_frames import sample_video_frames
 
 if TYPE_CHECKING:
     from worldmm_smvqa.qa import QABackend
@@ -62,13 +64,15 @@ def run_transformers_cli(
         MockQABackend,
         QABackendUnavailableError,
         QAParseError,
-        build_qa_prompt,
         parse_qa_output,
         write_predictions_jsonl,
     )
+    from worldmm_smvqa.qa_prompt import build_qa_prompt  # noqa: PLC0415
 
     questions = _questions_by_id(args.fixture)
+    sources = read_source_streams(args.fixture)
     packs = _read_evidence_packs(args.evidence)
+    frame_root = Path(env.get("SMVQA_FRAME_ROOT", args.fixture / "frames"))
     match args.backend:
         case "mock":
             backend: QABackend = MockQABackend()
@@ -82,9 +86,16 @@ def run_transformers_cli(
     predictions: list[PredictionRecord] = []
     for pack in rank_packs:
         question = _question_for_pack(pack, questions)
-        prompt = build_qa_prompt(question, pack)
+        video_frames = sample_video_frames(
+            sources,
+            question,
+            pack,
+            frame_root=frame_root,
+            max_frames=32,
+        )
+        prompt = build_qa_prompt(question, pack, video_frames)
         try:
-            raw_outputs = backend.raw_outputs(prompt, question, pack)
+            raw_outputs = backend.raw_outputs(prompt, question, pack, video_frames)
             predictions.append(
                 parse_qa_output(
                     question=question,

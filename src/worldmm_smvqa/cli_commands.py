@@ -4,7 +4,11 @@ import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
-from worldmm_smvqa.chunking import write_fixture_chunks
+from worldmm_smvqa.chunking import (
+    build_chunks,
+    read_source_streams,
+    write_fixture_chunks,
+)
 from worldmm_smvqa.cli_args import CliUsageError, CommandResult, ParsedArgs
 from worldmm_smvqa.config import load_config, require_remote
 from worldmm_smvqa.fixture_cli import prepare_fixture_stdout, validate_schema_stdout
@@ -18,12 +22,15 @@ from worldmm_smvqa.metrics import (
 from worldmm_smvqa.qa import (
     Gemma4QABackend,
     MockQABackend,
+    QARetrievalOptions,
     run_qa,
     write_predictions_jsonl,
 )
 from worldmm_smvqa.remote_plan import plan_stdout, write_remote_plan
 from worldmm_smvqa.report import write_report
 from worldmm_smvqa.retrieval import (
+    RetrievalOptions,
+    SpatialRetrievalRecord,
     build_fixture_retrieval_stores,
     injected_future_memory,
     parse_retrieval_stores,
@@ -32,12 +39,24 @@ from worldmm_smvqa.retrieval import (
 from worldmm_smvqa.smoke import run_smoke_pipeline, smoke_stdout
 from worldmm_smvqa.worldmm.episodic import write_fixture_episodic_memory
 from worldmm_smvqa.worldmm.semantic import write_fixture_semantic_memory
+from worldmm_smvqa.worldmm.spatial import (
+    build_object_anchors,
+    build_object_state_snapshots,
+    build_trajectory_summaries,
+    build_zones,
+    derive_relations,
+)
 from worldmm_smvqa.worldmm.visual import write_fixture_visual_memory
 
 if TYPE_CHECKING:
-    from worldmm_smvqa.schema import QuestionRequest
+    from worldmm_smvqa.schema import QuestionRequest, StreamChunk
+    from worldmm_smvqa.worldmm.spatial_types import ZoneRecord
 
-SUPPORTED_BUILD_STORES: Final = frozenset({"episodic", "semantic", "visual"})
+SUPPORTED_BUILD_STORES: Final = frozenset(
+    {"episodic", "semantic", "visual", "spatial"},
+)
+DEFAULT_RETRIEVAL_STORES: Final = "episodic,semantic,visual,spatial"
+DEFAULT_MAX_FRAME_REFS: Final = 32
 
 
 def handle_prepare_fixture(args: ParsedArgs) -> CommandResult:
@@ -65,7 +84,7 @@ def handle_build_memory(args: ParsedArgs) -> CommandResult:
         raise CliUsageError(detail=f"unsupported build-memory store: {ordered}")
     if stores == frozenset({"episodic"}):
         return _handle_episodic_build(args)
-    if stores <= {"semantic", "visual"}:
+    if stores <= {"semantic", "visual", "spatial"}:
         return _handle_semantic_visual_build(args)
     raise CliUsageError(detail="build-memory stores must not mix episodic with others")
 
@@ -77,12 +96,22 @@ def handle_retrieve(args: ParsedArgs) -> CommandResult:
     if args.question is None:
         raise CliUsageError(detail="retrieve requires --question")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
-    stores = parse_retrieval_stores(args.store or "episodic,semantic,visual")
+    stores = parse_retrieval_stores(args.store or DEFAULT_RETRIEVAL_STORES)
+    chunks = _retrieval_chunks(fixture_dir, args.retrieval_protocol)
+    _validate_max_frame_refs(args.max_frame_refs)
     question = _read_fixture_question(fixture_dir, args.question)
     memories = build_fixture_retrieval_stores(fixture_dir)
     if args.inject_future_memory:
         memories = (*memories, injected_future_memory(question))
-    pack = retrieve_evidence(question, memories, enabled_stores=stores)
+    pack = retrieve_evidence(
+        question,
+        memories,
+        enabled_stores=stores,
+        options=RetrievalOptions(
+            chunks=chunks,
+            max_frame_refs=args.max_frame_refs,
+        ),
+    )
     args.out.parent.mkdir(parents=True, exist_ok=True)
     _ = args.out.write_text(pack.model_dump_json(indent=2) + "\n", encoding="utf-8")
     store_text = ",".join(pack.requested_stores)
@@ -91,6 +120,7 @@ def handle_retrieve(args: ParsedArgs) -> CommandResult:
         stdout=(
             f"wrote {args.out}\n"
             f"stores={store_text} selected_stores={selected_text} "
+            f"protocol={args.retrieval_protocol} "
             f"evidence={len(pack.evidence)} "
             f"causal_filtered_count={pack.causal_filtered_count}\n"
         ),
@@ -113,7 +143,21 @@ def handle_qa(args: ParsedArgs) -> CommandResult:
     if args.out is None:
         raise CliUsageError(detail="qa requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
-    predictions = run_qa(fixture_dir, backend)
+    chunks = _retrieval_chunks(fixture_dir, args.retrieval_protocol)
+    _validate_max_frame_refs(args.max_frame_refs)
+    predictions = run_qa(
+        fixture_dir,
+        backend,
+        retrieval_options=QARetrievalOptions(
+            enabled_stores=parse_retrieval_stores(
+                args.store or DEFAULT_RETRIEVAL_STORES,
+            ),
+            chunks=chunks,
+            use_chunk_protocol=args.retrieval_protocol == "worldmm-smvqa",
+            max_frame_refs=args.max_frame_refs,
+            frame_root=fixture_dir / "frames",
+        ),
+    )
     write_predictions_jsonl(predictions, args.out)
     return CommandResult(
         stdout=f"wrote {args.out}\npredictions={len(predictions)}\n",
@@ -148,7 +192,15 @@ def handle_smoke(args: ParsedArgs) -> CommandResult:
     if args.out is None:
         raise CliUsageError(detail="smoke requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
-    result = run_smoke_pipeline(fixture_dir, args.out, os.environ)
+    if args.ablation_protocol is not None:
+        _validate_ablation_protocol(args.ablation_protocol)
+    result = run_smoke_pipeline(
+        fixture_dir,
+        args.out,
+        os.environ,
+        ablation_stores=args.ablation_stores,
+        ablation_protocol=args.ablation_protocol,
+    )
     return CommandResult(stdout=smoke_stdout(args.out, result))
 
 
@@ -218,6 +270,7 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
     args.out.mkdir(parents=True, exist_ok=True)
     semantic_records = 0
     visual_records = 0
+    spatial_records = 0
     if "semantic" in stores:
         semantic = write_fixture_semantic_memory(
             fixture_dir,
@@ -227,16 +280,93 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
     if "visual" in stores:
         visual = write_fixture_visual_memory(fixture_dir, args.out / "visual.jsonl")
         visual_records = visual.records
+    if "spatial" in stores:
+        spatial_records = _write_fixture_spatial_memory(
+            fixture_dir,
+            args.out / "spatial.jsonl",
+        )
     return CommandResult(
         stdout=(
             f"wrote {args.out}\n"
-            f"semantic_records={semantic_records} visual_records={visual_records}\n"
+            f"semantic_records={semantic_records} visual_records={visual_records} "
+            f"spatial_records={spatial_records}\n"
         ),
     )
 
 
 def _requested_stores(value: str) -> frozenset[str]:
     return frozenset(part.strip() for part in value.split(",") if part.strip())
+
+
+def _write_fixture_spatial_memory(fixture_dir: Path, output: Path) -> int:
+    records = _build_fixture_spatial_memory(fixture_dir)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    _ = output.write_text(
+        "".join(f"{record.model_dump_json()}\n" for record in records),
+        encoding="utf-8",
+    )
+    return len(records)
+
+
+def _build_fixture_spatial_memory(
+    fixture_dir: Path,
+) -> tuple[SpatialRetrievalRecord, ...]:
+    sources = read_source_streams(fixture_dir)
+    chunks = build_chunks(sources)
+    clip_chunks = tuple(chunk for chunk in chunks if chunk.granularity == "clip_30s")
+    zones = tuple(record for source in sources for record in build_zones(source))
+    anchors = tuple(
+        record for source in sources for record in build_object_anchors(source)
+    )
+    trajectory_chunks = tuple(
+        chunk for chunk in clip_chunks if _has_zone_overlap(chunk, zones)
+    )
+    return (
+        *zones,
+        *anchors,
+        *tuple(derive_relations(anchors)),
+        *build_object_state_snapshots(clip_chunks, anchors),
+        *build_trajectory_summaries(trajectory_chunks, zones),
+    )
+
+
+def _retrieval_chunks(
+    fixture_dir: Path,
+    retrieval_protocol: str,
+) -> tuple[StreamChunk, ...] | None:
+    if retrieval_protocol == "worldmm-smvqa":
+        return build_chunks(read_source_streams(fixture_dir))
+    if retrieval_protocol == "legacy-round-robin":
+        return None
+    raise CliUsageError(detail=f"unsupported retrieval protocol: {retrieval_protocol}")
+
+
+def _validate_max_frame_refs(max_frame_refs: int) -> None:
+    if max_frame_refs < 0 or max_frame_refs > DEFAULT_MAX_FRAME_REFS:
+        raise CliUsageError(
+            detail=f"--max-frame-refs must be between 0 and {DEFAULT_MAX_FRAME_REFS}",
+        )
+
+
+def _validate_ablation_protocol(ablation_protocol: str) -> None:
+    if ablation_protocol != "legacy-round-robin":
+        raise CliUsageError(
+            detail=f"unsupported ablation protocol: {ablation_protocol}",
+        )
+
+
+def _has_zone_overlap(
+    chunk: StreamChunk,
+    zones: tuple[ZoneRecord, ...],
+) -> bool:
+    return any(
+        zone.video_id == chunk.video_id
+        and any(
+            start < chunk.end_time and chunk.start_time < end
+            for start, end in zone.visit_intervals
+        )
+        for zone in zones
+    )
 
 
 def _read_fixture_question(fixture_dir: Path, question_id: str) -> QuestionRequest:

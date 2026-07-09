@@ -13,6 +13,7 @@ from worldmm_smvqa.schema import (
     SourceStreamExample,
 )
 from worldmm_smvqa.worldmm.semantic import SemanticTripleRecord, build_semantic_memory
+from worldmm_smvqa.worldmm.spatial_types import SpatialAnchorRecord
 from worldmm_smvqa.worldmm.visual import (
     MissingGroundingError,
     VisualMemoryRecord,
@@ -123,6 +124,40 @@ def test_build_memory_semantic_visual_cli_writes_directory_without_labels(
         assert f'"{key}":' not in payload
     _ = tuple(SemanticTripleRecord.model_validate_json(line) for line in semantic_lines)
     _ = tuple(VisualMemoryRecord.model_validate_json(line) for line in visual_lines)
+
+
+def test_build_memory_semantic_visual_spatial_cli_writes_directory_without_labels(
+    tmp_path: Path,
+) -> None:
+    # Given: the checked-in tiny fixture and all non-episodic WorldMM stores.
+    output = tmp_path / "worldmm_svs"
+
+    # When: semantic, visual, and spatial stores are driven through the CLI.
+    result = run_cli(
+        "build-memory",
+        "--fixture",
+        "tests/fixtures/tiny_smvqa",
+        "--stores",
+        "semantic,visual,spatial",
+        "--out",
+        str(output),
+    )
+
+    # Then: the spatial JSONL is written with source-only memory records.
+    assert result.returncode == 0, result.stderr
+    assert "spatial_records=" in result.stdout
+    spatial_lines = (output / "spatial.jsonl").read_text(encoding="utf-8").splitlines()
+    assert spatial_lines
+    payload = "\n".join(spatial_lines)
+    for field in PROHIBITED_MEMORY_FIELDS:
+        key = field.rsplit(".", maxsplit=1)[-1]
+        assert f'"{key}":' not in payload
+    anchors = tuple(
+        SpatialAnchorRecord.model_validate_json(line)
+        for line in spatial_lines
+        if '"record_type":"spatial_anchor"' in line
+    )
+    assert anchors
 
 
 def test_build_memory_visual_cli_fails_without_timestamp(tmp_path: Path) -> None:

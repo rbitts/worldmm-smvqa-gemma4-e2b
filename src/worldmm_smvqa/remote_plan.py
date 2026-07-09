@@ -133,9 +133,22 @@ def _expected_outputs() -> ExpectedOutputs:
             "episodic_memory": "$WORLDMM_OUTPUT_ROOT/memory/episodic.jsonl",
             "semantic_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/semantic.jsonl",
             "visual_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/visual.jsonl",
+            "spatial_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl",
             "retrieval_evidence": "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl",
+            "retrieval_trace_evidence_packs": (
+                "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"
+            ),
             "predictions": "$WORLDMM_OUTPUT_ROOT/qa/predictions.jsonl",
             "metrics": "$WORLDMM_OUTPUT_ROOT/metrics/official_metrics.json",
+            "spatial_diagnostics": (
+                "$WORLDMM_OUTPUT_ROOT/diagnostics/spatial_diagnostics.json"
+            ),
+            "ablation_without_spatial": (
+                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial.json"
+            ),
+            "ablation_protocol_legacy": (
+                "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin.json"
+            ),
             "logs": "$WORLDMM_OUTPUT_ROOT/logs",
             "memory_manifest": "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json",
             "summary": "$WORLDMM_OUTPUT_ROOT/summary/summary.txt",

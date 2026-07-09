@@ -68,6 +68,23 @@ class ObjectMetadata(LocalTimedModel):
     confidence: float
 
 
+class PoseSample(FrozenModel):
+    """Pose in meters: x/y are horizontal plane coordinates; z is vertical."""
+
+    timestamp: float
+    x: float
+    y: float
+    z: float
+    yaw: float | None = None
+
+
+class GazeSample(FrozenModel):
+    timestamp: float
+    x: float
+    y: float
+    z: float
+
+
 class FrameMetadata(FrozenModel):
     frame_ref: str
     timestamp: float
@@ -82,6 +99,8 @@ class SourceStreamExample(TimedModel):
     ocr_entries: tuple[OCRMetadata, ...] = ()
     objects: tuple[str, ...] = ()
     object_detections: tuple[ObjectMetadata, ...] = ()
+    pose_samples: tuple[PoseSample, ...] = ()
+    gaze_samples: tuple[GazeSample, ...] = ()
     frame_refs: tuple[str, ...] = ()
     frame_metadata: tuple[FrameMetadata, ...] = ()
 

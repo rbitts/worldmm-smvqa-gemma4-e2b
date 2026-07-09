@@ -85,12 +85,14 @@ def test_qa_transformers_mock_cli_writes_predictions_from_evidence(
         PredictionRecord.model_validate_json(line)
         for line in predictions.read_text(encoding="utf-8").splitlines()
     ]
-    assert len(rows) == 4
+    assert len(rows) == 6
     assert {row.question_id for row in rows} == {
         "q_fake_001",
         "q_fake_002",
         "q_fake_003",
         "q_fake_004",
+        "q_fake_005",
+        "q_fake_006",
     }
 
 
@@ -171,6 +173,8 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
         "q_fake_002",
         "q_fake_003",
         "q_fake_004",
+        "q_fake_005",
+        "q_fake_006",
     ]
 
 
@@ -200,6 +204,7 @@ def test_remote_plan_script_compacts_jsonl_and_writes_memory_manifest(
     assert "source_memories.jsonl" in script_text
     assert "worldmm_sv/semantic.jsonl" in script_text
     assert "worldmm_sv/visual.jsonl" in script_text
+    assert "SMVQA_FRAME_ROOT:=$SMVQA_DATA_ROOT/frames" in script_text
 
 
 def test_remote_plan_uses_hashed_question_tmp_paths(tmp_path: Path) -> None:

@@ -1,0 +1,97 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Literal, override
+
+from worldmm_smvqa.schema import FrozenModel
+
+type SpatialProvenance = Literal["pose", "gaze"]
+
+
+@dataclass(frozen=True, slots=True)
+class InvalidSpatialInputError(Exception):
+    video_id: str
+    detail: str
+
+    @override
+    def __str__(self) -> str:
+        return f"InvalidSpatialInputError: {self.video_id}: {self.detail}"
+
+
+@dataclass(frozen=True, slots=True)
+class SpatialBuildSummary:
+    path: Path
+    zones: int
+    anchors: int
+    relations: int
+
+
+class ZoneRecord(FrozenModel):
+    record_type: Literal["zone"] = "zone"
+    zone_id: str
+    video_id: str
+    centroid_x: float
+    centroid_y: float
+    centroid_z: float
+    cell: tuple[int, int]
+    visit_intervals: tuple[tuple[float, float], ...]
+
+
+class SpatialAnchorRecord(FrozenModel):
+    record_type: Literal["spatial_anchor"] = "spatial_anchor"
+    memory_id: str
+    store: Literal["spatial"] = "spatial"
+    video_id: str
+    object_label: str
+    x: float
+    y: float
+    z: float
+    zone_id: str
+    start_time: float
+    end_time: float
+    frame_refs: tuple[str, ...]
+    confidence: float
+    provenance: SpatialProvenance
+
+
+class SpatialRelationRecord(FrozenModel):
+    record_type: Literal["spatial_relation"] = "spatial_relation"
+    memory_id: str
+    store: Literal["spatial"] = "spatial"
+    video_id: str
+    subject: str
+    relation: Literal["near"] = "near"
+    object: str
+    zone_id: str
+    start_time: float
+    end_time: float
+
+
+class ObjectStateSnapshotRecord(FrozenModel):
+    record_type: Literal["object_state_snapshot"] = "object_state_snapshot"
+    memory_id: str
+    store: Literal["spatial"] = "spatial"
+    video_id: str
+    object_label: str
+    zone_id: str
+    last_seen_time: float
+    x: float
+    y: float
+    z: float
+    start_time: float
+    end_time: float
+    snippet: str
+    base_score: float
+
+
+class WearerTrajectorySummaryRecord(FrozenModel):
+    record_type: Literal["wearer_trajectory_summary"] = "wearer_trajectory_summary"
+    memory_id: str
+    store: Literal["spatial"] = "spatial"
+    video_id: str
+    zone_ids: tuple[str, ...]
+    start_time: float
+    end_time: float
+    snippet: str
+    base_score: float

@@ -5,8 +5,10 @@ from dataclasses import dataclass
 from worldmm_smvqa.schema import (
     AnswerChoice,
     FrameMetadata,
+    GazeSample,
     ObjectMetadata,
     OCRMetadata,
+    PoseSample,
     QALabelExample,
     SourceStreamExample,
     TranscriptSpan,
@@ -20,7 +22,8 @@ class LabelSeed:
     question: str
     question_time: float
     answer: str
-    evidence: str
+    evidence: str | None
+    is_answerable: bool = True
 
 
 def tiny_fixture_examples() -> tuple[
@@ -31,7 +34,7 @@ def tiny_fixture_examples() -> tuple[
         SourceStreamExample(
             video_id="fake_video_001",
             start_time=0.0,
-            end_time=180.0,
+            end_time=1900.0,
             transcript="A staged desk routine with a mug, notebook, and lamp.",
             transcript_spans=(
                 TranscriptSpan(
@@ -73,7 +76,24 @@ def tiny_fixture_examples() -> tuple[
                     confidence=0.88,
                 ),
             ),
-            frame_refs=("fake_video_001_frame_0008", "fake_video_001_frame_0072"),
+            pose_samples=(
+                PoseSample(timestamp=6.0, x=0.2, y=1.1, z=1.5, yaw=25.0),
+                PoseSample(timestamp=12.0, x=0.3, y=1.2, z=1.5, yaw=27.0),
+                PoseSample(timestamp=1800.0, x=1.0, y=2.0, z=1.5, yaw=90.0),
+                PoseSample(timestamp=1900.0, x=1.1, y=2.1, z=1.5, yaw=91.0),
+            ),
+            gaze_samples=(
+                GazeSample(timestamp=7.0, x=0.4, y=1.4, z=1.0),
+                GazeSample(timestamp=12.0, x=0.5, y=1.5, z=1.0),
+                GazeSample(timestamp=1850.0, x=1.4, y=2.4, z=1.0),
+                GazeSample(timestamp=1900.0, x=1.5, y=2.5, z=1.0),
+            ),
+            frame_refs=(
+                "fake_video_001_frame_0008",
+                "fake_video_001_frame_0072",
+                "fake_video_001_frame_1800",
+                "fake_video_001_frame_1900",
+            ),
             frame_metadata=(
                 FrameMetadata(
                     frame_ref="fake_video_001_frame_0008",
@@ -84,6 +104,16 @@ def tiny_fixture_examples() -> tuple[
                     frame_ref="fake_video_001_frame_0072",
                     timestamp=72.0,
                     description="Fake desk frame with lamp switched on.",
+                ),
+                FrameMetadata(
+                    frame_ref="fake_video_001_frame_1800",
+                    timestamp=1800.0,
+                    description="Fake long-horizon desk frame before shard boundary.",
+                ),
+                FrameMetadata(
+                    frame_ref="fake_video_001_frame_1900",
+                    timestamp=1900.0,
+                    description="Fake long-horizon desk frame after shard boundary.",
                 ),
             ),
         ),
@@ -131,6 +161,16 @@ def tiny_fixture_examples() -> tuple[
                     label="magnet",
                     confidence=0.86,
                 ),
+            ),
+            pose_samples=(
+                PoseSample(timestamp=21.0, x=0.1, y=0.7, z=1.5, yaw=10.0),
+                PoseSample(timestamp=27.0, x=0.2, y=0.8, z=1.5, yaw=12.0),
+                PoseSample(timestamp=132.0, x=2.0, y=1.0, z=1.5, yaw=55.0),
+                PoseSample(timestamp=137.0, x=2.1, y=1.1, z=1.5, yaw=56.0),
+            ),
+            gaze_samples=(
+                GazeSample(timestamp=22.0, x=0.3, y=0.9, z=1.0),
+                GazeSample(timestamp=134.0, x=2.3, y=1.3, z=1.0),
             ),
             frame_refs=("fake_video_002_frame_0022", "fake_video_002_frame_0132"),
             frame_metadata=(
@@ -180,6 +220,23 @@ def tiny_fixture_examples() -> tuple[
             answer="D",
             evidence="fake_video_002:130:138:transcript",
         )),
+        _label(LabelSeed(
+            question_id="q_fake_005",
+            video_id="fake_video_001",
+            question="Where did the spatial trace focus during the mug placement?",
+            question_time=1850.0,
+            answer="A",
+            evidence="fake_video_001:5:12:spatial",
+        )),
+        _label(LabelSeed(
+            question_id="q_fake_006",
+            video_id="fake_video_002",
+            question="What color is the magnet in the fridge zone?",
+            question_time=15.0,
+            answer="",
+            evidence=None,
+            is_answerable=False,
+        )),
     )
     return sources, labels
 
@@ -201,7 +258,7 @@ def _label(seed: LabelSeed) -> QALabelExample:
             AnswerChoice(choice_id="D", text="blue", choice_ltype="attribute"),
         ),
         answer=seed.answer,
-        is_answerable=True,
-        evidence_list=(seed.evidence,),
+        is_answerable=seed.is_answerable,
+        evidence_list=() if seed.evidence is None else (seed.evidence,),
         verification_score=1.0,
     )

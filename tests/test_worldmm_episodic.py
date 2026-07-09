@@ -60,7 +60,7 @@ def test_episodic_graph_links_clips_to_shards_and_temporal_neighbors() -> None:
     assert nodes["episodic:fake_video_001:0:30:clip_30s"].text_embedding_id == (
         "embedding:episodic:fake_video_001:0:30:clip_30s:text"
     )
-    assert nodes["episodic:fake_video_001:0:180:shard_30m"].source_modalities == (
+    assert nodes["episodic:fake_video_001:0:1800:shard_30m"].source_modalities == (
         "caption",
         "transcript",
         "ocr",
@@ -69,14 +69,26 @@ def test_episodic_graph_links_clips_to_shards_and_temporal_neighbors() -> None:
     )
     assert any(
         edge.edge_type == "contains"
-        and edge.source_node_id == "episodic:fake_video_001:0:180:shard_30m"
+        and edge.source_node_id == "episodic:fake_video_001:0:1800:shard_30m"
         and edge.target_node_id == "episodic:fake_video_001:0:30:clip_30s"
+        for edge in edges
+    )
+    assert any(
+        edge.edge_type == "contains"
+        and edge.source_node_id == "episodic:fake_video_001:1800:1900:shard_30m"
+        and edge.target_node_id == "episodic:fake_video_001:1800:1830:clip_30s"
         for edge in edges
     )
     assert any(
         edge.edge_type == "temporal_next"
         and edge.source_node_id == "episodic:fake_video_001:0:30:clip_30s"
         and edge.target_node_id == "episodic:fake_video_001:30:60:clip_30s"
+        for edge in edges
+    )
+    assert any(
+        edge.edge_type == "temporal_next"
+        and edge.source_node_id == "episodic:fake_video_001:1800:1830:clip_30s"
+        and edge.target_node_id == "episodic:fake_video_001:1830:1860:clip_30s"
         for edge in edges
     )
     for edge in edges:

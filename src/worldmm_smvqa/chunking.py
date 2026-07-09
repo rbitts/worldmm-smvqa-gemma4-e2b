@@ -133,6 +133,12 @@ def _build_chunk(source: SourceStreamExample, window: ChunkWindow) -> StreamChun
     object_detections = tuple(
         item for item in source.object_detections if _inside(item.start_time, window)
     )
+    pose_samples = tuple(
+        sample for sample in source.pose_samples if _inside(sample.timestamp, window)
+    )
+    gaze_samples = tuple(
+        sample for sample in source.gaze_samples if _inside(sample.timestamp, window)
+    )
     frame_metadata = tuple(
         frame for frame in source.frame_metadata if _inside(frame.timestamp, window)
     )
@@ -149,6 +155,8 @@ def _build_chunk(source: SourceStreamExample, window: ChunkWindow) -> StreamChun
         ocr_entries=ocr_entries,
         objects=source.objects,
         object_detections=object_detections,
+        pose_samples=pose_samples,
+        gaze_samples=gaze_samples,
         frame_refs=tuple(dict.fromkeys(frame.frame_ref for frame in frame_metadata)),
         frame_metadata=frame_metadata,
     )
@@ -196,6 +204,16 @@ def _require_temporal_order(source: SourceStreamExample) -> None:
         source.video_id,
         "frame_metadata",
         tuple(frame.timestamp for frame in source.frame_metadata),
+    )
+    _require_sorted(
+        source.video_id,
+        "pose_samples",
+        tuple(sample.timestamp for sample in source.pose_samples),
+    )
+    _require_sorted(
+        source.video_id,
+        "gaze_samples",
+        tuple(sample.timestamp for sample in source.gaze_samples),
     )
 
 

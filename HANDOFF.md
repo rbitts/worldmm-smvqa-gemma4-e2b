@@ -10,9 +10,9 @@ Implemented pipeline:
 SuperMemory-VQA stream
 -> 30s clips / 30m shards
 -> caption / OCR / object / frame memories
--> WorldMM episodic / semantic / visual memories
--> causal retrieval before question_time
--> Gemma 4 E2B QA interface
+-> WorldMM episodic / semantic / visual / spatial memories
+-> protocol-aware causal retrieval before question_time
+-> Gemma 4 E2B QA interface with retrieved memory text + sampled video frames
 -> Ans-F1 / QA-Acc / QA-MRR report
 ```
 
@@ -28,6 +28,57 @@ Orchestration state is completed in `.omo/boulder.json`.
 - Main docs: `README.md`
 - Evidence root: `.omo/evidence/worldmm-smvqa/`
 
+## Spatial Memory (v2)
+
+The v2 local path adds an explicit fourth WorldMM memory store: `spatial`.
+Spatial records are built from source-stream inputs only:
+
+- optional `pose_samples`: `timestamp`, `x`, `y`, `z`, optional `yaw`
+- optional `gaze_samples`: `timestamp`, `x`, `y`, `z`
+- object detections and frame metadata already present in the fixture schema
+
+`$SMVQA_DATA_ROOT` schema now includes optional `pose_samples` and
+`gaze_samples` on `sources.jsonl`. Empty fields are valid; when provided, they
+must be timestamp-sorted and use the same coordinate convention as local tests:
+`x`/`y` horizontal plane, `z` vertical, meters.
+
+The store writes deterministic zone, anchor, near-relation, object-state, and
+trajectory snippets. It is suitable for the current lexical retrieval path and
+does not require 3D reconstruction, model downloads, or local GPU work.
+
+## Retrieval Contract
+
+This is a WorldMM-augmented Video-RAG/EgoButler-compatible retrieval path, not
+an exact WorldMM agentic/PPR implementation.
+
+Contract:
+
+- Video-RAG eligibility: retrieve only from same-video `shard_30m` chunks with
+  `end_time <= question_time`.
+- EgoButler hierarchy: select coarse-to-fine through
+  `shard_30m -> clip_30s -> memory records`.
+- WorldMM policy route: order enabled stores deterministically from question
+  text, with location questions routing `spatial` first.
+- Evidence trace: every evidence pack carries `retrieval_trace` with eligible
+  shard ids, selected clip ids, policy route, store order, candidate counts,
+  causal-filter count, and frame-ref count.
+- Frame cap: remote and local reruns for this lane must use
+  `--max-frame-refs 32`.
+- QA parity: from the selected pre-question shard, sample up to 32 frames
+  uniformly and pass those frame files to Gemma together with retrieved memory
+  snippets.
+
+Remote rerun must use:
+
+```bash
+--retrieval-protocol worldmm-smvqa --max-frame-refs 32
+```
+
+Smoke now also writes `spatial_diagnostics.json` and `ablation.json` when
+ablation flags are provided. Use `--ablation-stores episodic,semantic,visual`
+for the without-spatial pass and `--ablation-protocol legacy-round-robin` for
+the protocol-only pass.
+
 Primary commands:
 
 ```bash
@@ -40,10 +91,11 @@ uv run worldmm-smvqa report --run-manifest tests/fixtures/tiny_smvqa/remote_mani
 
 Final gates passed:
 
-- `pytest`: 70 passed
+- `pytest`: 118 passed
 - `ruff`: passed
 - `basedpyright`: 0 errors, 0 warnings
 - local smoke: writes `metrics.json`, `predictions.jsonl`, `evidence_packs.jsonl`, `memory_manifest.json`
+- spatial smoke: writes `spatial_memory.jsonl` and `spatial_diagnostics.json`
 - review-work final rerun: goal, QA, code quality, security, context all PASS
 - runtime audit: causal frame leakage, DDP QA shard collision, and shell/path injection hypotheses ruled out
 
@@ -103,6 +155,7 @@ export BASTION_HOST=...
 export HEAD_NODE=...
 export REMOTE_JOB_LAUNCHER=...
 export SMVQA_DATA_ROOT=...
+export SMVQA_FRAME_ROOT=...  # optional, defaults to $SMVQA_DATA_ROOT/frames
 export GEMMA_MODEL_PATH=...
 export WORLDMM_OUTPUT_ROOT=...
 export WORLDMM_REMOTE_NODES=...
@@ -128,10 +181,15 @@ rsync to `$WORLDMM_REMOTE_REPO/remote-plan/`, and the ssh launch command. The
 remote script cds into `$WORLDMM_REMOTE_REPO` and downloads the model with
 `hf download` (stage 0) before building memories and running DDP QA.
 
+Frame assets for real QA must be available under
+`$SMVQA_FRAME_ROOT/<video_id>/<frame_ref>.jpg` by default; `.jpeg`, `.png`, and
+`.webp` are also accepted.
+
 Still open: no SuperMemory-VQA dataset download/ingest step exists.
 `$SMVQA_DATA_ROOT` must already contain `sources.jsonl` / `questions.jsonl` /
-`labels.jsonl` in the fixture schema, with captions/OCR/objects/frame refs
-precomputed. Defining that ingest (raw dataset -> schema) is the next task.
+`labels.jsonl` in the fixture schema, with captions/OCR/objects/frame refs and
+optional `pose_samples` / `gaze_samples` precomputed. Defining that ingest (raw
+dataset -> schema) is the next task.
 
 ## Next Step: Produce Real Numbers
 
@@ -158,9 +216,10 @@ Expected remote outputs live under `$WORLDMM_OUTPUT_ROOT` and include:
 
 - memory manifests
 - retrieval evidence packs
+- retrieval trace-bearing evidence packs
 - Gemma 4 E2B predictions
 - official metrics: `Ans-F1`, `QA-Acc`, `QA-MRR`
-- diagnostics and logs
+- spatial diagnostics, ablation outputs, diagnostics, and logs
 - report manifest
 
 Copy back only lightweight results:

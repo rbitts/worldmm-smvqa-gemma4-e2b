@@ -2,12 +2,23 @@ from __future__ import annotations
 
 
 def script_text() -> str:
+    without_spatial_flags = _retrieve_flags(
+        "episodic,semantic,visual",
+        "worldmm-smvqa",
+    )
+    legacy_protocol_flags = _retrieve_flags(
+        "episodic,semantic,visual,spatial",
+        "legacy-round-robin",
+    )
+    without_spatial_flags_line = f'  "retrieve_flags": "{without_spatial_flags}",'
+    legacy_protocol_flags_line = f'  "retrieve_flags": "{legacy_protocol_flags}",'
     stage_lines = [
         "#!/usr/bin/env bash",
         "set -euo pipefail",
         "",
         ': "${WORLDMM_REMOTE_REPO:?WORLDMM_REMOTE_REPO is required}"',
         ': "${SMVQA_DATA_ROOT:?SMVQA_DATA_ROOT is required}"',
+        ': "${SMVQA_FRAME_ROOT:=$SMVQA_DATA_ROOT/frames}"',
         ': "${GEMMA_MODEL_PATH:?GEMMA_MODEL_PATH is required}"',
         ': "${WORLDMM_OUTPUT_ROOT:?WORLDMM_OUTPUT_ROOT is required}"',
         ': "${WORLDMM_REMOTE_NODES:=1}"',
@@ -20,7 +31,8 @@ def script_text() -> str:
         "",
         (
             'mkdir -p "$WORLDMM_OUTPUT_ROOT"/'
-            "{manifests,chunks,source_refs,memory,retrieval,qa,metrics,logs,summary}"
+            "{manifests,chunks,source_refs,memory,retrieval,qa,metrics,logs,"
+            "summary,diagnostics,ablation}"
         ),
         "",
         "# stage 0: fetch Gemma 4 E2B model onto company storage",
@@ -65,7 +77,7 @@ def script_text() -> str:
             '"$WORLDMM_OUTPUT_ROOT/source_refs/source_memories.jsonl"'
         ),
         "",
-        "# stage 4: build WorldMM episodic semantic visual stores",
+        "# stage 4: build WorldMM episodic semantic visual spatial stores",
         (
             "worldmm-smvqa build-memory --store episodic "
             "--config configs/remote.example.yaml --fixture "
@@ -73,7 +85,7 @@ def script_text() -> str:
             '"$WORLDMM_OUTPUT_ROOT/memory/episodic.jsonl"'
         ),
         (
-            "worldmm-smvqa build-memory --stores semantic,visual "
+            "worldmm-smvqa build-memory --stores semantic,visual,spatial "
             "--config configs/remote.example.yaml --fixture "
             '"$SMVQA_DATA_ROOT" --out "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv"'
         ),
@@ -81,11 +93,17 @@ def script_text() -> str:
         "import json, os",
         "from pathlib import Path",
         'root = Path(os.environ["WORLDMM_OUTPUT_ROOT"])',
+        "def line_count(path):",
+        "    if not path.exists():",
+        "        return 0",
+        "    return sum(1 for _line in path.open(encoding='utf-8'))",
+        'spatial = root / "memory/worldmm_sv/spatial.jsonl"',
         "payload = {",
         '    "source_memories": str(root / "source_refs/source_memories.jsonl"),',
         '    "episodic_memory": str(root / "memory/episodic.jsonl"),',
         '    "semantic_memory": str(root / "memory/worldmm_sv/semantic.jsonl"),',
         '    "visual_memory": str(root / "memory/worldmm_sv/visual.jsonl"),',
+        '    "spatial_memory": {"path": str(spatial), "count": line_count(spatial)},',
         "}",
         "print(json.dumps(payload, sort_keys=True))",
         "PY",
@@ -101,7 +119,8 @@ def script_text() -> str:
         'tmp="$WORLDMM_OUTPUT_ROOT/retrieval/${safe_question_file}.json"',
         (
             "worldmm-smvqa retrieve --config configs/remote.example.yaml "
-            '--fixture "$SMVQA_DATA_ROOT" --stores episodic,semantic,visual '
+            '--fixture "$SMVQA_DATA_ROOT" --stores episodic,semantic,visual,spatial '
+            "--retrieval-protocol worldmm-smvqa --max-frame-refs 32 "
             '--question "$question_id" --out "$tmp"'
         ),
         (
@@ -146,5 +165,25 @@ def script_text() -> str:
             '"$WORLDMM_OUTPUT_ROOT/summary/summary.txt"'
         ),
         "",
+        "# stage 9: document equivalent ablation reruns under output root",
+        'cat > "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial.json" <<EOF',
+        "{",
+        '  "rerun": "retrieve/qa/evaluate with --stores episodic,semantic,visual",',
+        without_spatial_flags_line,
+        '  "output_root": "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial"',
+        "}",
+        "EOF",
+        'cat > "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin.json" <<EOF',
+        "{",
+        '  "rerun": "retrieve/qa/evaluate with legacy round-robin protocol",',
+        legacy_protocol_flags_line,
+        '  "output_root": "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin"',
+        "}",
+        "EOF",
+        "",
     ]
     return "\n".join(stage_lines)
+
+
+def _retrieve_flags(stores: str, protocol: str) -> str:
+    return f"--stores {stores} --retrieval-protocol {protocol} --max-frame-refs 32"

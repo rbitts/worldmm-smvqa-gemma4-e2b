@@ -24,7 +24,7 @@ REQUIRED_STAGES = (
     "prepare source manifests",
     "build 30s/30m chunks",
     "generate/load captions OCR object frame refs",
-    "build WorldMM episodic semantic visual stores",
+    "build WorldMM episodic semantic visual spatial stores",
     "retrieve per QA under causal cutoff",
     "run Gemma 4 E2B QA",
     "evaluate official metrics",
@@ -85,12 +85,37 @@ def test_launch_remote_dry_run_writes_full_plan_contract(tmp_path: Path) -> None
     assert "$WORLDMM_OUTPUT_ROOT" in script_text
     assert "$SMVQA_DATA_ROOT" in script_text
     assert "$GEMMA_MODEL_PATH" in script_text
+    assert "worldmm-smvqa build-memory --stores semantic,visual,spatial" in script_text
+    assert "--stores episodic,semantic,visual,spatial" in script_text
+    assert "--retrieval-protocol worldmm-smvqa" in script_text
+    assert "--max-frame-refs 32" in script_text
+    assert "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial.json" in script_text
+    assert "--stores episodic,semantic,visual" in script_text
+    assert "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin.json" in (
+        script_text
+    )
+    assert "--retrieval-protocol legacy-round-robin" in script_text
 
     manifest = TypeAdapter(ExpectedOutputs).validate_json(
         expected.read_text(encoding="utf-8"),
     )
     assert manifest["remote_job_reference"] == "${REMOTE_JOB_ID_OR_PROCESS_REF}"
     assert manifest["metrics"] == ["Ans-F1", "QA-Acc", "QA-MRR"]
+    assert manifest["outputs"]["spatial_memory"] == (
+        "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl"
+    )
+    assert manifest["outputs"]["retrieval_trace_evidence_packs"] == (
+        "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"
+    )
+    assert manifest["outputs"]["spatial_diagnostics"] == (
+        "$WORLDMM_OUTPUT_ROOT/diagnostics/spatial_diagnostics.json"
+    )
+    assert manifest["outputs"]["ablation_without_spatial"] == (
+        "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial.json"
+    )
+    assert manifest["outputs"]["ablation_protocol_legacy"] == (
+        "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin.json"
+    )
     for value in manifest["outputs"].values():
         assert isinstance(value, str)
         assert value.startswith("$WORLDMM_OUTPUT_ROOT/")
@@ -188,7 +213,7 @@ def test_launch_remote_dry_run_replaces_stale_artifacts(tmp_path: Path) -> None:
     # Then: generated files are replaced by current deterministic content.
     assert result.returncode == 0, result.stderr
     assert stale_script.read_text(encoding="utf-8") != "stale\n"
-    assert "prepare source manifests" in stale_script.read_text(encoding="utf-8")
+    assert "semantic,visual,spatial" in stale_script.read_text(encoding="utf-8")
 
 
 def test_launch_remote_config_requires_remote_placeholders(tmp_path: Path) -> None:

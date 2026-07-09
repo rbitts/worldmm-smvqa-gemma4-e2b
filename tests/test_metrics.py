@@ -39,14 +39,14 @@ def test_evaluate_fixture_metrics_when_ranked_answers_vary() -> None:
 
     # Then: answer F1, top-1 accuracy, MRR, recall, and diagnostics match math.
     assert metrics.ans_f1 == pytest.approx(1.0)
-    assert metrics.qa_acc == pytest.approx(0.5)
-    assert metrics.qa_mrr == pytest.approx(7.0 / 12.0)
-    assert metrics.memory_recall_at_1 == pytest.approx(0.5)
-    assert metrics.memory_recall_at_3 == pytest.approx(0.75)
-    assert metrics.memory_recall_at_5 == pytest.approx(0.75)
+    assert metrics.qa_acc == pytest.approx(3.0 / 5.0)
+    assert metrics.qa_mrr == pytest.approx(2.0 / 3.0)
+    assert metrics.memory_recall_at_1 == pytest.approx(3.0 / 5.0)
+    assert metrics.memory_recall_at_3 == pytest.approx(4.0 / 5.0)
+    assert metrics.memory_recall_at_5 == pytest.approx(4.0 / 5.0)
     assert metrics.diagnostics.causal_violation_count == 1
-    assert metrics.diagnostics.prompt_tokens.total == 100
-    assert metrics.diagnostics.memory_size.total == 4
+    assert metrics.diagnostics.prompt_tokens.total == 210
+    assert metrics.diagnostics.memory_size.total == 5
 
 
 def test_answer_f1_counts_false_positive_when_label_is_unanswerable() -> None:
