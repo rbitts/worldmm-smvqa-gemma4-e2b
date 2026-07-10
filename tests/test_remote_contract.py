@@ -15,7 +15,6 @@ REMOTE_ENV_NAMES = frozenset(
         "WORLDMM_OUTPUT_ROOT",
         "BASTION_HOST",
         "HEAD_NODE",
-        "REMOTE_JOB_LAUNCHER",
     },
 )
 
@@ -178,7 +177,7 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
     ]
 
 
-def test_remote_plan_script_compacts_jsonl_and_writes_memory_manifest(
+def test_remote_plan_script_uses_batch_retrieval_and_memory_manifest(
     tmp_path: Path,
 ) -> None:
     # Given: a generated remote plan.
@@ -196,10 +195,11 @@ def test_remote_plan_script_compacts_jsonl_and_writes_memory_manifest(
     # When: the remote script text is inspected.
     script_text = (out_dir / "run_worldmm_smvqa.sh").read_text(encoding="utf-8")
 
-    # Then: it writes one compact JSON object per line and the declared manifest.
-    assert "json.dumps(payload, separators=(',', ':'))" in script_text
-    raw_cat = 'cat "$tmp" >> "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"'
-    assert raw_cat not in script_text
+    # Then: one command writes all evidence packs without per-question temp files.
+    assert "worldmm-smvqa retrieve-batch" in script_text
+    assert "worldmm-smvqa retrieve --config" not in script_text
+    assert "while IFS= read -r question_id" not in script_text
+    assert 'tmp="$WORLDMM_OUTPUT_ROOT/retrieval/' not in script_text
     assert "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json" in script_text
     assert "source_memories.jsonl" in script_text
     assert "worldmm_sv/semantic.jsonl" in script_text
@@ -207,26 +207,8 @@ def test_remote_plan_script_compacts_jsonl_and_writes_memory_manifest(
     assert "SMVQA_FRAME_ROOT:=$SMVQA_DATA_ROOT/frames" in script_text
 
 
-def test_remote_plan_uses_hashed_question_tmp_paths(tmp_path: Path) -> None:
-    # Given: a malicious question id that would escape retrieval with raw paths.
-    question_id = "../escape/id"
-    digest = subprocess.run(
-        [
-            "python3",
-            "-c",
-            (
-                "import hashlib,sys; "
-                "print(hashlib.sha256(sys.argv[1].encode()).hexdigest()[:16])"
-            ),
-            question_id,
-        ],
-        text=True,
-        capture_output=True,
-        check=False,
-    )
-    assert digest.returncode == 0, digest.stderr
-
-    # When: the generated script is read.
+def test_remote_plan_writes_deterministic_slurm_paths(tmp_path: Path) -> None:
+    # Given: a generated Slurm plan.
     out_dir = tmp_path / "remote_plan"
     result = run_cli(
         "launch-remote",
@@ -239,12 +221,18 @@ def test_remote_plan_uses_hashed_question_tmp_paths(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     script_text = (out_dir / "run_worldmm_smvqa.sh").read_text(encoding="utf-8")
 
-    # Then: temp retrieval paths are derived from a hash, not raw question text.
-    assert "hashlib.sha256" in script_text
-    assert 'tmp="$WORLDMM_OUTPUT_ROOT/retrieval/${question_id}.json"' not in script_text
-    safe_path = Path("retrieval") / f"q_{digest.stdout.strip()}.json"
-    assert ".." not in safe_path.parts
-    assert "/" not in safe_path.name
+    # Then: job identity, logs, and metadata derive only from Slurm job id.
+    assert 'REMOTE_JOB_ID_OR_PROCESS_REF="slurm-${SLURM_JOB_ID}"' in script_text
+    assert (
+        'WORLDMM_SLURM_STDOUT="$WORLDMM_OUTPUT_ROOT/logs/'
+        'slurm-${SLURM_JOB_ID}.out"'
+    ) in script_text
+    assert (
+        'WORLDMM_SLURM_STDERR="$WORLDMM_OUTPUT_ROOT/logs/'
+        'slurm-${SLURM_JOB_ID}.err"'
+    ) in script_text
+    assert "$WORLDMM_OUTPUT_ROOT/summary/job.json" in script_text
+    assert "$WORLDMM_OUTPUT_ROOT/summary/slurm_job_id.txt" in script_text
 
 
 def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
@@ -266,19 +254,28 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
     lines = result.stdout.splitlines()
     plan_sync_argv = shlex.split(lines[-2])
     assert plan_sync_argv[0] == "rsync"
-    assert plan_sync_argv[2] == f"{out_dir}/"
+    assert plan_sync_argv[4] == f"{out_dir}/"
     argv = shlex.split(lines[-1])
     assert argv[:4] == [
         "ssh",
+        "-J",
         "$BASTION_HOST",
-        "$REMOTE_JOB_LAUNCHER",
         "$HEAD_NODE",
     ]
-    assert shlex.split(argv[4]) == [
-        "bash",
-        "$WORLDMM_REMOTE_REPO/remote-plan/run_worldmm_smvqa.sh",
+    remote_argv = shlex.split(argv[4])
+    assert remote_argv == [
+        "cd",
+        "$WORLDMM_REMOTE_REPO",
+        "&&",
+        "mkdir",
+        "-p",
+        "remote-plan/logs",
+        "&&",
+        "/opt/slurm/bin/sbatch",
+        "--parsable",
+        "remote-plan/run_worldmm_smvqa.sh",
     ]
-    assert f"bash {out_dir}" not in result.stdout
+    assert str(out_dir) not in argv[4]
 
 
 def test_checked_in_remote_script_delegates_without_printing_paths() -> None:

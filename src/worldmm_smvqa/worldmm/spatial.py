@@ -13,11 +13,17 @@ from worldmm_smvqa.schema import (
     SourceStreamExample,
     StreamChunk,
 )
+from worldmm_smvqa.worldmm.geometry_binding import (
+    DeterministicGeometryBinder,
+    EmptyGeometryPrimitivesError,
+    build_geometry_primitives,
+)
 from worldmm_smvqa.worldmm.spatial_types import (
     InvalidSpatialInputError,
     ObjectStateSnapshotRecord,
     SpatialAnchorRecord,
     SpatialProvenance,
+    SpatialRelationKind,
     SpatialRelationRecord,
     WearerTrajectorySummaryRecord,
     ZoneRecord,
@@ -25,6 +31,7 @@ from worldmm_smvqa.worldmm.spatial_types import (
 
 DEFAULT_CELL_SIZE: Final = 2.0
 DEFAULT_NEAR_THRESHOLD: Final = 1.5
+DEFAULT_DIRECTION_THRESHOLD: Final = 0.25
 OBJECT_STATE_SNAPSHOT_SNIPPET: Final = (
     "as of t={chunk_end}s, {object_label} last seen in {zone_id} "
     "at t={last_seen}s near ({x},{y})"
@@ -75,8 +82,14 @@ def derive_relations(
     anchors: Sequence[SpatialAnchorRecord],
     *,
     near_threshold: float = DEFAULT_NEAR_THRESHOLD,
+    direction_threshold: float = DEFAULT_DIRECTION_THRESHOLD,
 ) -> tuple[SpatialRelationRecord, ...]:
     _require_positive(value=near_threshold, name="near_threshold", video_id="anchors")
+    _require_positive(
+        value=direction_threshold,
+        name="direction_threshold",
+        video_id="anchors",
+    )
     relations: list[SpatialRelationRecord] = []
     for left_index, left in enumerate(anchors):
         for right in anchors[left_index + 1 :]:
@@ -90,17 +103,26 @@ def derive_relations(
             ):
                 subject, object_label = sorted((left.object_label, right.object_label))
                 relations.append(
-                    SpatialRelationRecord(
-                        memory_id=(
-                            f"spatial_relation:{left.video_id}:{subject}:near:"
-                            f"{object_label}:{_format_seconds(overlap_start)}"
-                        ),
-                        video_id=left.video_id,
-                        subject=subject,
-                        object=object_label,
-                        zone_id=left.zone_id,
+                    _relation_record(
+                        subject=left if subject == left.object_label else right,
+                        relation="near",
+                        target=right if object_label == right.object_label else left,
                         start_time=overlap_start,
                         end_time=overlap_end,
+                    ),
+                )
+            if (
+                left.video_id == right.video_id
+                and overlap_start <= overlap_end
+                and _object_geometry_grounded(left, right)
+            ):
+                relations.extend(
+                    _directional_relations(
+                        left,
+                        right,
+                        start_time=overlap_start,
+                        end_time=overlap_end,
+                        threshold=direction_threshold,
                     ),
                 )
     return tuple(
@@ -109,6 +131,7 @@ def derive_relations(
             key=lambda item: (
                 item.video_id,
                 item.subject,
+                item.relation,
                 item.object,
                 item.start_time,
                 item.end_time,
@@ -387,7 +410,7 @@ def _anchor_record(
 ) -> SpatialAnchorRecord:
     position = _anchor_position(source, detection)
     start_token = _format_seconds(detection.start_time)
-    return SpatialAnchorRecord(
+    anchor = SpatialAnchorRecord(
         memory_id=f"spatial_anchor:{source.video_id}:{detection.label}:{start_token}",
         video_id=source.video_id,
         object_label=detection.label,
@@ -405,12 +428,34 @@ def _anchor_record(
         confidence=detection.confidence,
         provenance=position.provenance,
     )
+    try:
+        bound = DeterministicGeometryBinder().bind(
+            anchor,
+            build_geometry_primitives(source),
+        )
+    except EmptyGeometryPrimitivesError:
+        return anchor
+    return anchor.model_copy(
+        update={
+            "geometry_frame_ref": bound.primitive.frame_ref,
+            "geometry_source": bound.primitive.source,
+            "geometry_distance_m": bound.distance_m,
+            "geometry_embedding_ref": bound.embedding_ref,
+        },
+    )
 
 
 def _anchor_position(
     source: SourceStreamExample,
     detection: ObjectMetadata,
 ) -> _Position:
+    if detection.x is not None and detection.y is not None and detection.z is not None:
+        return _Position(
+            x=detection.x,
+            y=detection.y,
+            z=detection.z,
+            provenance="object_geometry",
+        )
     gaze = _gaze_target(source.gaze_samples, detection)
     if gaze is not None:
         return _Position(x=gaze.x, y=gaze.y, z=gaze.z, provenance="gaze")
@@ -473,3 +518,112 @@ def _format_seconds(value: float) -> str:
     if value.is_integer():
         return str(int(value))
     return f"{value:.6f}".rstrip("0").rstrip(".")
+
+
+def _object_geometry_grounded(
+    left: SpatialAnchorRecord,
+    right: SpatialAnchorRecord,
+) -> bool:
+    return (
+        left.provenance == "object_geometry"
+        and right.provenance == "object_geometry"
+    )
+
+
+def _directional_relations(
+    left: SpatialAnchorRecord,
+    right: SpatialAnchorRecord,
+    *,
+    start_time: float,
+    end_time: float,
+    threshold: float,
+) -> tuple[SpatialRelationRecord, ...]:
+    relations: list[SpatialRelationRecord] = []
+    if abs(left.x - right.x) >= threshold:
+        relations.append(
+            _relation_record(
+                subject=left if left.x < right.x else right,
+                relation="left_of",
+                target=right if left.x < right.x else left,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+        relations.append(
+            _relation_record(
+                subject=right if left.x < right.x else left,
+                relation="right_of",
+                target=left if left.x < right.x else right,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+    if abs(left.y - right.y) >= threshold:
+        relations.append(
+            _relation_record(
+                subject=left if left.y > right.y else right,
+                relation="in_front_of",
+                target=right if left.y > right.y else left,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+        relations.append(
+            _relation_record(
+                subject=right if left.y > right.y else left,
+                relation="behind",
+                target=left if left.y > right.y else right,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+    if abs(left.z - right.z) >= threshold:
+        relations.append(
+            _relation_record(
+                subject=left if left.z > right.z else right,
+                relation="above",
+                target=right if left.z > right.z else left,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+        relations.append(
+            _relation_record(
+                subject=right if left.z > right.z else left,
+                relation="below",
+                target=left if left.z > right.z else right,
+                start_time=start_time,
+                end_time=end_time,
+            ),
+        )
+    return tuple(relations)
+
+
+def _relation_record(
+    *,
+    subject: SpatialAnchorRecord,
+    relation: SpatialRelationKind,
+    target: SpatialAnchorRecord,
+    start_time: float,
+    end_time: float,
+) -> SpatialRelationRecord:
+    return SpatialRelationRecord(
+        memory_id=(
+            f"spatial_relation:{subject.video_id}:{subject.object_label}:"
+            f"{relation}:{target.object_label}:{_format_seconds(start_time)}"
+        ),
+        video_id=subject.video_id,
+        subject=subject.object_label,
+        relation=relation,
+        object=target.object_label,
+        zone_id=subject.zone_id,
+        start_time=start_time,
+        end_time=end_time,
+        distance_m=math.dist(
+            (subject.x, subject.y, subject.z),
+            (target.x, target.y, target.z),
+        ),
+        delta_x=target.x - subject.x,
+        delta_y=target.y - subject.y,
+        delta_z=target.z - subject.z,
+    )

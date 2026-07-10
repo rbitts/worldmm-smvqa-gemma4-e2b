@@ -10,6 +10,7 @@ import pytest
 
 from worldmm_smvqa.transformers_backend import (
     TransformersGenerationError,
+    embed_transformers_image,
     generate_transformers_multimodal,
     generate_transformers_text,
 )
@@ -72,6 +73,82 @@ def test_generate_multimodal_uses_image_text_pipeline(
     assert images == [str(frame)]
 
 
+def test_generate_multimodal_reads_chat_message_output(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: real pipeline-style generated chat messages.
+    class ChatPipeline:
+        def __call__(
+            self,
+            _messages: Sequence[_ChatMessage],
+            *,
+            max_new_tokens: int,
+            do_sample: bool,
+        ) -> tuple[dict[str, object], ...]:
+            assert max_new_tokens == 256
+            assert not do_sample
+            return (
+                {
+                    "generated_text": [
+                        {"role": "user", "content": "prompt"},
+                        {
+                            "role": "assistant",
+                            "content": [{"type": "text", "text": '{"answer":"A"}'}],
+                        },
+                    ],
+                },
+            )
+
+    def chat_pipeline(_model_ref: str) -> ChatPipeline:
+        return ChatPipeline()
+
+    monkeypatch.setattr(
+        "worldmm_smvqa.transformers_backend._multimodal_pipeline",
+        chat_pipeline,
+    )
+
+    # When / Then: assistant text is extracted from message content.
+    assert (
+        generate_transformers_multimodal("prompt", "chat-model", ())
+        == '{"answer":"A"}'
+    )
+
+
+def test_embed_transformers_image_flattens_feature_pipeline_output(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Given: a fake feature-extraction pipeline with nested numeric output.
+    frame = tmp_path / "frame.jpg"
+    _ = frame.write_bytes(b"fake")
+    calls: list[tuple[str, dict[str, str]]] = []
+    images: list[str] = []
+
+    def fake_pipeline(task: str, **kwargs: str) -> _FakeEmbeddingPipeline:
+        calls.append((task, kwargs))
+        return _FakeEmbeddingPipeline(images)
+
+    fake_transformers = SimpleNamespace(pipeline=fake_pipeline)
+
+    def fake_import_module(name: str) -> SimpleNamespace:
+        assert name == "transformers"
+        return fake_transformers
+
+    monkeypatch.setattr(
+        "worldmm_smvqa.transformers_backend.importlib.import_module",
+        fake_import_module,
+    )
+
+    # When: the image embedder runs.
+    embedding = embed_transformers_image(frame, "model-ref-test-embedding")
+
+    # Then: it uses image-feature-extraction and returns a flat tuple.
+    assert embedding == (1.0, 2.0, 3.5)
+    assert images == [str(frame)]
+    assert calls[0][0] == "image-feature-extraction"
+    assert "trust_remote_code" not in calls[0][1]
+
+
 class _FakePipeline:
     def __init__(self, images: list[str]) -> None:
         self._images: list[str] = images
@@ -92,3 +169,12 @@ class _FakePipeline:
         assert max_new_tokens == 256
         assert not do_sample
         return ({"generated_text": "answer"},)
+
+
+class _FakeEmbeddingPipeline:
+    def __init__(self, images: list[str]) -> None:
+        self._images: list[str] = images
+
+    def __call__(self, image: str) -> tuple[tuple[int, float], tuple[float, ...]]:
+        self._images.append(image)
+        return ((1, 2.0), (3.5,))

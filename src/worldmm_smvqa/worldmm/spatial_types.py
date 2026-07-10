@@ -6,7 +6,16 @@ from typing import Literal, override
 
 from worldmm_smvqa.schema import FrozenModel
 
-type SpatialProvenance = Literal["pose", "gaze"]
+type SpatialProvenance = Literal["object_geometry", "pose", "slam_pose", "gaze"]
+type SpatialRelationKind = Literal[
+    "near",
+    "left_of",
+    "right_of",
+    "in_front_of",
+    "behind",
+    "above",
+    "below",
+]
 
 
 @dataclass(frozen=True, slots=True)
@@ -53,6 +62,10 @@ class SpatialAnchorRecord(FrozenModel):
     frame_refs: tuple[str, ...]
     confidence: float
     provenance: SpatialProvenance
+    geometry_frame_ref: str | None = None
+    geometry_source: SpatialProvenance | None = None
+    geometry_distance_m: float | None = None
+    geometry_embedding_ref: str | None = None
 
 
 class SpatialRelationRecord(FrozenModel):
@@ -61,11 +74,15 @@ class SpatialRelationRecord(FrozenModel):
     store: Literal["spatial"] = "spatial"
     video_id: str
     subject: str
-    relation: Literal["near"] = "near"
+    relation: SpatialRelationKind = "near"
     object: str
     zone_id: str
     start_time: float
     end_time: float
+    distance_m: float | None = None
+    delta_x: float | None = None
+    delta_y: float | None = None
+    delta_z: float | None = None
 
 
 class ObjectStateSnapshotRecord(FrozenModel):

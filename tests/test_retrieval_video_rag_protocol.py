@@ -80,9 +80,10 @@ def test_eligible_video_rag_shards_when_question_at_45s() -> None:
     # When: Video-RAG shard eligibility is computed.
     eligible = eligible_video_rag_shards(question, chunks)
 
-    # Then: only same-video shard windows fully before question time remain.
+    # Then: closed and current same-video shard windows remain.
     assert tuple(shard.chunk_id for shard in eligible) == (
         "video-a:0:30:shard_30m",
+        "video-a:30:60:shard_30m",
     )
     trace = RetrievalTrace(
         protocols=("smvqa-video-rag",),
@@ -94,7 +95,10 @@ def test_eligible_video_rag_shards_when_question_at_45s() -> None:
         causal_filtered_count=0,
         frame_ref_count=0,
     )
-    assert trace.eligible_shard_ids == ("video-a:0:30:shard_30m",)
+    assert trace.eligible_shard_ids == (
+        "video-a:0:30:shard_30m",
+        "video-a:30:60:shard_30m",
+    )
 
 
 def test_filter_records_to_shards_excludes_future_high_score_before_sorting() -> None:

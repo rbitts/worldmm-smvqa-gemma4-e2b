@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
 from worldmm_smvqa.chunking import TemporalOrderError, build_chunks
 from worldmm_smvqa.schema import (
     GazeSample,
+    ObjectMetadata,
     PoseSample,
     SourceStreamExample,
     StreamChunk,
@@ -64,6 +66,18 @@ def test_pose_sample_preserves_coordinate_convention() -> None:
     assert "horizontal" in docstring
     assert "z" in docstring
     assert "vertical" in docstring
+
+
+def test_object_geometry_requires_complete_xyz() -> None:
+    # Given / When / Then: partial object geometry is rejected at the schema edge.
+    with pytest.raises(ValidationError, match="object geometry requires x, y, and z"):
+        _ = ObjectMetadata(
+            label="mug",
+            confidence=0.9,
+            start_time=1.0,
+            end_time=2.0,
+            x=1.0,
+        )
 
 
 def test_out_of_order_pose_samples_raise_temporal_order_error() -> None:

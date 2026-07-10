@@ -119,6 +119,130 @@ def test_samples_all_available_frames_when_less_than_cap() -> None:
     assert tuple(frame.frame_ref for frame in sampled) == ("f0", "f30")
 
 
+def test_rejects_trace_shard_outside_question_video_scope() -> None:
+    # Given: a stale or malformed pack points frame sampling at an unallowed video.
+    source = SourceStreamExample(
+        video_id="outside",
+        start_time=0.0,
+        end_time=10.0,
+        frame_metadata=(
+            FrameMetadata(frame_ref="f", timestamp=1.0, description="outside"),
+        ),
+    )
+    question = QuestionRequest(
+        question_id="q",
+        video_id="primary",
+        video_ids=("primary", "allowed"),
+        question="Where is it?",
+        question_time=5.0,
+        answer_choices=(),
+    )
+    pack = EvidencePack(
+        question_id=question.question_id,
+        video_id=question.video_id,
+        requested_stores=("visual",),
+        selected_stores=("visual",),
+        evidence_budget=0,
+        evidence=(),
+        causal_filtered_count=0,
+        retrieval_trace=RetrievalTrace(
+            protocols=("smvqa-video-rag",),
+            eligible_shard_ids=("outside:0:10:shard_30m",),
+            selected_clip_ids=(),
+            policy_route="visual",
+            store_order=("visual",),
+            candidate_counts=(),
+            causal_filtered_count=0,
+            frame_ref_count=0,
+        ),
+    )
+
+    # When / Then: frame sampling does not cross the question's allowed video scope.
+    assert (
+        sample_video_frames((source,), question, pack, frame_root=Path("/frames"))
+        == ()
+    )
+
+
+def test_samples_frames_across_selected_videos() -> None:
+    # Given: selected clips map to one eligible shard in each allowed video.
+    sources = (
+        SourceStreamExample(
+            video_id="primary",
+            start_time=0.0,
+            end_time=30.0,
+            frame_metadata=tuple(
+                FrameMetadata(
+                    frame_ref=f"primary-{index}",
+                    timestamp=float(index),
+                    description="primary",
+                )
+                for index in range(6)
+            ),
+        ),
+        SourceStreamExample(
+            video_id="support",
+            start_time=0.0,
+            end_time=30.0,
+            frame_metadata=(
+                FrameMetadata(
+                    frame_ref="support-0",
+                    timestamp=0.0,
+                    description="support",
+                ),
+            ),
+        ),
+    )
+    question = QuestionRequest(
+        question_id="q-multi",
+        video_id="primary",
+        video_ids=("primary", "support"),
+        question="Where is it?",
+        question_time=31.0,
+        answer_choices=(),
+    )
+    pack = EvidencePack(
+        question_id=question.question_id,
+        video_id=question.video_id,
+        requested_stores=("visual",),
+        selected_stores=("visual",),
+        evidence_budget=0,
+        evidence=(),
+        causal_filtered_count=0,
+        retrieval_trace=RetrievalTrace(
+            protocols=("smvqa-video-rag",),
+            eligible_shard_ids=(
+                "primary:0:30:shard_30m",
+                "support:0:30:shard_30m",
+            ),
+            selected_clip_ids=(
+                "primary:0:30:clip_30s",
+                "support:0:30:clip_30s",
+            ),
+            policy_route="visual",
+            store_order=("visual",),
+            candidate_counts=(),
+            causal_filtered_count=0,
+            frame_ref_count=0,
+        ),
+    )
+
+    # When: the frame cap is smaller than the combined candidate set.
+    sampled = sample_video_frames(
+        sources,
+        question,
+        pack,
+        frame_root=Path("/frames"),
+        max_frames=4,
+    )
+
+    # Then: sparse support video remains represented.
+    assert len(sampled) == 4
+    assert "support-0" in {frame.frame_ref for frame in sampled}
+    support = next(frame for frame in sampled if frame.frame_ref == "support-0")
+    assert support.path == Path("/frames/support/support-0.jpg")
+
+
 def _question(video_id: str, *, question_time: float) -> QuestionRequest:
     return QuestionRequest(
         question_id="q",

@@ -171,12 +171,13 @@ def eligible_video_rag_shards(
     question: QuestionRequest,
     chunks: Sequence[StreamChunk],
 ) -> tuple[StreamChunk, ...]:
+    video_ids = _question_video_ids(question)
     return tuple(
         chunk
         for chunk in chunks
-        if chunk.video_id == question.video_id
+        if chunk.video_id in video_ids
         and chunk.granularity == "shard_30m"
-        and chunk.end_time <= question.question_time
+        and chunk.start_time < question.question_time
     )
 
 
@@ -223,17 +224,16 @@ def coarse_to_fine_candidates(
     use_coarse_to_fine: bool = True,
     max_clips: int = 1,
 ) -> EgobutlerCandidateSelection:
-    same_video = tuple(
-        record for record in records if record.video_id == question.video_id
-    )
+    video_ids = _question_video_ids(question)
+    same_video = tuple(record for record in records if record.video_id in video_ids)
     causal = tuple(
         record for record in same_video if record.end_time <= question.question_time
     )
     eligible_shards = tuple(
         shard
         for shard in hierarchy.shards
-        if shard.video_id == question.video_id
-        and shard.end_time <= question.question_time
+        if shard.video_id in video_ids
+        and shard.start_time < question.question_time
     )
     eligible_records = _records_inside_shard_nodes(causal, eligible_shards)
     if not use_coarse_to_fine:
@@ -276,14 +276,17 @@ def coarse_to_fine_candidates(
     )
 
 
+def _question_video_ids(question: QuestionRequest) -> tuple[str, ...]:
+    return question.video_ids or (question.video_id,)
+
+
 def _record_is_inside_shards(
     record: _ShardScopedRecord,
     eligible_shards: Sequence[StreamChunk],
 ) -> bool:
     return any(
         shard.video_id == record.video_id
-        and shard.start_time <= record.start_time
-        and record.end_time <= shard.end_time
+        and _inside_window(record, shard.start_time, shard.end_time)
         for shard in eligible_shards
     )
 
@@ -301,8 +304,7 @@ def _clip_node(
             record.memory_id
             for record in sorted(records, key=_record_sort_key)
             if record.video_id == clip.video_id
-            and clip.start_time <= record.start_time
-            and record.end_time <= clip.end_time
+            and _inside_window(record, clip.start_time, clip.end_time)
         ),
     )
 
@@ -333,16 +335,26 @@ def _select_clip_ids(
     records: Sequence[RetrievalMemoryRecord],
     max_clips: int,
 ) -> tuple[str, ...]:
-    eligible_clip_ids = {
-        clip_id
-        for shard in _rank_shards(question, eligible_shards, clips, records)
-        for clip_id in shard.clip_ids
-    }
-    ranked_clips = sorted(
-        (clip for clip in clips if clip.clip_id in eligible_clip_ids),
-        key=lambda clip: _clip_score_key(question, clip, records),
-    )
-    return tuple(clip.clip_id for clip in ranked_clips[:max_clips])
+    selected: list[str] = []
+    for video_id in _question_video_ids(question):
+        video_shards = tuple(
+            shard for shard in eligible_shards if shard.video_id == video_id
+        )
+        eligible_clip_ids = {
+            clip_id
+            for shard in _rank_shards(question, video_shards, clips, records)
+            for clip_id in shard.clip_ids
+        }
+        ranked_clips = sorted(
+            (
+                clip
+                for clip in clips
+                if clip.video_id == video_id and clip.clip_id in eligible_clip_ids
+            ),
+            key=lambda clip: _clip_score_key(question, clip, records),
+        )
+        selected.extend(clip.clip_id for clip in ranked_clips[:max_clips])
+    return tuple(selected)
 
 
 def _rank_shards(
@@ -432,11 +444,20 @@ def _records_inside_shard_nodes(
         for record in records
         if any(
             shard.video_id == record.video_id
-            and shard.start_time <= record.start_time
-            and record.end_time <= shard.end_time
+            and _inside_window(record, shard.start_time, shard.end_time)
             for shard in eligible_shards
         )
     )
+
+
+def _inside_window(
+    record: _ShardScopedRecord,
+    start_time: float,
+    end_time: float,
+) -> bool:
+    if record.start_time == record.end_time:
+        return start_time <= record.start_time < end_time
+    return record.start_time < end_time and start_time < record.end_time
 
 
 def _chunk_sort_key(chunk: StreamChunk) -> tuple[str, float, float, str]:
@@ -488,7 +509,6 @@ _STOP_WORDS: Final = frozenset(
         "the",
         "was",
         "what",
-        "where",
         "which",
         "with",
     },

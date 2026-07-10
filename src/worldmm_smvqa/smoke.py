@@ -332,6 +332,7 @@ def _run_retrieval_qa(
                 raw_outputs=backend.raw_outputs(prompt, question, pack),
                 prompt_token_count=len(prompt.split()),
                 raw_model_output_path=None,
+                evidence_pack=pack,
             ),
         )
     return tuple(packs), tuple(predictions)

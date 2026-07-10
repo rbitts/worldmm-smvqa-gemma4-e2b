@@ -18,7 +18,6 @@ COPYBACK_POLICY_NAME: Final = "copyback_policy.txt"
 REMOTE_FIELDS: Final = {
     "bastion_host": "BASTION_HOST",
     "head_node": "HEAD_NODE",
-    "job_launcher": "REMOTE_JOB_LAUNCHER",
     "data_root": "SMVQA_DATA_ROOT",
     "model_path": "GEMMA_MODEL_PATH",
     "output_root": "WORLDMM_OUTPUT_ROOT",
@@ -90,14 +89,21 @@ def plan_stdout(result: RemotePlanResult) -> str:
     plan_dir = shlex.quote(str(result.script.parent))
     remote_plan_dir = "$WORLDMM_REMOTE_REPO/remote-plan"
     sync_repo = (
-        "rsync -az --exclude .git --exclude .venv --exclude .omo ./ "
-        '"$BASTION_HOST:$WORLDMM_REMOTE_REPO/"'
+        'rsync -az -e "ssh -J $BASTION_HOST" '
+        "--exclude .git --exclude .venv --exclude .omo ./ "
+        '"$HEAD_NODE:$WORLDMM_REMOTE_REPO/"'
     )
-    sync_plan = f'rsync -az {plan_dir}/ "$BASTION_HOST:{remote_plan_dir}/"'
-    remote_shell_command = f"bash {remote_plan_dir}/{REMOTE_SCRIPT_NAME}"
+    sync_plan = (
+        f'rsync -az -e "ssh -J $BASTION_HOST" {plan_dir}/ '
+        f'"$HEAD_NODE:{remote_plan_dir}/"'
+    )
+    remote_shell_command = (
+        'cd "$WORLDMM_REMOTE_REPO" && '
+        "mkdir -p remote-plan/logs && "
+        f"/opt/slurm/bin/sbatch --parsable remote-plan/{REMOTE_SCRIPT_NAME}"
+    )
     remote_command = (
-        'ssh "$BASTION_HOST" '
-        '"$REMOTE_JOB_LAUNCHER" "$HEAD_NODE" '
+        'ssh -J "$BASTION_HOST" "$HEAD_NODE" '
         f"{shlex.quote(remote_shell_command)}"
     )
     return (
@@ -121,7 +127,7 @@ def _require_remote_placeholders(config: AppConfig) -> None:
 
 def _expected_outputs() -> ExpectedOutputs:
     return {
-        "remote_job_reference": "${REMOTE_JOB_ID_OR_PROCESS_REF}",
+        "remote_job_reference": "slurm-${SLURM_JOB_ID}",
         "metrics": ["Ans-F1", "QA-Acc", "QA-MRR"],
         "outputs": {
             "source_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/source_roots.txt",
@@ -144,14 +150,35 @@ def _expected_outputs() -> ExpectedOutputs:
                 "$WORLDMM_OUTPUT_ROOT/diagnostics/spatial_diagnostics.json"
             ),
             "ablation_without_spatial": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial.json"
+                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/"
+                "metrics/official_metrics.json"
             ),
             "ablation_protocol_legacy": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin.json"
+                "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
+                "metrics/official_metrics.json"
             ),
-            "logs": "$WORLDMM_OUTPUT_ROOT/logs",
+            "ablation_without_spatial_predictions": (
+                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/"
+                "qa/predictions.jsonl"
+            ),
+            "ablation_protocol_legacy_predictions": (
+                "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
+                "qa/predictions.jsonl"
+            ),
+            "slurm_stdout": (
+                "$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.out"
+            ),
+            "slurm_stderr": (
+                "$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.err"
+            ),
             "memory_manifest": "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json",
+            "job_metadata": "$WORLDMM_OUTPUT_ROOT/summary/job.json",
+            "slurm_job_id": "$WORLDMM_OUTPUT_ROOT/summary/slurm_job_id.txt",
             "summary": "$WORLDMM_OUTPUT_ROOT/summary/summary.txt",
+            "remote_manifest": (
+                "$WORLDMM_OUTPUT_ROOT/summary/remote_manifest.json"
+            ),
+            "final_report": "$WORLDMM_OUTPUT_ROOT/summary/final_report.md",
         },
         "copyback_allowed": [
             "metrics",

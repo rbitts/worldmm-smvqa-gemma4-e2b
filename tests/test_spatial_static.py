@@ -108,6 +108,39 @@ def test_build_object_anchors_prefers_gaze_then_interpolated_pose() -> None:
     assert notebook.frame_refs == ("spatial_video_frame_0002",)
 
 
+def test_build_object_anchors_prefers_object_geometry_over_gaze() -> None:
+    # Given: a detection has exact object geometry and an in-window gaze sample.
+    source = SourceStreamExample(
+        video_id="geo_video",
+        start_time=0.0,
+        end_time=10.0,
+        pose_samples=(PoseSample(timestamp=1.0, x=0.0, y=0.0, z=1.0),),
+        gaze_samples=(GazeSample(timestamp=2.0, x=9.0, y=9.0, z=9.0),),
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=1.0,
+                end_time=3.0,
+                x=1.0,
+                y=2.0,
+                z=0.5,
+            ),
+        ),
+    )
+
+    # When: anchors are built.
+    (anchor,) = build_object_anchors(source)
+
+    # Then: exact object geometry wins over proxy gaze/pose coordinates.
+    assert (anchor.x, anchor.y, anchor.z) == (1.0, 2.0, 0.5)
+    assert anchor.provenance == "object_geometry"
+    assert anchor.geometry_frame_ref == "geo_video_mug_1"
+    assert anchor.geometry_source == "object_geometry"
+    assert anchor.geometry_distance_m == 0.0
+    assert anchor.geometry_embedding_ref == "geometry:object_geometry:geo_video_mug_1"
+
+
 def test_derive_relations_emits_one_ordered_near_relation() -> None:
     # Given: two overlapping anchors in the same zone under the near threshold.
     anchors = build_object_anchors(_source())
@@ -125,6 +158,59 @@ def test_derive_relations_emits_one_ordered_near_relation() -> None:
     assert relation.zone_id == "zone_spatial_video_0_0"
     assert relation.start_time == 2.2
     assert relation.end_time == 3.0
+
+
+def test_derive_relations_emits_directional_geometry_relations() -> None:
+    # Given: exact object coordinates, not gaze/pose proxy coordinates.
+    source = SourceStreamExample(
+        video_id="geo_video",
+        start_time=0.0,
+        end_time=10.0,
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=1.0,
+                end_time=4.0,
+                x=0.0,
+                y=1.0,
+                z=0.7,
+            ),
+            ObjectMetadata(
+                label="notebook",
+                confidence=0.9,
+                start_time=2.0,
+                end_time=5.0,
+                x=1.0,
+                y=0.0,
+                z=0.2,
+            ),
+        ),
+    )
+
+    # When: static spatial relations are derived.
+    relations = derive_relations(build_object_anchors(source))
+
+    # Then: metric direction survives as structured relation records.
+    relation_keys = {
+        (relation.subject, relation.relation, relation.object)
+        for relation in relations
+    }
+    assert ("mug", "left_of", "notebook") in relation_keys
+    assert ("notebook", "right_of", "mug") in relation_keys
+    assert ("mug", "in_front_of", "notebook") in relation_keys
+    assert ("notebook", "behind", "mug") in relation_keys
+    assert ("mug", "above", "notebook") in relation_keys
+    assert ("notebook", "below", "mug") in relation_keys
+    left_relation = next(
+        relation for relation in relations if relation.relation == "left_of"
+    )
+    assert left_relation.distance_m == pytest.approx(1.5)
+    assert (
+        left_relation.delta_x,
+        left_relation.delta_y,
+        left_relation.delta_z,
+    ) == pytest.approx((1.0, -1.0, -0.5))
 
 
 def test_build_zones_rejects_unsorted_pose_samples() -> None:

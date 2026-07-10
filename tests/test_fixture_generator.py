@@ -120,3 +120,39 @@ def test_validate_schema_fails_when_question_time_missing(tmp_path: Path) -> Non
     # Then: validation fails and names the missing boundary field.
     assert result.returncode != 0
     assert "question_time" in result.stderr
+
+
+def test_validate_schema_rejects_question_label_drift(tmp_path: Path) -> None:
+    # Given: valid fixture whose public question text no longer matches its label.
+    fixture = tmp_path / "drifted"
+    prepare = run_cli("prepare-fixture", "--out", str(fixture))
+    assert prepare.returncode == 0
+    questions = (fixture / "questions.jsonl").read_text(encoding="utf-8")
+    _ = (fixture / "questions.jsonl").write_text(
+        questions.replace(
+            "Where is the fake mug placed?",
+            "Where did the fake mug move?",
+            1,
+        ),
+        encoding="utf-8",
+    )
+
+    # When: schema validation checks all three files together.
+    result = run_cli("validate-schema", "--input", str(fixture))
+
+    # Then: cross-file drift fails before memory generation.
+    assert result.returncode != 0
+    assert "question fields differ from label" in result.stderr
+
+
+def test_validate_schema_rejects_empty_required_file(tmp_path: Path) -> None:
+    # Given: generated fixture whose questions file was truncated.
+    fixture = tmp_path / "empty"
+    prepare = run_cli("prepare-fixture", "--out", str(fixture))
+    assert prepare.returncode == 0
+    _ = (fixture / "questions.jsonl").write_text("", encoding="utf-8")
+
+    # When / Then: preflight fails before expensive remote stages.
+    result = run_cli("validate-schema", "--input", str(fixture))
+    assert result.returncode != 0
+    assert "questions.jsonl: file has no records" in result.stderr

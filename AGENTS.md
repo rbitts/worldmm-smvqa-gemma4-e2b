@@ -6,6 +6,66 @@
 - Real training, evaluation, dataset/model download, checkpointing, and large artifact generation must run only on company resources: 10 nodes / H100 x80.
 - Training and evaluation code/configs must assume DDP/multi-node execution by default where applicable, so company GPU resources can be used fully instead of single-process fallbacks.
 
+## Company Remote Environment
+
+### Access And Network
+
+- Bastion / ProxyJump host: `sr-gpu-bastion`
+  - Access uses the company network and certificate-based ProxyJump configuration.
+  - Reuse the operator's existing SSH configuration; never commit certificates,
+    private keys, tokens, or SSH options containing credentials.
+- Slurm submission and control head node: `sr-gpu-head`
+- All compute access must pass through the bastion and head node.
+
+### Compute And Slurm
+
+- GPU nodes: `gpu-vtt-queue-st-p5-node-[1-10]`
+- GPU capacity: 8 x H100 80GB per node, 80 GPUs total.
+- Slurm partition: `gpu-vtt-queue`
+- Slurm binaries: `/opt/slurm/bin/`
+- CPU preprocessing and parallel merge nodes:
+  `cpu-prepro-queue-02-dy-m6i-node-[1-6]`
+- Use GPU nodes for model inference/training and GPU-bound memory construction.
+- Use CPU nodes for ingest, validation, retrieval preprocessing, JSONL merge,
+  metric aggregation, and report generation where GPU execution is unnecessary.
+
+### Data And Repository
+
+- Prepared dataset root:
+  `/groups/VTteam/datasets/SuperMemory-VQA/ingested/`
+- Required prepared files already present:
+  - `sources.jsonl`
+  - `questions.jsonl`
+  - `labels.jsonl`
+- Remote code repository:
+  `/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b`
+- Python virtual environment:
+  `/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b/.venv`
+- Remote Python version: 3.13.
+
+### Models And Outputs
+
+- Gemma model path: `/repo/VTteam/bongh.park/gemma-4-e2b-it`
+- Output base path: `/repo/VTteam/bongh.park/outputs`
+- Every run must use a unique run-scoped output directory such as
+  `/repo/VTteam/bongh.park/outputs/$WORLDMM_RUN_ID`; do not write multiple
+  experiments directly into the output base path.
+- Keep datasets, model files, embeddings, evidence packs, predictions, logs,
+  metrics, diagnostics, and checkpoints on company storage.
+
+### Runtime Environment Mapping
+
+- `BASTION_HOST=sr-gpu-bastion`
+- `HEAD_NODE=sr-gpu-head`
+- `SMVQA_DATA_ROOT=/groups/VTteam/datasets/SuperMemory-VQA/ingested/`
+- `WORLDMM_REMOTE_REPO=/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b`
+- `GEMMA_MODEL_PATH=/repo/VTteam/bongh.park/gemma-4-e2b-it`
+- `WORLDMM_OUTPUT_ROOT=/repo/VTteam/bongh.park/outputs/$WORLDMM_RUN_ID`
+- `WORLDMM_REMOTE_NODES=10`
+- `WORLDMM_GPUS_PER_NODE=8`
+- Activate the remote virtual environment before invoking project commands:
+  `source /repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b/.venv/bin/activate`
+
 ## Local Host Rules
 
 - Use this host for:

@@ -32,8 +32,10 @@ def test_help_lists_scaffold_commands() -> None:
         "validate-schema",
         "build-memory",
         "retrieve",
+        "retrieve-batch",
         "qa",
         "evaluate",
+        "diagnose-spatial",
         "report",
         "smoke",
         "launch-remote",
@@ -57,8 +59,7 @@ def test_launch_remote_dry_run_prints_commands_without_submit(tmp_path: Path) ->
 
     # Then: it prints the remote command and does not submit work.
     assert result.returncode == 0
-    assert 'ssh "$BASTION_HOST"' in result.stdout
-    assert "REMOTE_JOB_LAUNCHER" in result.stdout
+    assert 'ssh -J "$BASTION_HOST" "$HEAD_NODE"' in result.stdout
     assert "dry-run" in result.stdout
     assert (out_dir / "expected_outputs.json").is_file()
 

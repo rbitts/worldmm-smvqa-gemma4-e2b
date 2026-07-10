@@ -22,11 +22,13 @@ def build_qa_prompt(
     evidence = [
         {
             "memory_id": item.memory_id,
+            "video_id": item.video_id,
             "source_store": item.source_store,
             "time": [item.start_time, item.end_time],
             "retrieval_score": item.retrieval_score,
             "frame_refs": list(item.frame_refs),
             "snippet": item.snippet,
+            "geometry": item.geometry,
         }
         for item in evidence_pack.evidence
     ]

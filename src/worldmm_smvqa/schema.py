@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from math import isfinite
 from typing import ClassVar, Final, Literal, Self, override
 
 from pydantic import BaseModel, ConfigDict, model_validator
@@ -66,6 +67,19 @@ class OCRMetadata(LocalTimedModel):
 class ObjectMetadata(LocalTimedModel):
     label: str
     confidence: float
+    x: float | None = None
+    y: float | None = None
+    z: float | None = None
+
+    @model_validator(mode="after")
+    def _require_complete_position(self) -> Self:
+        coordinates = (self.x, self.y, self.z)
+        if any(value is not None for value in coordinates) and not all(
+            value is not None for value in coordinates
+        ):
+            msg = "object geometry requires x, y, and z"
+            raise ValueError(msg)
+        return self
 
 
 class PoseSample(FrozenModel):
@@ -127,6 +141,7 @@ class AnswerChoice(FrozenModel):
 class QuestionRequest(FrozenModel):
     question_id: str
     video_id: str
+    video_ids: tuple[str, ...] = ()
     question: str
     question_time: float
     answer_choices: tuple[AnswerChoice, ...]
@@ -139,6 +154,25 @@ class QALabelExample(QuestionRequest):
     verification_score: float
 
 
+class SupportingEvidence(FrozenModel):
+    memory_id: str
+    store: str
+    video_id: str
+    start_time: float
+    end_time: float
+
+    @model_validator(mode="after")
+    def _require_forward_or_point_time(self) -> Self:
+        if (
+            not isfinite(self.start_time)
+            or not isfinite(self.end_time)
+            or self.end_time < self.start_time
+        ):
+            msg = "times must be finite and end_time must be >= start_time"
+            raise ValueError(msg)
+        return self
+
+
 class PredictionRecord(FrozenModel):
     question_id: str
     answerable: bool
@@ -146,8 +180,28 @@ class PredictionRecord(FrozenModel):
     answer: str | None
     confidence: float
     supporting_memory_ids: tuple[str, ...]
+    supporting_evidence: tuple[SupportingEvidence, ...] = ()
+    retrieved_evidence: tuple[SupportingEvidence, ...] = ()
     prompt_token_count: int
     raw_model_output_path: str | None
+
+    @model_validator(mode="after")
+    def _require_matching_supporting_evidence(self) -> Self:
+        if self.supporting_evidence and tuple(
+            item.memory_id for item in self.supporting_evidence
+        ) != self.supporting_memory_ids:
+            msg = "supporting_evidence must match supporting_memory_ids in order"
+            raise ValueError(msg)
+        retrieved_ids = tuple(
+            item.memory_id for item in self.retrieved_evidence
+        )
+        if len(retrieved_ids) != len(set(retrieved_ids)):
+            msg = "retrieved_evidence contains duplicate memory IDs"
+            raise ValueError(msg)
+        if retrieved_ids and not set(self.supporting_memory_ids) <= set(retrieved_ids):
+            msg = "supporting_memory_ids must be a subset of retrieved_evidence"
+            raise ValueError(msg)
+        return self
 
 
 class MetricRecord(FrozenModel):

@@ -14,6 +14,7 @@ from worldmm_smvqa.retrieval_types import (
 def _evidence_item() -> EvidenceItem:
     return EvidenceItem(
         memory_id="memory-001",
+        video_id="fake_video_001",
         snippet="mug last seen beside the notebook",
         frame_refs=("frame-001",),
         source_store="semantic",
@@ -125,6 +126,18 @@ def test_evidence_pack_uses_documented_legacy_trace_default() -> None:
     assert parsed.retrieval_trace.candidate_counts == ()
     assert parsed.retrieval_trace.causal_filtered_count == 0
     assert parsed.retrieval_trace.frame_ref_count == 0
+
+
+def test_evidence_pack_fills_legacy_evidence_video_id() -> None:
+    # Given: a legacy pack written before evidence items carried video_id.
+    payload = _pack(_trace()).model_dump(mode="json")
+    del payload["evidence"][0]["video_id"]
+
+    # When: the legacy payload is parsed.
+    parsed = EvidencePack.model_validate(payload)
+
+    # Then: primary pack video is the only safe compatibility fallback.
+    assert parsed.evidence[0].video_id == parsed.video_id
 
 
 def test_retrieval_trace_rejects_frame_ref_count_over_cap() -> None:

@@ -6,7 +6,14 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import TYPE_CHECKING, NotRequired, Protocol, TypedDict, cast, override
+from typing import (
+    TYPE_CHECKING,
+    NotRequired,
+    Protocol,
+    TypedDict,
+    cast,
+    override,
+)
 
 if TYPE_CHECKING:
     from worldmm_smvqa.video_frames import QAVideoFrame
@@ -28,7 +35,7 @@ class _GenerationPipeline(Protocol):
         *,
         max_new_tokens: int,
         do_sample: bool,
-    ) -> Sequence[Mapping[str, str]]: ...
+    ) -> Sequence[Mapping[str, object]]: ...
 
 
 class _ContentPart(TypedDict):
@@ -49,7 +56,14 @@ class _MultimodalPipeline(Protocol):
         *,
         max_new_tokens: int,
         do_sample: bool,
-    ) -> Sequence[Mapping[str, str]]: ...
+    ) -> Sequence[Mapping[str, object]]: ...
+
+
+type _NestedFloats = float | int | Sequence["_NestedFloats"]
+
+
+class _EmbeddingPipeline(Protocol):
+    def __call__(self, image: str) -> _NestedFloats: ...
 
 
 @lru_cache(maxsize=1)
@@ -103,14 +117,58 @@ def _multimodal_pipeline(model_ref: str) -> _MultimodalPipeline:
         raise TransformersGenerationError(detail=str(exc)) from exc
 
 
+@lru_cache(maxsize=1)
+def _embedding_pipeline(model_ref: str) -> _EmbeddingPipeline:
+    try:
+        transformers = importlib.import_module("transformers")
+    except ImportError as exc:
+        raise TransformersGenerationError(
+            detail="transformers is not installed; install the 'remote' extra",
+        ) from exc
+    factory = cast(
+        "Callable[..., _EmbeddingPipeline]",
+        transformers.pipeline,
+    )
+    try:
+        return factory(
+            "image-feature-extraction",
+            model=model_ref,
+            dtype="auto",
+            **_placement(),
+        )
+    except Exception as exc:
+        raise TransformersGenerationError(detail=str(exc)) from exc
+
+
+def embed_transformers_image(path: Path, model_ref: str) -> tuple[float, ...]:
+    if not path.is_file():
+        raise TransformersGenerationError(detail=f"missing frame asset: {path}")
+    pipe = _embedding_pipeline(model_ref)
+    try:
+        rows = pipe(str(path))
+    except Exception as exc:
+        raise TransformersGenerationError(detail=str(exc)) from exc
+    return tuple(_flatten_floats(rows))
+
+
+def _flatten_floats(value: _NestedFloats) -> tuple[float, ...]:
+    match value:
+        case float() | int():
+            return (float(value),)
+        case Sequence():
+            return tuple(
+                item for entry in value for item in _flatten_floats(entry)
+            )
+
+
 def generate_transformers_text(prompt: str, model_ref: str) -> str:
     pipe = _pipeline(model_ref)
     try:
         rows = pipe(prompt, max_new_tokens=256, do_sample=False)
-        text = rows[0]["generated_text"]
+        generated = rows[0]["generated_text"]
     except Exception as exc:
         raise TransformersGenerationError(detail=str(exc)) from exc
-    return text[len(prompt) :].strip() if text.startswith(prompt) else text.strip()
+    return _generated_text(generated, prompt)
 
 
 def generate_transformers_multimodal(
@@ -132,10 +190,10 @@ def generate_transformers_multimodal(
     )
     try:
         rows = pipe(messages, max_new_tokens=256, do_sample=False)
-        text = rows[0]["generated_text"]
+        generated = rows[0]["generated_text"]
     except Exception as exc:
         raise TransformersGenerationError(detail=str(exc)) from exc
-    return text[len(prompt) :].strip() if text.startswith(prompt) else text.strip()
+    return _generated_text(generated, prompt)
 
 
 def _placement() -> Mapping[str, int | str]:
@@ -153,3 +211,39 @@ def _required_frame_path(frame: QAVideoFrame) -> Path:
     if not frame.path.is_file():
         raise TransformersGenerationError(detail=f"missing frame asset: {frame.path}")
     return frame.path
+
+
+def _generated_text(generated: object, prompt: str) -> str:
+    if isinstance(generated, str):
+        return (
+            generated[len(prompt) :].strip()
+            if generated.startswith(prompt)
+            else generated.strip()
+        )
+    if isinstance(generated, Sequence) and generated:
+        last = generated[-1]
+        if isinstance(last, Mapping):
+            message = cast("Mapping[str, object]", last)
+            return _message_content(message.get("content"))
+    raise TransformersGenerationError(
+        detail=f"unsupported generated_text payload: {type(generated).__name__}",
+    )
+
+
+def _message_content(content: object) -> str:
+    if isinstance(content, str):
+        return content.strip()
+    if isinstance(content, Sequence):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, Mapping):
+                continue
+            content_part = cast("Mapping[str, object]", item)
+            text = content_part.get("text")
+            if isinstance(text, str):
+                parts.append(text.strip())
+        if parts:
+            return "\n".join(parts)
+    raise TransformersGenerationError(
+        detail=f"unsupported assistant content: {type(content).__name__}",
+    )

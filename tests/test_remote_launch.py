@@ -12,7 +12,6 @@ REMOTE_ENV_NAMES = frozenset(
         "WORLDMM_OUTPUT_ROOT",
         "BASTION_HOST",
         "HEAD_NODE",
-        "REMOTE_JOB_LAUNCHER",
     },
 )
 
@@ -45,10 +44,10 @@ def test_launch_remote_dry_run_prints_bastion_ssh(tmp_path: Path) -> None:
         str(out_dir),
     )
 
-    # Then: the CLI prints an ssh command template and opens no connection.
+    # Then: CLI prints a head-node sbatch command and opens no connection.
     assert result.returncode == 0
-    assert 'ssh "$BASTION_HOST"' in result.stdout
-    assert '"$REMOTE_JOB_LAUNCHER"' in result.stdout
+    assert 'ssh -J "$BASTION_HOST" "$HEAD_NODE"' in result.stdout
+    assert "/opt/slurm/bin/sbatch --parsable" in result.stdout
     assert "dry-run" in result.stdout
     assert (out_dir / "run_worldmm_smvqa.sh").is_file()
 
@@ -64,7 +63,6 @@ def test_launch_remote_dry_run_requires_worldmm_output_root_config(
 remote:
   bastion_host: ${BASTION_HOST}
   head_node: ${HEAD_NODE}
-  job_launcher: ${REMOTE_JOB_LAUNCHER}
   data_root: ${SMVQA_DATA_ROOT}
   model_path: ${GEMMA_MODEL_PATH}
 """,

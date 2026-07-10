@@ -13,12 +13,14 @@ from worldmm_smvqa.cli_args import (
 )
 from worldmm_smvqa.cli_commands import (
     handle_build_memory,
+    handle_diagnose_spatial,
     handle_evaluate,
     handle_launch_remote,
     handle_prepare_fixture,
     handle_qa,
     handle_report,
     handle_retrieve,
+    handle_retrieve_batch,
     handle_smoke,
     handle_validate_schema,
 )
@@ -39,9 +41,12 @@ from worldmm_smvqa.retrieval import (
     InvalidRetrievalStoreError,
 )
 from worldmm_smvqa.smoke import NoLocalModelBackendError
+from worldmm_smvqa.transformers_backend import TransformersGenerationError
 from worldmm_smvqa.worldmm.episodic import (
     InvalidTemporalGraphError,
 )
+from worldmm_smvqa.worldmm.llm_errors import LLMMemoryError
+from worldmm_smvqa.worldmm.spatial_diagnostics import SpatialDiagnosticsError
 from worldmm_smvqa.worldmm.visual import (
     MissingGroundingError,
 )
@@ -53,8 +58,18 @@ def command_specs() -> tuple[CommandSpec, ...]:
         CommandSpec("validate-schema", "Validate schema.", handle_validate_schema),
         CommandSpec("build-memory", "Build memory placeholder.", handle_build_memory),
         CommandSpec("retrieve", "Retrieve evidence placeholder.", handle_retrieve),
+        CommandSpec(
+            "retrieve-batch",
+            "Retrieve all evidence packs.",
+            handle_retrieve_batch,
+        ),
         CommandSpec("qa", "Run QA placeholder.", handle_qa),
         CommandSpec("evaluate", "Evaluate predictions placeholder.", handle_evaluate),
+        CommandSpec(
+            "diagnose-spatial",
+            "Write spatial retrieval diagnostics.",
+            handle_diagnose_spatial,
+        ),
         CommandSpec("report", "Write report placeholder.", handle_report),
         CommandSpec("smoke", "Run local smoke placeholder.", handle_smoke),
         CommandSpec("launch-remote", "Print remote commands.", handle_launch_remote),
@@ -137,6 +152,9 @@ def main() -> int:
         TemporalOrderError,
         NoLocalModelBackendError,
         IncompleteRemoteManifestError,
+        LLMMemoryError,
+        SpatialDiagnosticsError,
+        TransformersGenerationError,
     ) as exc:
         _ = sys.stderr.write(f"{exc}\n")
         return 2

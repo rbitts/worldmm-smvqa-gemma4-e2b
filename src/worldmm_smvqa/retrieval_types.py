@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Final, Literal, Self
+from typing import Final, Literal, Self, cast
 
 from pydantic import Field, model_validator
 
@@ -21,16 +21,19 @@ class RetrievalMemoryRecord(FrozenModel):
     snippet: str
     frame_refs: tuple[str, ...]
     base_score: float = 0.0
+    geometry: dict[str, float | str] | None = None
 
 
 class EvidenceItem(FrozenModel):
     memory_id: str
+    video_id: str
     snippet: str
     frame_refs: tuple[str, ...]
     source_store: RetrievalStore
     start_time: float
     end_time: float
     retrieval_score: float
+    geometry: dict[str, float | str] | None = None
 
 
 class RetrievalCandidateCount(FrozenModel):
@@ -101,3 +104,25 @@ class EvidencePack(FrozenModel):
     retrieval_trace: RetrievalTrace = Field(
         default_factory=legacy_missing_retrieval_trace,
     )
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fill_legacy_evidence_video_ids(cls, value: object) -> object:
+        if not isinstance(value, dict):
+            return value
+        payload = cast("dict[str, object]", value)
+        video_id = payload.get("video_id")
+        evidence = payload.get("evidence")
+        if not isinstance(video_id, str) or not isinstance(evidence, (list, tuple)):
+            return payload
+        evidence_items = cast("list[object] | tuple[object, ...]", evidence)
+        updated: list[object] = []
+        for item in evidence_items:
+            if isinstance(item, dict):
+                evidence_item = cast("dict[str, object]", item)
+                if "video_id" not in evidence_item:
+                    evidence_item = {**evidence_item, "video_id": video_id}
+                updated.append(evidence_item)
+            else:
+                updated.append(item)
+        return {**payload, "evidence": tuple(updated)}

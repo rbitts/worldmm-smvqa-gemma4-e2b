@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
+from math import isfinite
 from pathlib import Path
 from typing import Final, override
 
@@ -9,7 +10,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 from worldmm_smvqa.schema import FrozenModel, PredictionRecord, QALabelExample
 
-MEMORY_ID_MIN_PARTS: Final = 3
+EVIDENCE_SPAN_PARTS: Final = 4
 
 
 @dataclass(frozen=True, slots=True)
@@ -81,7 +82,7 @@ def evaluate_predictions(
                 tuple(row.prediction.prompt_token_count for row in rows),
             ),
             memory_size=_summary(
-                tuple(len(row.prediction.supporting_memory_ids) for row in rows),
+                tuple(_retrieved_memory_count(row.prediction) for row in rows),
             ),
         ),
     )
@@ -261,9 +262,19 @@ def _memory_recall(rows: Sequence[ScoredPrediction], k: int) -> float:
     for row in rows:
         if not row.label.evidence_list:
             continue
-        expected = set(row.label.evidence_list)
-        retrieved = set(row.prediction.supporting_memory_ids[:k])
-        recall_values.append(len(expected & retrieved) / len(expected))
+        expected = tuple(
+            _label_evidence_span(row.label, raw_span)
+            for raw_span in row.label.evidence_list
+        )
+        retrieved = _retrieved_spans(row.prediction, k)
+        hits = sum(
+            any(
+                _spans_overlap(expected_span, retrieved_span)
+                for retrieved_span in retrieved
+            )
+            for expected_span in expected
+        )
+        recall_values.append(hits / len(expected))
     if not recall_values:
         return 0.0
     return sum(recall_values) / len(recall_values)
@@ -272,21 +283,87 @@ def _memory_recall(rows: Sequence[ScoredPrediction], k: int) -> float:
 def _causal_violation_count(rows: Sequence[ScoredPrediction]) -> int:
     violations = 0
     for row in rows:
-        for memory_id in row.prediction.supporting_memory_ids:
-            memory_end = _memory_end_time(memory_id)
-            if memory_end is not None and memory_end > row.label.question_time:
+        for _video_id, _start_time, end_time in _retrieved_spans(row.prediction):
+            if end_time > row.label.question_time:
                 violations += 1
     return violations
 
 
-def _memory_end_time(memory_id: str) -> float | None:
-    parts = memory_id.split(":")
-    if len(parts) < MEMORY_ID_MIN_PARTS:
+def _retrieved_spans(
+    prediction: PredictionRecord,
+    k: int | None = None,
+) -> tuple[tuple[str, float, float], ...]:
+    limit = (
+        len(prediction.retrieved_evidence or prediction.supporting_memory_ids)
+        if k is None
+        else k
+    )
+    if prediction.retrieved_evidence:
+        return tuple(
+            (item.video_id, item.start_time, item.end_time)
+            for item in prediction.retrieved_evidence[:limit]
+        )
+    if prediction.supporting_evidence:
+        return tuple(
+            (item.video_id, item.start_time, item.end_time)
+            for item in prediction.supporting_evidence[:limit]
+        )
+    return tuple(
+        span
+        for memory_id in prediction.supporting_memory_ids[:limit]
+        if (span := _parse_legacy_span(memory_id)) is not None
+    )
+
+
+def _retrieved_memory_count(prediction: PredictionRecord) -> int:
+    if prediction.retrieved_evidence:
+        return len(prediction.retrieved_evidence)
+    return len(prediction.supporting_memory_ids)
+
+
+def _label_evidence_span(
+    label: QALabelExample,
+    raw_span: str,
+) -> tuple[str, float, float]:
+    span = _parse_legacy_span(raw_span)
+    if span is None:
+        raise InvalidPredictionError(
+            label.question_id,
+            f"invalid label evidence span: {raw_span}",
+        )
+    return span
+
+
+def _parse_legacy_span(raw_span: str) -> tuple[str, float, float] | None:
+    parts = raw_span.split(":")
+    if len(parts) != EVIDENCE_SPAN_PARTS:
+        return None
+    video_id, raw_start, raw_end, store = parts
+    if not video_id or not store:
         return None
     try:
-        return float(parts[2])
+        start_time = float(raw_start)
+        end_time = float(raw_end)
     except ValueError:
         return None
+    if not isfinite(start_time) or not isfinite(end_time) or end_time <= start_time:
+        return None
+    return video_id, start_time, end_time
+
+
+def _spans_overlap(
+    left: tuple[str, float, float],
+    right: tuple[str, float, float],
+) -> bool:
+    left_video, left_start, left_end = left
+    right_video, right_start, right_end = right
+    if left_video != right_video:
+        return False
+    if left_start == left_end:
+        return right_start <= left_start <= right_end
+    if right_start == right_end:
+        return left_start <= right_start <= left_end
+    return left_start < right_end and right_start < left_end
 
 
 def _summary(values: Sequence[int]) -> SummaryStats:

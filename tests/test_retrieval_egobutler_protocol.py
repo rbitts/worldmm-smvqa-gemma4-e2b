@@ -100,6 +100,56 @@ def test_hierarchy_has_no_cross_video_edges() -> None:
     )
 
 
+def test_selects_one_clip_per_allowed_video() -> None:
+    # Given: one relevant clip in each video allowed by the question.
+    chunks = (
+        _chunk("v1:0:1800:shard_30m", "v1", 0.0, 1800.0, "shard_30m"),
+        _chunk("v1:0:30:clip_30s", "v1", 0.0, 30.0, "clip_30s"),
+        _chunk("v2:0:1800:shard_30m", "v2", 0.0, 1800.0, "shard_30m"),
+        _chunk("v2:0:30:clip_30s", "v2", 0.0, 30.0, "clip_30s"),
+    )
+    records = (
+        _record("mem-v1", "v1", 5.0, 10.0, "mug beside notebook"),
+        _record("mem-v2", "v2", 5.0, 10.0, "mug beside notebook"),
+    )
+    hierarchy = build_egobutler_hierarchy(chunks, records)
+    question = QuestionRequest(
+        question_id="q-multi",
+        video_id="v1",
+        video_ids=("v1", "v2"),
+        question="Where was the mug?",
+        question_time=1805.0,
+        answer_choices=(),
+    )
+
+    # When: coarse-to-fine selection runs with the default one-clip cap.
+    result = coarse_to_fine_candidates(question, hierarchy, records)
+
+    # Then: the cap applies per allowed video, not globally.
+    assert result.selected_clip_ids == (
+        "v1:0:30:clip_30s",
+        "v2:0:30:clip_30s",
+    )
+    assert {record.video_id for record in result.records} == {"v1", "v2"}
+
+
+def test_point_timestamp_at_clip_boundary_uses_later_clip() -> None:
+    # Given: a visual-style point record exactly at a half-open clip boundary.
+    chunks = (
+        _chunk("v1:0:1800:shard_30m", "v1", 0.0, 1800.0, "shard_30m"),
+        _chunk("v1:0:30:clip_30s", "v1", 0.0, 30.0, "clip_30s"),
+        _chunk("v1:30:60:clip_30s", "v1", 30.0, 60.0, "clip_30s"),
+    )
+    record = _record("frame-30", "v1", 30.0, 30.0, "mug")
+
+    # When: hierarchy assigns the point record to clips.
+    hierarchy = build_egobutler_hierarchy(chunks, (record,))
+
+    # Then: start-inclusive/end-exclusive semantics avoid duplicate assignment.
+    assert hierarchy.clips[0].memory_ids == ()
+    assert hierarchy.clips[1].memory_ids == ("frame-30",)
+
+
 def _chunk(
     chunk_id: str,
     video_id: str,

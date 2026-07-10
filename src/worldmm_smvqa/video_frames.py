@@ -34,6 +34,12 @@ class _ChunkSpan:
     end_time: float
 
 
+@dataclass(frozen=True, slots=True)
+class _FrameCandidate:
+    video_id: str
+    frame: FrameMetadata
+
+
 def sample_video_frames(
     sources: Sequence[SourceStreamExample],
     question: QuestionRequest,
@@ -42,60 +48,109 @@ def sample_video_frames(
     frame_root: Path | None,
     max_frames: int = RETRIEVAL_FRAME_REF_CAP,
 ) -> tuple[QAVideoFrame, ...]:
-    """Sample official-style QA frames: one relevant pre-question shard, uniform cap."""
+    """Sample official-style QA frames across selected pre-question shards."""
     if max_frames <= 0:
         return ()
-    shard = _selected_shard(pack)
-    if shard is None:
+    allowed_video_ids = frozenset(_question_video_ids(question))
+    shards = tuple(
+        shard
+        for shard in _selected_shards(pack)
+        if shard.video_id in allowed_video_ids
+    )
+    if not shards:
         return ()
-    candidates = tuple(
-        frame
-        for source in sources
-        if source.video_id == question.video_id
-        for frame in source.frame_metadata
-        if shard.start_time <= frame.timestamp < shard.end_time
-        and frame.timestamp < question.question_time
+    groups = tuple(
+        tuple(
+            _FrameCandidate(video_id=source.video_id, frame=frame)
+            for source in sources
+            if source.video_id == shard.video_id
+            for frame in source.frame_metadata
+            if shard.start_time <= frame.timestamp < shard.end_time
+            and frame.timestamp < question.question_time
+        )
+        for shard in shards
     )
     return tuple(
         QAVideoFrame(
-            frame_ref=frame.frame_ref,
-            timestamp=frame.timestamp,
-            path=_frame_path(frame_root, question.video_id, frame.frame_ref),
+            frame_ref=candidate.frame.frame_ref,
+            timestamp=candidate.frame.timestamp,
+            path=_frame_path(
+                frame_root,
+                candidate.video_id,
+                candidate.frame.frame_ref,
+            ),
         )
-        for frame in _uniform(candidates, max_frames)
+        for candidate in _balanced_sample(groups, max_frames)
     )
 
 
-def _selected_shard(pack: EvidencePack) -> _ChunkSpan | None:
-    shards: list[_ChunkSpan] = []
-    for chunk_id in pack.retrieval_trace.eligible_shard_ids:
-        shard = _parse_chunk_id(chunk_id)
-        if shard is not None:
-            shards.append(shard)
-    if not shards:
-        return None
-    clips: list[_ChunkSpan] = []
-    for chunk_id in pack.retrieval_trace.selected_clip_ids:
-        clip = _parse_chunk_id(chunk_id)
-        if clip is not None:
-            clips.append(clip)
-    for clip in clips:
-        for shard in shards:
-            if (
-                shard.video_id == clip.video_id
-                and shard.start_time <= clip.start_time
-                and clip.end_time <= shard.end_time
-            ):
-                return shard
-    return shards[0]
+def _question_video_ids(question: QuestionRequest) -> tuple[str, ...]:
+    return question.video_ids or (question.video_id,)
+
+
+def _selected_shards(pack: EvidencePack) -> tuple[_ChunkSpan, ...]:
+    shards = tuple(
+        shard
+        for chunk_id in pack.retrieval_trace.eligible_shard_ids
+        if (shard := _parse_chunk_id(chunk_id)) is not None
+    )
+    clips = tuple(
+        clip
+        for chunk_id in pack.retrieval_trace.selected_clip_ids
+        if (clip := _parse_chunk_id(chunk_id)) is not None
+    )
+    if not clips:
+        return shards
+    selected = tuple(
+        shard
+        for shard in shards
+        if any(
+            shard.video_id == clip.video_id
+            and shard.start_time <= clip.start_time
+            and clip.end_time <= shard.end_time
+            for clip in clips
+        )
+    )
+    return tuple({shard.chunk_id: shard for shard in selected}.values())
+
+
+def _balanced_sample(
+    groups: Sequence[Sequence[_FrameCandidate]],
+    max_frames: int,
+) -> tuple[_FrameCandidate, ...]:
+    populated = tuple(_uniform(group, len(group)) for group in groups if group)
+    if sum(map(len, populated)) <= max_frames:
+        return tuple(candidate for group in populated for candidate in group)
+    quotas = [0] * len(populated)
+    remaining = max_frames
+    while remaining:
+        progressed = False
+        for index, group in enumerate(populated):
+            if quotas[index] >= len(group):
+                continue
+            quotas[index] += 1
+            remaining -= 1
+            progressed = True
+            if remaining == 0:
+                break
+        if not progressed:
+            break
+    return tuple(
+        candidate
+        for group, quota in zip(populated, quotas, strict=True)
+        for candidate in _uniform(group, quota)
+    )
 
 
 def _uniform(
-    frames: Sequence[FrameMetadata],
+    frames: Sequence[_FrameCandidate],
     max_frames: int,
-) -> tuple[FrameMetadata, ...]:
+) -> tuple[_FrameCandidate, ...]:
     ordered = tuple(
-        sorted(frames, key=lambda frame: (frame.timestamp, frame.frame_ref)),
+        sorted(
+            frames,
+            key=lambda item: (item.frame.timestamp, item.frame.frame_ref),
+        ),
     )
     if len(ordered) <= max_frames:
         return ordered

@@ -59,6 +59,33 @@ def rank_output_path(out: Path, distributed: DistributedEnv) -> Path:
     return out.with_name(shard_name)
 
 
+def partial_output_path(out: Path) -> Path:
+    return out.with_name(f"{out.name}.partial")
+
+
+def load_rank_progress(out: Path) -> tuple[PredictionRecord, ...]:
+    completed = _read_predictions(out) if out.exists() else ()
+    if completed:
+        return completed
+    partial = partial_output_path(out)
+    return _read_predictions(partial) if partial.exists() else ()
+
+
+def checkpoint_rank(
+    out: Path,
+    predictions: Sequence[PredictionRecord],
+) -> None:
+    _write_predictions_atomic(partial_output_path(out), predictions)
+
+
+def complete_rank(
+    out: Path,
+    predictions: Sequence[PredictionRecord],
+) -> None:
+    _write_predictions_atomic(out, predictions)
+    partial_output_path(out).unlink(missing_ok=True)
+
+
 def wait_for_shards(out: Path, world_size: int, env: Mapping[str, str]) -> None:
     timeout_seconds = _env_int(env, "WORLDMM_QA_SHARD_TIMEOUT_SECONDS", default=3600)
     deadline = time.monotonic() + timeout_seconds
@@ -77,32 +104,15 @@ def wait_for_shards(out: Path, world_size: int, env: Mapping[str, str]) -> None:
 
 
 def merge_shards(out: Path, packs: Sequence[EvidencePack], world_size: int) -> None:
-    from worldmm_smvqa.schema import PredictionRecord  # noqa: PLC0415
-
     predictions_by_question: dict[str, PredictionRecord] = {}
     for rank in range(world_size):
         shard = rank_output_path(out, DistributedEnv(rank=rank, world_size=world_size))
-        lines = shard.read_text(encoding="utf-8").splitlines()
-        for line_number, line in enumerate(lines, start=1):
-            if not line.strip():
-                continue
-            try:
-                prediction = PredictionRecord.model_validate_json(line)
-            except ValidationError as exc:
-                detail = f"{shard}: line {line_number}: {exc}"
-                raise QAShardError(detail=detail) from exc
+        for prediction in _read_predictions(shard):
             predictions_by_question[prediction.question_id] = prediction
     ordered_predictions = tuple(
         _prediction_for_pack(pack, predictions_by_question) for pack in packs
     )
-    out.parent.mkdir(parents=True, exist_ok=True)
-    _ = out.write_text(
-        "".join(
-            f"{prediction.model_dump_json()}\n"
-            for prediction in ordered_predictions
-        ),
-        encoding="utf-8",
-    )
+    _write_predictions_atomic(out, ordered_predictions)
 
 
 def _prediction_for_pack(
@@ -123,3 +133,38 @@ def _env_int(env: Mapping[str, str], name: str, *, default: int) -> int:
         return int(raw_value)
     except ValueError as exc:
         raise QAShardError(detail=f"{name} must be an integer") from exc
+
+
+def _read_predictions(path: Path) -> tuple[PredictionRecord, ...]:
+    from worldmm_smvqa.schema import PredictionRecord  # noqa: PLC0415
+
+    predictions: list[PredictionRecord] = []
+    lines = path.read_text(encoding="utf-8").splitlines()
+    for line_number, line in enumerate(lines, start=1):
+        if not line.strip():
+            continue
+        try:
+            predictions.append(PredictionRecord.model_validate_json(line))
+        except ValidationError as exc:
+            detail = f"{path}: line {line_number}: {exc}"
+            raise QAShardError(detail=detail) from exc
+    return tuple(predictions)
+
+
+def _write_predictions_atomic(
+    path: Path,
+    predictions: Sequence[PredictionRecord],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.tmp")
+    try:
+        _ = temporary.write_text(
+            "".join(
+                f"{prediction.model_dump_json()}\n"
+                for prediction in predictions
+            ),
+            encoding="utf-8",
+        )
+        _ = temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)

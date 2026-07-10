@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -19,6 +21,8 @@ from worldmm_smvqa.worldmm.spatial_diagnostics import (
     memory_recall_at_k,
     parse_evidence_span,
     relation_accuracy,
+    relation_metric_accuracy,
+    write_spatial_retrieval_diagnostics,
 )
 from worldmm_smvqa.worldmm.spatial_types import SpatialRelationRecord
 
@@ -77,9 +81,11 @@ def _item(
     store: RetrievalStore,
     start_time: float,
     end_time: float,
+    video_id: str = "fake_video_001",
 ) -> EvidenceItem:
     return EvidenceItem(
         memory_id=memory_id,
+        video_id=video_id,
         snippet="diagnostic evidence",
         frame_refs=(),
         source_store=store,
@@ -170,6 +176,47 @@ def test_relation_accuracy_uses_exact_relation_tuples() -> None:
     assert result.precision == 0.5
     assert result.recall == 1.0
     assert result.f1 == pytest.approx(2 / 3)
+
+
+def test_relation_metric_accuracy_checks_distance_and_delta_tolerance() -> None:
+    # Given: exact relation labels plus metric geometry fields.
+    expected = (
+        ExpectedSpatialRelation(
+            video_id="spatial_video",
+            subject="mug",
+            relation="left_of",
+            object="notebook",
+            zone_id="zone_spatial_video_0_0",
+            distance_m=1.5,
+            delta_x=1.0,
+            delta_y=-1.0,
+            delta_z=-0.5,
+        ),
+    )
+    predicted = (
+        SpatialRelationRecord(
+            memory_id="spatial_relation:spatial_video:mug:left_of:notebook:2.2",
+            video_id="spatial_video",
+            subject="mug",
+            relation="left_of",
+            object="notebook",
+            zone_id="zone_spatial_video_0_0",
+            start_time=2.2,
+            end_time=3.0,
+            distance_m=1.55,
+            delta_x=1.02,
+            delta_y=-1.01,
+            delta_z=-0.52,
+        ),
+    )
+
+    # When: metric relation accuracy is computed with a realistic tolerance.
+    result = relation_metric_accuracy(predicted, expected, distance_tolerance_m=0.1)
+
+    # Then: metric agreement is counted, not just label equality.
+    assert result.true_positive == 1
+    assert result.precision == 1.0
+    assert result.recall == 1.0
 
 
 def test_expected_relations_fixture_matches_todo_3_geometry() -> None:
@@ -292,3 +339,73 @@ def test_memory_recall_at_k_groups_hits_by_store_and_protocol() -> None:
     assert result.protocol_recall_at_k["smvqa-video-rag"] == 0.75
     assert result.protocol_recall_at_k["egobutler"] == 0.75
     assert result.protocol_recall_at_k["worldmm"] == 0.75
+
+
+def test_memory_recall_uses_item_video_and_accepts_frame_points() -> None:
+    # Given: primary-video pack with evidence from another allowed video.
+    labels = (
+        _label("q_cross_video", evidence_list=("fake_video_002:20:30:visual",)),
+    )
+    packs = (
+        _pack(
+            "q_cross_video",
+            (
+                _item(
+                    "visual:fake_video_002:frame_22",
+                    store="visual",
+                    video_id="fake_video_002",
+                    start_time=22.0,
+                    end_time=22.0,
+                ),
+            ),
+        ),
+    )
+
+    # When: diagnostics score retrieval support.
+    result = memory_recall_at_k(packs, labels, 1)
+
+    # Then: cross-video point evidence is counted.
+    assert result.recall_at_k["visual"] == pytest.approx(1.0)
+
+
+def test_write_spatial_retrieval_diagnostics_emits_run_artifact(
+    tmp_path: Path,
+) -> None:
+    # Given: one causal geometry-backed spatial retrieval.
+    label = _label(
+        "q_diag",
+        evidence_list=("fake_video_001:40:50:spatial",),
+    )
+    pack = _pack(
+        "q_diag",
+        (
+            _item(
+                "spatial:anchor",
+                store="spatial",
+                start_time=42.0,
+                end_time=44.0,
+            ).model_copy(update={"geometry": {"x": 1.0}}),
+        ),
+    )
+    evidence_path = tmp_path / "evidence.jsonl"
+    label_path = tmp_path / "labels.jsonl"
+    output = tmp_path / "diagnostics.json"
+    _ = evidence_path.write_text(f"{pack.model_dump_json()}\n", encoding="utf-8")
+    _ = label_path.write_text(f"{label.model_dump_json()}\n", encoding="utf-8")
+
+    # When: production diagnostics artifact is written.
+    write_spatial_retrieval_diagnostics(evidence_path, label_path, output)
+
+    # Then: usefulness and causal counters are concrete.
+    payload = cast(
+        "dict[str, object]",
+        json.loads(output.read_text(encoding="utf-8")),
+    )
+    memory_recall = cast(
+        "dict[str, dict[str, dict[str, float]]]",
+        payload["memory_recall"],
+    )
+    assert payload["spatial_selected_packs"] == 1
+    assert payload["geometry_evidence_items"] == 1
+    assert payload["causal_violation_count"] == 0
+    assert memory_recall["1"]["recall_at_k"]["spatial"] == 1.0

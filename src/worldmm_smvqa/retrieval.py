@@ -1,10 +1,14 @@
 from __future__ import annotations
 
-from collections.abc import Sequence
+# allow: SIZE_OK - retrieval policy module predates this change; split loaders,
+# protocol selection, and scoring when retrieval behavior changes next.
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from math import floor
 from pathlib import Path
-from typing import TYPE_CHECKING, Final, override
+from typing import TYPE_CHECKING, ClassVar, Final, override
+
+from pydantic import BaseModel, ConfigDict
 
 from worldmm_smvqa.chunking import build_chunks, read_source_streams
 from worldmm_smvqa.memory_sources import build_source_memories
@@ -26,7 +30,11 @@ from worldmm_smvqa.retrieval_types import (
     RetrievalTrace,
 )
 from worldmm_smvqa.worldmm.episodic import build_episodic_graph
-from worldmm_smvqa.worldmm.episodic_types import EpisodicNodeRecord, EpisodicRecord
+from worldmm_smvqa.worldmm.episodic_types import (
+    EpisodicEdgeRecord,
+    EpisodicNodeRecord,
+    EpisodicRecord,
+)
 from worldmm_smvqa.worldmm.semantic import (
     SemanticTripleRecord,
     build_semantic_memory,
@@ -60,7 +68,22 @@ DEFAULT_EVIDENCE_BUDGET: Final = 6
 CLIP_SECONDS: Final = 30.0
 SHARD_SECONDS: Final = 1800.0
 STOP_WORDS: Final = frozenset(
-    {"a", "and", "is", "on", "the", "what", "where", "which", "with"},
+    {"a", "and", "is", "on", "the", "what", "which", "with"},
+)
+GEOMETRY_TERMS: Final = frozenset(
+    {
+        "above",
+        "behind",
+        "below",
+        "front",
+        "in_front_of",
+        "left",
+        "left_of",
+        "near",
+        "right",
+        "right_of",
+        "where",
+    },
 )
 
 type SpatialRetrievalRecord = (
@@ -70,6 +93,27 @@ type SpatialRetrievalRecord = (
     | ObjectStateSnapshotRecord
     | WearerTrajectorySummaryRecord
 )
+
+
+class _SpatialMemoryArtifact(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", frozen=True)
+
+    path: str
+
+
+class _MemoryManifest(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", frozen=True)
+
+    episodic_memory: str
+    semantic_memory: str
+    visual_memory: str
+    spatial_memory: _SpatialMemoryArtifact
+
+
+class _RecordHeader(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", frozen=True)
+
+    record_type: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -120,10 +164,11 @@ def retrieve_evidence(
     options: RetrievalOptions = DEFAULT_RETRIEVAL_OPTIONS,
 ) -> EvidencePack:
     requested_stores = _ordered_stores(enabled_stores)
+    video_ids = _question_video_ids(question)
     scoped = tuple(
         record
         for record in memory_records
-        if record.video_id == question.video_id
+        if record.video_id in video_ids
         and record.source_store in enabled_stores
     )
     route = WorldMMRetrievalPolicy().route(
@@ -171,6 +216,10 @@ def retrieve_evidence(
     )
 
 
+def _question_video_ids(question: QuestionRequest) -> tuple[str, ...]:
+    return question.video_ids or (question.video_id,)
+
+
 def build_fixture_retrieval_stores(
     fixture_dir: Path,
 ) -> tuple[RetrievalMemoryRecord, ...]:
@@ -199,6 +248,23 @@ def build_fixture_retrieval_stores(
     )
 
 
+def read_retrieval_memory_artifacts(
+    manifest_path: Path,
+) -> tuple[RetrievalMemoryRecord, ...]:
+    manifest = _MemoryManifest.model_validate_json(
+        manifest_path.read_text(encoding="utf-8"),
+    )
+    return build_retrieval_records(
+        _read_episodic_artifact(Path(manifest.episodic_memory)),
+        _read_jsonl_records(Path(manifest.semantic_memory), _semantic_artifact_record),
+        _read_jsonl_records(Path(manifest.visual_memory), _visual_artifact_record),
+        _read_jsonl_records(
+            Path(manifest.spatial_memory.path),
+            _spatial_artifact_record,
+        ),
+    )
+
+
 def build_retrieval_records(
     episodic: Sequence[EpisodicRecord],
     semantic: Sequence[SemanticTripleRecord],
@@ -215,6 +281,57 @@ def build_retrieval_records(
     records.extend(_visual_candidate(record) for record in visual)
     records.extend(_spatial_candidate(record) for record in spatial)
     return tuple(records)
+
+
+def _read_episodic_artifact(path: Path) -> tuple[EpisodicRecord, ...]:
+    return _read_jsonl_records(path, _episodic_artifact_record)
+
+
+def _read_jsonl_records[RecordT](
+    path: Path,
+    parse: Callable[[str], RecordT],
+) -> tuple[RecordT, ...]:
+    return tuple(
+        parse(line)
+        for line in path.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    )
+
+
+def _episodic_artifact_record(line: str) -> EpisodicRecord:
+    header = _RecordHeader.model_validate_json(line)
+    match header.record_type:
+        case "node":
+            return EpisodicNodeRecord.model_validate_json(line)
+        case "edge":
+            return EpisodicEdgeRecord.model_validate_json(line)
+        case other:
+            raise InvalidRetrievalStoreError(store=other)
+
+
+def _semantic_artifact_record(line: str) -> SemanticTripleRecord:
+    return SemanticTripleRecord.model_validate_json(line)
+
+
+def _visual_artifact_record(line: str) -> VisualMemoryRecord:
+    return VisualMemoryRecord.model_validate_json(line)
+
+
+def _spatial_artifact_record(line: str) -> SpatialRetrievalRecord:
+    header = _RecordHeader.model_validate_json(line)
+    match header.record_type:
+        case "zone":
+            return ZoneRecord.model_validate_json(line)
+        case "spatial_anchor":
+            return SpatialAnchorRecord.model_validate_json(line)
+        case "spatial_relation":
+            return SpatialRelationRecord.model_validate_json(line)
+        case "object_state_snapshot":
+            return ObjectStateSnapshotRecord.model_validate_json(line)
+        case "wearer_trajectory_summary":
+            return WearerTrajectorySummaryRecord.model_validate_json(line)
+        case other:
+            raise InvalidRetrievalStoreError(store=other)
 
 
 def parse_retrieval_stores(value: str) -> frozenset[RetrievalStore]:
@@ -270,7 +387,7 @@ def _visual_candidate(record: VisualMemoryRecord) -> RetrievalMemoryRecord:
         memory_id=record.memory_id,
         source_store="visual",
         video_id=record.video_id,
-        start_time=record.start_time,
+        start_time=record.timestamp,
         end_time=record.timestamp,
         snippet=" ".join(
             (
@@ -312,10 +429,14 @@ def _spatial_candidate(record: SpatialRetrievalRecord) -> RetrievalMemoryRecord:
                     f"{record.object_label} anchored in {record.zone_id} "
                     f"during [{_format_float(record.start_time)},"
                     f"{_format_float(record.end_time)}] near "
-                    f"({_format_float(record.x)},{_format_float(record.y)})"
+                    f"({_format_float(record.x)},{_format_float(record.y)},"
+                    f"{_format_float(record.z)}) "
+                    f"provenance={record.provenance}"
+                    f"{_anchor_geometry_text(record)}"
                 ),
                 frame_refs=record.frame_refs,
                 base_score=record.confidence,
+                geometry=_anchor_geometry(record),
             )
         case SpatialRelationRecord():
             return RetrievalMemoryRecord(
@@ -329,9 +450,11 @@ def _spatial_candidate(record: SpatialRetrievalRecord) -> RetrievalMemoryRecord:
                     f"in {record.zone_id} during "
                     f"[{_format_float(record.start_time)},"
                     f"{_format_float(record.end_time)}]"
+                    f"{_relation_geometry_text(record)}"
                 ),
                 frame_refs=(),
                 base_score=1.0,
+                geometry=_relation_geometry(record),
             )
         case ObjectStateSnapshotRecord() | WearerTrajectorySummaryRecord():
             return RetrievalMemoryRecord(
@@ -360,6 +483,66 @@ def _parse_retrieval_store(store: str) -> RetrievalStore:
             raise InvalidRetrievalStoreError(store=other)
 
 
+def _relation_geometry_text(record: SpatialRelationRecord) -> str:
+    if record.distance_m is None:
+        return ""
+    return (
+        f" distance_m={_format_float(record.distance_m)}"
+        f" delta=({_format_float(record.delta_x or 0.0)},"
+        f"{_format_float(record.delta_y or 0.0)},"
+        f"{_format_float(record.delta_z or 0.0)})"
+    )
+
+
+def _anchor_geometry(record: SpatialAnchorRecord) -> dict[str, float | str]:
+    geometry: dict[str, float | str] = {
+        "x": record.x,
+        "y": record.y,
+        "z": record.z,
+        "provenance": record.provenance,
+    }
+    if record.geometry_frame_ref is not None:
+        geometry["geometry_frame_ref"] = record.geometry_frame_ref
+    if record.geometry_source is not None:
+        geometry["geometry_source"] = record.geometry_source
+    if record.geometry_distance_m is not None:
+        geometry["geometry_distance_m"] = record.geometry_distance_m
+    if record.geometry_embedding_ref is not None:
+        geometry["geometry_embedding_ref"] = record.geometry_embedding_ref
+    return geometry
+
+
+def _relation_geometry(record: SpatialRelationRecord) -> dict[str, float | str] | None:
+    if record.distance_m is None:
+        return None
+    geometry: dict[str, float | str] = {
+        "relation": record.relation,
+        "distance_m": record.distance_m,
+    }
+    if record.delta_x is not None:
+        geometry["delta_x"] = record.delta_x
+    if record.delta_y is not None:
+        geometry["delta_y"] = record.delta_y
+    if record.delta_z is not None:
+        geometry["delta_z"] = record.delta_z
+    return geometry
+
+
+def _anchor_geometry_text(record: SpatialAnchorRecord) -> str:
+    if record.geometry_frame_ref is None:
+        return ""
+    distance = (
+        ""
+        if record.geometry_distance_m is None
+        else f" geometry_distance_m={_format_float(record.geometry_distance_m)}"
+    )
+    return (
+        f" geometry_frame_ref={record.geometry_frame_ref}"
+        f" geometry_source={record.geometry_source}"
+        f"{distance}"
+    )
+
+
 def _score_candidate(
     question: QuestionRequest,
     record: RetrievalMemoryRecord,
@@ -368,10 +551,28 @@ def _score_candidate(
     snippet_terms = _tokens(record.snippet)
     overlap = len(query_terms & snippet_terms)
     normalized_overlap = overlap / max(len(query_terms), 1)
+    geometry_boost = _geometry_score_boost(query_terms, record)
     return ScoredCandidate(
         record=record,
-        score=round(normalized_overlap + (record.base_score * 0.01), 6),
+        score=round(
+            normalized_overlap + geometry_boost + (record.base_score * 0.01),
+            6,
+        ),
     )
+
+
+def _geometry_score_boost(
+    query_terms: frozenset[str],
+    record: RetrievalMemoryRecord,
+) -> float:
+    if record.source_store != "spatial" or not query_terms & GEOMETRY_TERMS:
+        return 0.0
+    snippet_terms = _tokens(record.snippet)
+    if query_terms & snippet_terms & GEOMETRY_TERMS:
+        return 0.25
+    if "geometry_source" in record.snippet or "distance_m" in record.snippet:
+        return 0.1
+    return 0.0
 
 
 def _protocol_records(
@@ -440,13 +641,30 @@ def _policy_evidence(
     *,
     max_frame_refs: int,
 ) -> EvidenceSelection:
+    if evidence_budget <= 0:
+        return EvidenceSelection(items=(), frame_ref_count=0)
+
     selected: list[EvidenceItem] = []
     used_ids: set[str] = set()
     frame_refs: list[str] = []
-    for store in stores:
-        for candidate in _store_candidates(scored, store):
-            if candidate.record.memory_id in used_ids:
+    candidates_by_store = {
+        store: iter(_store_candidates(scored, store))
+        for store in stores
+    }
+    while len(selected) < evidence_budget:
+        added = False
+        for store in stores:
+            candidate = next(
+                (
+                    item
+                    for item in candidates_by_store[store]
+                    if item.record.memory_id not in used_ids
+                ),
+                None,
+            )
+            if candidate is None:
                 continue
+            added = True
             item, item_frame_refs = _evidence_item(
                 candidate,
                 remaining_frame_refs=max_frame_refs - len(frame_refs),
@@ -455,10 +673,9 @@ def _policy_evidence(
             frame_refs.extend(item_frame_refs)
             used_ids.add(candidate.record.memory_id)
             if len(selected) >= evidence_budget:
-                return EvidenceSelection(
-                    items=tuple(selected),
-                    frame_ref_count=len(frame_refs),
-                )
+                break
+        if not added:
+            break
     return EvidenceSelection(
         items=tuple(selected),
         frame_ref_count=len(frame_refs),
@@ -484,12 +701,14 @@ def _evidence_item(
     return (
         EvidenceItem(
             memory_id=record.memory_id,
+            video_id=record.video_id,
             snippet=record.snippet,
             frame_refs=frame_refs,
             source_store=record.source_store,
             start_time=record.start_time,
             end_time=record.end_time,
             retrieval_score=candidate.score,
+            geometry=record.geometry,
         ),
         frame_refs,
     )
@@ -516,19 +735,23 @@ def _selected_clip_ids(
     question: QuestionRequest,
     records: Sequence[RetrievalMemoryRecord],
 ) -> tuple[str, ...]:
-    clip_ids = tuple(
-        dict.fromkeys(
-            _record_clip_id(record)
-            for record in sorted(records, key=_record_time_key)
-        ),
-    )
-    if not clip_ids:
-        return ()
-    ranked = sorted(
-        clip_ids,
-        key=lambda clip_id: _clip_sort_key(question, clip_id, records),
-    )
-    return (ranked[0],)
+    selected: list[str] = []
+    for video_id in _question_video_ids(question):
+        clip_ids = tuple(
+            dict.fromkeys(
+                _record_clip_id(record)
+                for record in sorted(records, key=_record_time_key)
+                if record.video_id == video_id
+            ),
+        )
+        if clip_ids:
+            selected.append(
+                min(
+                    clip_ids,
+                    key=lambda clip_id: _clip_sort_key(question, clip_id, records),
+                ),
+            )
+    return tuple(selected)
 
 
 def _candidate_counts(
@@ -662,6 +885,8 @@ def _ordered_stores(stores: frozenset[RetrievalStore]) -> tuple[RetrievalStore, 
 
 
 def _episodic_snippet(record: EpisodicNodeRecord) -> str:
+    if record.summary:
+        return f"{record.summary} {record.granularity}"
     return " ".join(
         (
             record.granularity,

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+# allow: SIZE_OK - command router module predates this change; split by command group
+# when the CLI surface grows again.
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
@@ -34,10 +36,18 @@ from worldmm_smvqa.retrieval import (
     build_fixture_retrieval_stores,
     injected_future_memory,
     parse_retrieval_stores,
+    read_retrieval_memory_artifacts,
     retrieve_evidence,
 )
 from worldmm_smvqa.smoke import run_smoke_pipeline, smoke_stdout
 from worldmm_smvqa.worldmm.episodic import write_fixture_episodic_memory
+from worldmm_smvqa.worldmm.llm_memory_io import (
+    LLMMemoryBindings,
+    qwen_bindings,
+    write_llm_episodic_memory,
+    write_llm_semantic_memory,
+    write_llm_visual_memory,
+)
 from worldmm_smvqa.worldmm.semantic import write_fixture_semantic_memory
 from worldmm_smvqa.worldmm.spatial import (
     build_object_anchors,
@@ -46,15 +56,20 @@ from worldmm_smvqa.worldmm.spatial import (
     build_zones,
     derive_relations,
 )
+from worldmm_smvqa.worldmm.spatial_diagnostics import (
+    write_spatial_retrieval_diagnostics,
+)
 from worldmm_smvqa.worldmm.visual import write_fixture_visual_memory
 
 if TYPE_CHECKING:
+    from worldmm_smvqa.retrieval_types import EvidencePack, RetrievalMemoryRecord
     from worldmm_smvqa.schema import QuestionRequest, StreamChunk
     from worldmm_smvqa.worldmm.spatial_types import ZoneRecord
 
 SUPPORTED_BUILD_STORES: Final = frozenset(
     {"episodic", "semantic", "visual", "spatial"},
 )
+SUPPORTED_MEMORY_BACKENDS: Final = frozenset({"mock", "qwen"})
 DEFAULT_RETRIEVAL_STORES: Final = "episodic,semantic,visual,spatial"
 DEFAULT_MAX_FRAME_REFS: Final = 32
 
@@ -69,6 +84,8 @@ def handle_validate_schema(args: ParsedArgs) -> CommandResult:
 
 def handle_build_memory(args: ParsedArgs) -> CommandResult:
     _config = load_config(args.config)
+    if args.backend not in SUPPORTED_MEMORY_BACKENDS:
+        raise CliUsageError(detail=f"unsupported build-memory backend: {args.backend}")
     if args.stage == "chunk":
         return _handle_chunk_build(args)
     if args.stage == "source-memories":
@@ -100,7 +117,11 @@ def handle_retrieve(args: ParsedArgs) -> CommandResult:
     chunks = _retrieval_chunks(fixture_dir, args.retrieval_protocol)
     _validate_max_frame_refs(args.max_frame_refs)
     question = _read_fixture_question(fixture_dir, args.question)
-    memories = build_fixture_retrieval_stores(fixture_dir)
+    memories = (
+        read_retrieval_memory_artifacts(args.input)
+        if args.input is not None
+        else build_fixture_retrieval_stores(fixture_dir)
+    )
     if args.inject_future_memory:
         memories = (*memories, injected_future_memory(question))
     pack = retrieve_evidence(
@@ -123,6 +144,70 @@ def handle_retrieve(args: ParsedArgs) -> CommandResult:
             f"protocol={args.retrieval_protocol} "
             f"evidence={len(pack.evidence)} "
             f"causal_filtered_count={pack.causal_filtered_count}\n"
+        ),
+    )
+
+
+def handle_retrieve_batch(args: ParsedArgs) -> CommandResult:
+    _config = load_config(args.config)
+    if args.out is None:
+        raise CliUsageError(detail="retrieve-batch requires --out")
+    fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
+    stores = parse_retrieval_stores(args.store or DEFAULT_RETRIEVAL_STORES)
+    chunks = _retrieval_chunks(fixture_dir, args.retrieval_protocol)
+    _validate_max_frame_refs(args.max_frame_refs)
+    questions = read_fixture_questions(fixture_dir)
+    memories = (
+        read_retrieval_memory_artifacts(args.input)
+        if args.input is not None
+        else build_fixture_retrieval_stores(fixture_dir)
+    )
+    memories_by_video: dict[str, list[RetrievalMemoryRecord]] = {}
+    for memory in memories:
+        memories_by_video.setdefault(memory.video_id, []).append(memory)
+    chunks_by_video: dict[str, list[StreamChunk]] = {}
+    for chunk in chunks or ():
+        chunks_by_video.setdefault(chunk.video_id, []).append(chunk)
+    packs: list[EvidencePack] = []
+    for question in questions:
+        video_ids = tuple(
+            dict.fromkeys(question.video_ids or (question.video_id,)),
+        )
+        question_memories = tuple(
+            memory
+            for video_id in video_ids
+            for memory in memories_by_video.get(video_id, ())
+        )
+        question_chunks = (
+            None
+            if chunks is None
+            else tuple(
+                chunk
+                for video_id in video_ids
+                for chunk in chunks_by_video.get(video_id, ())
+            )
+        )
+        packs.append(
+            retrieve_evidence(
+                question,
+                (
+                    (*question_memories, injected_future_memory(question))
+                    if args.inject_future_memory
+                    else question_memories
+                ),
+                enabled_stores=stores,
+                options=RetrievalOptions(
+                    chunks=question_chunks,
+                    max_frame_refs=args.max_frame_refs,
+                ),
+            ),
+        )
+    _write_evidence_packs_atomic(args.out, tuple(packs))
+    return CommandResult(
+        stdout=(
+            f"wrote {args.out}\n"
+            f"evidence_packs={len(packs)} memories={len(memories)} "
+            f"protocol={args.retrieval_protocol}\n"
         ),
     )
 
@@ -175,6 +260,18 @@ def handle_evaluate(args: ParsedArgs) -> CommandResult:
     metrics = evaluate_prediction_files(args.pred, args.labels)
     write_metrics(metrics, args.out)
     return CommandResult(stdout=metrics_stdout(metrics, args.out))
+
+
+def handle_diagnose_spatial(args: ParsedArgs) -> CommandResult:
+    _config = load_config(args.config)
+    if args.input is None:
+        raise CliUsageError(detail="diagnose-spatial requires --input")
+    if args.labels is None:
+        raise CliUsageError(detail="diagnose-spatial requires --labels")
+    if args.out is None:
+        raise CliUsageError(detail="diagnose-spatial requires --out")
+    write_spatial_retrieval_diagnostics(args.input, args.labels, args.out)
+    return CommandResult(stdout=f"wrote {args.out}\n")
 
 
 def handle_report(args: ParsedArgs) -> CommandResult:
@@ -252,7 +349,11 @@ def _handle_episodic_build(args: ParsedArgs) -> CommandResult:
     if args.out is None:
         raise CliUsageError(detail="build-memory --store episodic requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
-    summary = write_fixture_episodic_memory(fixture_dir, args.out)
+    if args.backend == "qwen":
+        bindings = _llm_bindings(args)
+        summary = write_llm_episodic_memory(fixture_dir, args.out, bindings.generate)
+    else:
+        summary = write_fixture_episodic_memory(fixture_dir, args.out)
     return CommandResult(
         stdout=(
             f"wrote {summary.path}\n"
@@ -267,19 +368,44 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
         raise CliUsageError(detail="build-memory semantic/visual requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
     stores = _requested_stores(args.store or "")
+    bindings = _llm_bindings(args) if args.backend == "qwen" else None
     args.out.mkdir(parents=True, exist_ok=True)
     semantic_records = 0
     visual_records = 0
     spatial_records = 0
     if "semantic" in stores:
-        semantic = write_fixture_semantic_memory(
-            fixture_dir,
-            args.out / "semantic.jsonl",
-        )
-        semantic_records = semantic.records
+        if bindings is not None:
+            if args.input is None:
+                detail = (
+                    "build-memory --backend qwen semantic requires "
+                    "--input <episodic.jsonl>"
+                )
+                raise CliUsageError(
+                    detail=detail,
+                )
+            semantic_records = write_llm_semantic_memory(
+                args.input,
+                args.out / "semantic.jsonl",
+                bindings.generate,
+            ).records
+        else:
+            semantic_records = write_fixture_semantic_memory(
+                fixture_dir,
+                args.out / "semantic.jsonl",
+            ).records
     if "visual" in stores:
-        visual = write_fixture_visual_memory(fixture_dir, args.out / "visual.jsonl")
-        visual_records = visual.records
+        if bindings is not None:
+            visual_records = write_llm_visual_memory(
+                fixture_dir,
+                args.out / "visual.jsonl",
+                frame_root=_frame_root(fixture_dir),
+                caption=bindings.caption,
+            ).records
+        else:
+            visual_records = write_fixture_visual_memory(
+                fixture_dir,
+                args.out / "visual.jsonl",
+            ).records
     if "spatial" in stores:
         spatial_records = _write_fixture_spatial_memory(
             fixture_dir,
@@ -296,6 +422,31 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
 
 def _requested_stores(value: str) -> frozenset[str]:
     return frozenset(part.strip() for part in value.split(",") if part.strip())
+
+
+def _write_evidence_packs_atomic(
+    path: Path,
+    packs: tuple[EvidencePack, ...],
+) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        _ = temporary.write_text(
+            "".join(f"{pack.model_dump_json()}\n" for pack in packs),
+            encoding="utf-8",
+        )
+        _ = temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _llm_bindings(args: ParsedArgs) -> LLMMemoryBindings:
+    require_remote(load_config(args.config), "build-memory llm", os.environ)
+    return qwen_bindings(os.environ)
+
+
+def _frame_root(fixture_dir: Path) -> Path:
+    return Path(os.environ.get("SMVQA_FRAME_ROOT", str(fixture_dir / "frames")))
 
 
 def _write_fixture_spatial_memory(fixture_dir: Path, output: Path) -> int:

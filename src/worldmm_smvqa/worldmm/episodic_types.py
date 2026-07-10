@@ -41,6 +41,7 @@ class EpisodicNodeRecord(FrozenModel):
     frame_refs: tuple[str, ...]
     confidence: float
     text_embedding_id: str
+    summary: str = ""
 
 
 class EpisodicEdgeRecord(FrozenModel):

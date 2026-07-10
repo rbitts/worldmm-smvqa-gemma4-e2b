@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 from pathlib import Path
@@ -9,13 +10,16 @@ from worldmm_smvqa.fixtures import read_fixture_questions, tiny_fixture_examples
 from worldmm_smvqa.retrieval import (
     RetrievalOptions,
     build_fixture_retrieval_stores,
+    build_retrieval_records,
     retrieve_evidence,
 )
 from worldmm_smvqa.retrieval_types import (
     EvidencePack,
     RetrievalMemoryRecord,
 )
-from worldmm_smvqa.schema import QuestionRequest
+from worldmm_smvqa.schema import QuestionRequest, StreamChunk
+from worldmm_smvqa.worldmm.semantic import SemanticTripleRecord
+from worldmm_smvqa.worldmm.visual import VisualMemoryRecord
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -98,6 +102,116 @@ def test_retrieve_evidence_respects_store_subset_ablation() -> None:
     assert {item.source_store for item in pack.evidence} == {"visual"}
 
 
+def test_visual_retrieval_interval_is_frame_timestamp() -> None:
+    # Given: a visual memory whose source stream spans much more than one frame.
+    visual = VisualMemoryRecord(
+        memory_id="visual:v1:f42:42",
+        video_id="v1",
+        frame_ref="f42",
+        timestamp=42.0,
+        start_time=0.0,
+        end_time=100.0,
+        embedding_ref="embedding:f42",
+        ocr_refs=(),
+        object_refs=("mug",),
+        timestamp_grounding="v1@42",
+        source_frame_description="mug on desk",
+    )
+
+    # When: retrieval records are built.
+    record = build_retrieval_records((), (), (visual,))[0]
+
+    # Then: clip/shard assignment uses the frame point, not the full source span.
+    assert record.start_time == record.end_time == 42.0
+
+
+def test_retrieve_evidence_round_robins_available_stores() -> None:
+    # Given: the first routed store has enough records to consume the whole budget.
+    question = QuestionRequest(
+        question_id="q-fair",
+        video_id="v1",
+        question="Where was the mug?",
+        question_time=1900.0,
+        answer_choices=(),
+    )
+    records = (
+        RetrievalMemoryRecord(
+            memory_id="episodic-1",
+            source_store="episodic",
+            video_id="v1",
+            start_time=1.0,
+            end_time=2.0,
+            snippet="mug in room",
+            frame_refs=(),
+            base_score=10.0,
+        ),
+        RetrievalMemoryRecord(
+            memory_id="episodic-2",
+            source_store="episodic",
+            video_id="v1",
+            start_time=3.0,
+            end_time=4.0,
+            snippet="mug in room",
+            frame_refs=(),
+            base_score=9.0,
+        ),
+        RetrievalMemoryRecord(
+            memory_id="semantic-1",
+            source_store="semantic",
+            video_id="v1",
+            start_time=5.0,
+            end_time=6.0,
+            snippet="mug beside notebook",
+            frame_refs=(),
+            base_score=1.0,
+        ),
+    )
+
+    # When: evidence budget can hold one candidate from each routed store.
+    pack = retrieve_evidence(
+        question,
+        records,
+        enabled_stores=frozenset({"episodic", "semantic"}),
+        options=RetrievalOptions(evidence_budget=2),
+    )
+
+    # Then: the first store cannot starve the next store.
+    assert tuple(item.source_store for item in pack.evidence) == (
+        "episodic",
+        "semantic",
+    )
+
+
+def test_where_survives_retrieval_tokenization() -> None:
+    # Given: geometry wording is the only lexical overlap.
+    question = QuestionRequest(
+        question_id="q-where",
+        video_id="v1",
+        question="Where?",
+        question_time=1900.0,
+        answer_choices=(),
+    )
+    record = RetrievalMemoryRecord(
+        memory_id="spatial-where",
+        source_store="spatial",
+        video_id="v1",
+        start_time=1.0,
+        end_time=2.0,
+        snippet="where",
+        frame_refs=(),
+    )
+
+    # When: spatial evidence is scored.
+    pack = retrieve_evidence(
+        question,
+        (record,),
+        enabled_stores=frozenset({"spatial"}),
+    )
+
+    # Then: "where" contributes lexical and geometry score.
+    assert pack.evidence[0].retrieval_score > 1.0
+
+
 def test_retrieve_evidence_returns_spatial_for_q_fake_005() -> None:
     # Given: q_fake_005 asks for pre-question spatial placement evidence.
     _sources, labels = tiny_fixture_examples()
@@ -136,8 +250,8 @@ def test_retrieve_evidence_returns_spatial_for_q_fake_005() -> None:
     assert pack.retrieval_trace.frame_ref_count <= 32
 
 
-def test_retrieve_evidence_has_no_candidates_before_first_shard_closes() -> None:
-    # Given: q_fake_001 is asked before any real 30m shard has closed.
+def test_retrieve_evidence_uses_causal_records_from_current_shard() -> None:
+    # Given: q_fake_001 is asked inside the first 30m shard.
     fixture_dir = Path("tests/fixtures/tiny_smvqa")
     question = next(
         item for item in read_fixture_questions(fixture_dir)
@@ -164,10 +278,11 @@ def test_retrieve_evidence_has_no_candidates_before_first_shard_closes() -> None
         options=RetrievalOptions(evidence_budget=6, chunks=chunks),
     )
 
-    # Then: no synthetic first shard admits pre-45s memories.
-    assert pack.evidence == ()
-    assert pack.retrieval_trace.eligible_shard_ids == ()
-    assert pack.retrieval_trace.selected_clip_ids == ()
+    # Then: current shard is allowed, but only records ending before 45s survive.
+    assert any(item.memory_id == early_memory.memory_id for item in pack.evidence)
+    assert pack.retrieval_trace.eligible_shard_ids
+    assert pack.retrieval_trace.selected_clip_ids
+    assert all(item.end_time <= question.question_time for item in pack.evidence)
     assert pack.causal_filtered_count > 0
 
 
@@ -250,6 +365,83 @@ def test_retrieve_evidence_omits_spatial_when_store_disabled() -> None:
     assert "spatial" not in pack.retrieval_trace.store_order
 
 
+def test_retrieve_evidence_scopes_to_question_video_ids() -> None:
+    # Given: a SuperMemory-style question whose evidence can live in another session.
+    question = QuestionRequest(
+        question_id="q-cross-video",
+        video_id="primary-video",
+        video_ids=("primary-video", "support-video"),
+        question="Where was the red mug?",
+        question_time=1900.0,
+        answer_choices=(),
+    )
+    support = RetrievalMemoryRecord(
+        memory_id="support-hit",
+        source_store="semantic",
+        video_id="support-video",
+        start_time=120.0,
+        end_time=130.0,
+        snippet="red mug on shelf",
+        frame_refs=(),
+        base_score=10.0,
+    )
+    outside = RetrievalMemoryRecord(
+        memory_id="outside-hit",
+        source_store="semantic",
+        video_id="outside-video",
+        start_time=120.0,
+        end_time=130.0,
+        snippet="red mug on shelf",
+        frame_refs=(),
+        base_score=100.0,
+    )
+    future = RetrievalMemoryRecord(
+        memory_id="future-hit",
+        source_store="semantic",
+        video_id="support-video",
+        start_time=1901.0,
+        end_time=1902.0,
+        snippet="red mug on shelf",
+        frame_refs=(),
+        base_score=1000.0,
+    )
+    chunks = (
+        StreamChunk(
+            chunk_id="support-video:0:1800:shard_30m",
+            video_id="support-video",
+            start_time=0.0,
+            end_time=1800.0,
+            granularity="shard_30m",
+        ),
+        StreamChunk(
+            chunk_id="support-video:120:150:clip_30s",
+            video_id="support-video",
+            start_time=120.0,
+            end_time=150.0,
+            granularity="clip_30s",
+        ),
+    )
+
+    # When: protocol-aware retrieval runs.
+    pack = retrieve_evidence(
+        question,
+        (support, outside, future),
+        enabled_stores=frozenset({"semantic"}),
+        options=RetrievalOptions(evidence_budget=3, chunks=chunks),
+    )
+
+    # Then: listed sessions are searched, unlisted sessions and future evidence are not.
+    memory_ids = {item.memory_id for item in pack.evidence}
+    assert "support-hit" in memory_ids
+    assert "outside-hit" not in memory_ids
+    assert "future-hit" not in memory_ids
+    support_item = next(
+        item for item in pack.evidence if item.memory_id == "support-hit"
+    )
+    assert support_item.video_id == "support-video"
+    assert pack.causal_filtered_count == 1
+
+
 def test_retrieve_cli_writes_evidence_pack(tmp_path: Path) -> None:
     # Given: the checked-in tiny fixture and requested CLI shape.
     output = tmp_path / "evidence_pack.json"
@@ -277,6 +469,103 @@ def test_retrieve_cli_writes_evidence_pack(tmp_path: Path) -> None:
     assert pack.evidence
     assert "stores=episodic,semantic,visual" in result.stdout
     assert "causal_filtered_count=" in result.stdout
+
+
+def test_retrieve_cli_uses_manifest_memory_artifacts(tmp_path: Path) -> None:
+    # Given: a memory manifest with one semantic artifact not present in fixture memory.
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    episodic = memory_dir / "episodic.jsonl"
+    semantic = memory_dir / "semantic.jsonl"
+    visual = memory_dir / "visual.jsonl"
+    spatial = memory_dir / "spatial.jsonl"
+    _ = episodic.write_text("", encoding="utf-8")
+    _ = visual.write_text("", encoding="utf-8")
+    _ = spatial.write_text("", encoding="utf-8")
+    artifact_memory_id = "semantic:artifact-only:mug"
+    _ = semantic.write_text(
+        SemanticTripleRecord(
+            memory_id=artifact_memory_id,
+            video_id="fake_video_001",
+            subject="mug",
+            predicate="placed",
+            object="beside notebook",
+            text="mug placed beside notebook",
+            support_memory_ids=("artifact-source",),
+            support_event_count=1,
+            start_time=0.0,
+            end_time=30.0,
+            confidence=1.0,
+            text_embedding_id="embedding:artifact-only",
+        ).model_dump_json()
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "memory_manifest.json"
+    _ = manifest.write_text(
+        json.dumps(
+            {
+                "episodic_memory": str(episodic),
+                "semantic_memory": str(semantic),
+                "visual_memory": str(visual),
+                "spatial_memory": {"path": str(spatial), "count": 0},
+            },
+        ),
+        encoding="utf-8",
+    )
+    output = tmp_path / "artifact_pack.json"
+
+    # When: retrieval is pointed at the manifest.
+    result = run_cli(
+        "retrieve",
+        "--fixture",
+        "tests/fixtures/tiny_smvqa",
+        "--input",
+        str(manifest),
+        "--question",
+        "q_fake_001",
+        "--stores",
+        "semantic",
+        "--retrieval-protocol",
+        "legacy-round-robin",
+        "--out",
+        str(output),
+    )
+
+    # Then: the evidence comes from the artifact, not rebuilt fixture stores.
+    assert result.returncode == 0, result.stderr
+    pack = EvidencePack.model_validate_json(output.read_text(encoding="utf-8"))
+    assert tuple(item.memory_id for item in pack.evidence) == (artifact_memory_id,)
+
+
+def test_retrieve_batch_cli_atomically_writes_all_packs(tmp_path: Path) -> None:
+    # Given: a stale output at the production evidence-pack path.
+    output = tmp_path / "evidence_packs.jsonl"
+    _ = output.write_text("stale\n", encoding="utf-8")
+
+    # When: batch retrieval processes the full question fixture.
+    result = run_cli(
+        "retrieve-batch",
+        "--fixture",
+        "tests/fixtures/tiny_smvqa",
+        "--stores",
+        "episodic,semantic,visual,spatial",
+        "--retrieval-protocol",
+        "legacy-round-robin",
+        "--out",
+        str(output),
+    )
+
+    # Then: one complete JSONL replacement contains every question exactly once.
+    assert result.returncode == 0, result.stderr
+    packs = tuple(
+        EvidencePack.model_validate_json(line)
+        for line in output.read_text(encoding="utf-8").splitlines()
+    )
+    assert len(packs) == 6
+    assert len({pack.question_id for pack in packs}) == 6
+    assert not tuple(tmp_path.glob(f".{output.name}.*.tmp"))
+    assert "evidence_packs=6" in result.stdout
 
 
 def test_retrieve_cli_worldmm_smvqa_protocol_emits_trace(

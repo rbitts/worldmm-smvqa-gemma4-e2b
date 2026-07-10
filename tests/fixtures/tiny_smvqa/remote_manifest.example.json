@@ -8,7 +8,7 @@
     "src/worldmm_smvqa/cli.py",
     "README.md"
   ],
-  "remote_command": "ssh \"$BASTION_HOST\" \"cd \\\"$WORLDMM_REMOTE_REPO\\\" && \\\"$REMOTE_JOB_LAUNCHER\\\" \\\"$WORLDMM_OUTPUT_ROOT/plans/run_worldmm_smvqa.sh\\\"\"",
+  "remote_command": "/opt/slurm/bin/sbatch remote-plan/run_worldmm_smvqa.sh",
   "remote_job_reference": "not-run/pending-user-approval",
   "remote_artifact_path": "$WORLDMM_OUTPUT_ROOT/worldmm-smvqa/${WORLDMM_RUN_ID}",
   "metrics": [],

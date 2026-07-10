@@ -11,7 +11,12 @@ from worldmm_smvqa.metrics import (
     evaluate_prediction_files,
     evaluate_predictions,
 )
-from worldmm_smvqa.schema import AnswerChoice, PredictionRecord, QALabelExample
+from worldmm_smvqa.schema import (
+    AnswerChoice,
+    PredictionRecord,
+    QALabelExample,
+    SupportingEvidence,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -91,6 +96,141 @@ def test_duplicate_ranked_choices_fail_when_prediction_is_malformed() -> None:
         _ = evaluate_predictions(labels, predictions)
 
 
+def test_memory_recall_uses_structured_temporal_overlap() -> None:
+    # Given: an opaque memory ID whose structured span overlaps label evidence.
+    labels = (label("q_overlap", answer="A", is_answerable=True),)
+    predictions = (
+        prediction(
+            "q_overlap",
+            ranked_choices=("A", "B"),
+            supporting_memory_ids=("semantic:opaque",),
+            supporting_evidence=(
+                SupportingEvidence(
+                    memory_id="semantic:opaque",
+                    store="semantic",
+                    video_id="fake_video_001",
+                    start_time=10.0,
+                    end_time=15.0,
+                ),
+            ),
+        ),
+    )
+
+    # When: retrieval metrics are computed.
+    metrics = evaluate_predictions(labels, predictions)
+
+    # Then: positive temporal overlap counts despite different ID formats.
+    assert metrics.memory_recall_at_1 == pytest.approx(1.0)
+
+
+def test_memory_recall_accepts_visual_point_inside_label_span() -> None:
+    # Given: frame evidence represented by one timestamp inside label evidence.
+    labels = (label("q_frame", answer="A", is_answerable=True),)
+    predictions = (
+        prediction(
+            "q_frame",
+            ranked_choices=("A", "B"),
+            supporting_memory_ids=("visual:frame",),
+            supporting_evidence=(
+                SupportingEvidence(
+                    memory_id="visual:frame",
+                    store="visual",
+                    video_id="fake_video_001",
+                    start_time=8.0,
+                    end_time=8.0,
+                ),
+            ),
+        ),
+    )
+
+    # When: retrieval metrics compare temporal support.
+    metrics = evaluate_predictions(labels, predictions)
+
+    # Then: point evidence counts as overlapping [5, 12].
+    assert metrics.memory_recall_at_1 == pytest.approx(1.0)
+
+
+def test_memory_recall_uses_full_retrieval_not_model_support_subset() -> None:
+    # Given: model supports one miss, while retrieved rank 2 overlaps evidence.
+    labels = (label("q_retrieval", answer="A", is_answerable=True),)
+    miss = SupportingEvidence(
+        memory_id="miss",
+        store="semantic",
+        video_id="fake_video_001",
+        start_time=20.0,
+        end_time=25.0,
+    )
+    hit = SupportingEvidence(
+        memory_id="hit",
+        store="episodic",
+        video_id="fake_video_001",
+        start_time=6.0,
+        end_time=10.0,
+    )
+    predictions = (
+        prediction(
+            "q_retrieval",
+            ranked_choices=("A", "B"),
+            supporting_memory_ids=("miss",),
+            supporting_evidence=(miss,),
+            retrieved_evidence=(miss, hit),
+        ),
+    )
+
+    # When: retrieval recall is computed.
+    metrics = evaluate_predictions(labels, predictions)
+
+    # Then: @1 misses and @3 sees rank-2 retrieval independently of QA support.
+    assert metrics.memory_recall_at_1 == 0.0
+    assert metrics.memory_recall_at_3 == pytest.approx(1.0)
+
+
+def test_causal_violations_use_structured_end_time() -> None:
+    # Given: an opaque memory ID with structured evidence after question time.
+    labels = (label("q_future", answer="A", is_answerable=True),)
+    predictions = (
+        prediction(
+            "q_future",
+            ranked_choices=("A", "B"),
+            supporting_memory_ids=("opaque",),
+            supporting_evidence=(
+                SupportingEvidence(
+                    memory_id="opaque",
+                    store="visual",
+                    video_id="fake_video_001",
+                    start_time=44.0,
+                    end_time=46.0,
+                ),
+            ),
+        ),
+    )
+
+    # When: diagnostics are computed.
+    metrics = evaluate_predictions(labels, predictions)
+
+    # Then: structured end_time detects the violation.
+    assert metrics.diagnostics.causal_violation_count == 1
+
+
+def test_invalid_legacy_memory_id_is_not_used_as_temporal_fallback() -> None:
+    # Given: a legacy prediction without structured metadata and an invalid ID.
+    labels = (label("q_invalid_legacy", answer="A", is_answerable=True),)
+    predictions = (
+        prediction(
+            "q_invalid_legacy",
+            ranked_choices=("A", "B"),
+            supporting_memory_ids=("fake_video_001:5:inf:transcript",),
+        ),
+    )
+
+    # When: retrieval metrics are computed.
+    metrics = evaluate_predictions(labels, predictions)
+
+    # Then: malformed fallback metadata produces no recall or causal violation.
+    assert metrics.memory_recall_at_1 == 0.0
+    assert metrics.diagnostics.causal_violation_count == 0
+
+
 def test_evaluate_cli_writes_metrics_json(tmp_path: Path) -> None:
     # Given: fixture labels and predictions plus an output file.
     output = tmp_path / "metrics.json"
@@ -144,6 +284,12 @@ def label(
 def prediction(
     question_id: str,
     ranked_choices: tuple[str, ...],
+    *,
+    supporting_memory_ids: tuple[str, ...] = (
+        "fake_video_001:5:12:transcript",
+    ),
+    supporting_evidence: tuple[SupportingEvidence, ...] = (),
+    retrieved_evidence: tuple[SupportingEvidence, ...] = (),
 ) -> PredictionRecord:
     return PredictionRecord(
         question_id=question_id,
@@ -151,7 +297,9 @@ def prediction(
         ranked_choices=ranked_choices,
         answer=ranked_choices[0] if ranked_choices else None,
         confidence=0.9,
-        supporting_memory_ids=("fake_video_001:5:12:transcript",),
+        supporting_memory_ids=supporting_memory_ids,
+        supporting_evidence=supporting_evidence,
+        retrieved_evidence=retrieved_evidence,
         prompt_token_count=10,
         raw_model_output_path=None,
     )

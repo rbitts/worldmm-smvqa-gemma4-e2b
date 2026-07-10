@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from tempfile import NamedTemporaryFile
 from typing import TYPE_CHECKING, Final, Protocol, override
 
 from pydantic import ValidationError
@@ -15,11 +16,16 @@ from worldmm_smvqa.retrieval import (
     build_fixture_retrieval_stores,
     retrieve_evidence,
 )
-from worldmm_smvqa.schema import FrozenModel, PredictionRecord, QuestionRequest
+from worldmm_smvqa.schema import (
+    FrozenModel,
+    PredictionRecord,
+    QuestionRequest,
+    SupportingEvidence,
+)
 from worldmm_smvqa.video_frames import QAVideoFrame, sample_video_frames
 
 if TYPE_CHECKING:
-    from worldmm_smvqa.retrieval_types import EvidencePack, RetrievalStore
+    from worldmm_smvqa.retrieval_types import EvidenceItem, EvidencePack, RetrievalStore
     from worldmm_smvqa.schema import StreamChunk
 
 DEFAULT_MODEL_ID: Final = "google/gemma-4-E2B-it"
@@ -149,17 +155,21 @@ def parse_qa_output(
     raw_outputs: Sequence[str],
     prompt_token_count: int,
     raw_model_output_path: str | None,
+    evidence_pack: EvidencePack | None = None,
 ) -> PredictionRecord:
     attempts = raw_outputs[:PARSE_ATTEMPT_LIMIT]
     last_detail = "no model output"
     for raw_output in attempts:
         try:
-            model_output = ModelQAOutput.model_validate_json(raw_output)
+            model_output = ModelQAOutput.model_validate_json(
+                _strip_json_fence(raw_output),
+            )
             return _prediction_from_model_output(
                 question,
                 model_output,
                 prompt_token_count,
                 raw_model_output_path,
+                evidence_pack,
             )
         except (ValidationError, QAParseError) as exc:
             last_detail = str(exc)
@@ -207,6 +217,7 @@ def run_qa(
                 raw_outputs=raw_outputs,
                 prompt_token_count=_token_count(prompt),
                 raw_model_output_path=None,
+                evidence_pack=pack,
             ),
         )
     return tuple(predictions)
@@ -217,10 +228,23 @@ def write_predictions_jsonl(
     path: Path,
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    _ = path.write_text(
-        "".join(f"{prediction.model_dump_json()}\n" for prediction in predictions),
-        encoding="utf-8",
-    )
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            for prediction in predictions:
+                _ = output.write(f"{prediction.model_dump_json()}\n")
+        _ = temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _prediction_from_model_output(
@@ -228,6 +252,7 @@ def _prediction_from_model_output(
     model_output: ModelQAOutput,
     prompt_token_count: int,
     raw_model_output_path: str | None,
+    evidence_pack: EvidencePack | None,
 ) -> PredictionRecord:
     valid_choice_ids = tuple(choice.choice_id for choice in question.answer_choices)
     if tuple(dict.fromkeys(model_output.ranked_choices)) != model_output.ranked_choices:
@@ -248,6 +273,20 @@ def _prediction_from_model_output(
             attempt=1,
             detail="answer must be null or one prompt choice ID",
         )
+    if tuple(dict.fromkeys(model_output.supporting_memory_ids)) != (
+        model_output.supporting_memory_ids
+    ):
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail="supporting_memory_ids contains duplicate memory IDs",
+        )
+    supporting_evidence = _supporting_evidence(
+        question,
+        model_output.supporting_memory_ids,
+        evidence_pack,
+    )
+    retrieved_evidence = _retrieved_evidence(question, evidence_pack)
     return PredictionRecord(
         question_id=question.question_id,
         answerable=model_output.answerable,
@@ -255,8 +294,88 @@ def _prediction_from_model_output(
         answer=model_output.answer,
         confidence=model_output.confidence,
         supporting_memory_ids=model_output.supporting_memory_ids,
+        supporting_evidence=supporting_evidence,
+        retrieved_evidence=retrieved_evidence,
         prompt_token_count=prompt_token_count,
         raw_model_output_path=raw_model_output_path,
+    )
+
+
+def _supporting_evidence(
+    question: QuestionRequest,
+    memory_ids: tuple[str, ...],
+    evidence_pack: EvidencePack | None,
+) -> tuple[SupportingEvidence, ...]:
+    if evidence_pack is None:
+        return ()
+    if evidence_pack.question_id != question.question_id:
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail="evidence pack question_id does not match question",
+        )
+    valid_video_ids = (question.video_id, *question.video_ids)
+    if evidence_pack.video_id not in valid_video_ids:
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail="evidence pack video_id does not match question",
+        )
+    evidence_by_id = {item.memory_id: item for item in evidence_pack.evidence}
+    unknown = tuple(
+        memory_id for memory_id in memory_ids if memory_id not in evidence_by_id
+    )
+    if unknown:
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail=f"unknown supporting memory ID: {unknown[0]}",
+        )
+    invalid_video = next(
+        (
+            memory_id
+            for memory_id in memory_ids
+            if evidence_by_id[memory_id].video_id not in valid_video_ids
+        ),
+        None,
+    )
+    if invalid_video is not None:
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail=(
+                "supporting memory video_id is outside question scope: "
+                f"{invalid_video}"
+            ),
+        )
+    return tuple(
+        _evidence_metadata(evidence_by_id[memory_id])
+        for memory_id in memory_ids
+    )
+
+
+def _retrieved_evidence(
+    question: QuestionRequest,
+    evidence_pack: EvidencePack | None,
+) -> tuple[SupportingEvidence, ...]:
+    if evidence_pack is None:
+        return ()
+    if evidence_pack.question_id != question.question_id:
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail="evidence pack question_id does not match question",
+        )
+    return tuple(_evidence_metadata(item) for item in evidence_pack.evidence)
+
+
+def _evidence_metadata(item: EvidenceItem) -> SupportingEvidence:
+    return SupportingEvidence(
+        memory_id=item.memory_id,
+        store=item.source_store,
+        video_id=item.video_id,
+        start_time=item.start_time,
+        end_time=item.end_time,
     )
 
 
@@ -284,3 +403,13 @@ def _terms(text: str) -> frozenset[str]:
 
 def _token_count(prompt: str) -> int:
     return len(prompt.split())
+
+
+def _strip_json_fence(raw_output: str) -> str:
+    text = raw_output.strip()
+    if not text.startswith("```"):
+        return text
+    lines = text.splitlines()
+    if lines and lines[-1].strip() == "```":
+        lines = lines[:-1]
+    return "\n".join(lines[1:]).strip()
