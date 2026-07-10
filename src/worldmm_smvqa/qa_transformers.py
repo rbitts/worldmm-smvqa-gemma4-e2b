@@ -26,6 +26,7 @@ from worldmm_smvqa.qa_shards import (
     wait_for_shards,
 )
 from worldmm_smvqa.retrieval_types import EvidencePack
+from worldmm_smvqa.sensor_frames import SensorFrameManifestError
 from worldmm_smvqa.transformers_backend import TransformersGenerationError
 from worldmm_smvqa.video_frames import sample_video_frames
 
@@ -203,6 +204,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         TransformersCliUsageError,
         RemoteOnlyError,
         QAShardError,
+        SensorFrameManifestError,
         TransformersGenerationError,
         OSError,
         ValidationError,

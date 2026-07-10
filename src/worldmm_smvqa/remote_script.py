@@ -32,6 +32,10 @@ def script_text() -> str:
             ': "${WORLDMM_OUTPUT_ROOT:='
             '/repo/VTteam/bongh.park/outputs/${WORLDMM_RUN_ID}}"'
         ),
+        (
+            'WORLDMM_SENSOR_FRAME_MANIFEST="$WORLDMM_OUTPUT_ROOT/'
+            'manifests/sensor_frames.jsonl"'
+        ),
         ': "${WORLDMM_MODEL_ID:=google/gemma-4-E2B-it}"',
         ': "${WORLDMM_MEMORY_MODEL_ID:=Qwen/Qwen3-VL-8B-Instruct}"',
         (
@@ -65,6 +69,7 @@ def script_text() -> str:
             "export WORLDMM_MEMORY_MODEL_PATH WORLDMM_SLURM_STDOUT "
             "WORLDMM_SLURM_STDERR WORLDMM_MEMORY_SHARD_TIMEOUT_SECONDS"
         ),
+        "export WORLDMM_SENSOR_FRAME_MANIFEST",
         (
             "export WORLDMM_SPATIAL_TOKEN_BUDGET "
             "WORLDMM_SPATIAL_QUANTIZATION_M WORLDMM_SPATIAL_SELECTOR_PATH "
@@ -137,6 +142,8 @@ def script_text() -> str:
         "        sha256(spatial_config) if spatial_config is not None else None",
         "    ),",
         '    "spatial_selector_path": os.environ["WORLDMM_SPATIAL_SELECTOR_PATH"],',
+        '    "sensor_frame_manifest": os.environ["WORLDMM_SENSOR_FRAME_MANIFEST"],',
+        '    "sensor_rate_hz": 1.0,',
         '    "spatial_token_budget": int(',
         '        os.environ["WORLDMM_SPATIAL_TOKEN_BUDGET"]',
         "    ),",
@@ -236,13 +243,19 @@ def script_text() -> str:
         '    --out "$lane_root/metrics/official_metrics.json"',
         "}",
         "",
-        "# stage 1: prepare source manifests",
+        "# stage 1: prepare source manifests and 1 Hz sensor-frame manifest",
         (
             'worldmm-smvqa validate-schema --input "$SMVQA_DATA_ROOT" '
             "--config configs/remote.example.yaml"
         ),
         (
-            'printf "%s\\n" "$SMVQA_DATA_ROOT" > '
+            "worldmm-smvqa build-memory --stage sensor-frames "
+            "--config configs/remote.example.yaml --fixture "
+            '"$SMVQA_DATA_ROOT" --out "$WORLDMM_SENSOR_FRAME_MANIFEST"'
+        ),
+        (
+            'printf "source_root=%s\\nsensor_frame_manifest=%s\\n" '
+            '"$SMVQA_DATA_ROOT" "$WORLDMM_SENSOR_FRAME_MANIFEST" > '
             '"$WORLDMM_OUTPUT_ROOT/manifests/source_roots.txt"'
         ),
         (
@@ -301,6 +314,8 @@ def script_text() -> str:
         'spatial = root / "memory/worldmm_sv/spatial.jsonl"',
         "payload = {",
         '    "source_memories": str(root / "source_refs/source_memories.jsonl"),',
+        '    "sensor_frame_manifest": os.environ["WORLDMM_SENSOR_FRAME_MANIFEST"],',
+        '    "sensor_rate_hz": 1.0,',
         '    "episodic_memory": str(root / "memory/episodic.jsonl"),',
         '    "semantic_memory": str(root / "memory/worldmm_sv/semantic.jsonl"),',
         '    "visual_memory": str(root / "memory/worldmm_sv/visual.jsonl"),',
@@ -358,6 +373,8 @@ def script_text() -> str:
         "stdout=$WORLDMM_SLURM_STDOUT",
         "stderr=$WORLDMM_SLURM_STDERR",
         "metrics=$WORLDMM_OUTPUT_ROOT/metrics/official_metrics.json",
+        "sensor_frame_manifest=$WORLDMM_SENSOR_FRAME_MANIFEST",
+        "sensor_rate_hz=1.0",
         "spatial_compression=$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.stats.jsonl",
         (
             "ablation_without_spatial=$WORLDMM_OUTPUT_ROOT/ablation/"
@@ -397,6 +414,7 @@ def script_text() -> str:
         '    "remote_status": "complete",',
         '    "local_changes": [',
         '        "distributed memory generation",',
+        '        "shared 1 Hz sensor-frame manifest",',
         '        "causal compressed spatial memory",',
         '        "batch causal retrieval",',
         '        "resumable distributed Gemma QA",',

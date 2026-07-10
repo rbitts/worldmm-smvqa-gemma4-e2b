@@ -38,6 +38,7 @@ from worldmm_smvqa.retrieval import (
     read_retrieval_memory_artifacts,
     retrieve_evidence,
 )
+from worldmm_smvqa.sensor_frames import write_sensor_frame_manifest
 from worldmm_smvqa.smoke import run_smoke_pipeline, smoke_stdout
 from worldmm_smvqa.worldmm.episodic import write_fixture_episodic_memory
 from worldmm_smvqa.worldmm.llm_memory_io import (
@@ -85,6 +86,8 @@ def handle_build_memory(args: ParsedArgs) -> CommandResult:
     _config = load_config(args.config)
     if args.backend not in SUPPORTED_MEMORY_BACKENDS:
         raise CliUsageError(detail=f"unsupported build-memory backend: {args.backend}")
+    if args.stage == "sensor-frames":
+        return _handle_sensor_frame_manifest_build(args)
     if args.stage == "chunk":
         return _handle_chunk_build(args)
     if args.stage == "source-memories":
@@ -313,6 +316,27 @@ def handle_launch_remote(args: ParsedArgs) -> CommandResult:
         raise CliUsageError(detail="launch-remote requires --dry-run or --submit")
     result = write_remote_plan(config, args.out, os.environ, submit=args.submit)
     return CommandResult(stdout=plan_stdout(result))
+
+
+def _handle_sensor_frame_manifest_build(args: ParsedArgs) -> CommandResult:
+    if args.out is None:
+        raise CliUsageError(
+            detail="build-memory --stage sensor-frames requires --out",
+        )
+    fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
+    summary = write_sensor_frame_manifest(
+        read_source_streams(fixture_dir, use_sensor_manifest=False),
+        args.out,
+    )
+    return CommandResult(
+        stdout=(
+            f"wrote {summary.path}\n"
+            f"sensor_rate_hz={summary.sensor_rate_hz:g} "
+            f"sources={summary.source_count} "
+            f"source_frames={summary.source_frame_count} "
+            f"selected_frames={summary.selected_frame_count}\n"
+        ),
+    )
 
 
 def _handle_chunk_build(args: ParsedArgs) -> CommandResult:

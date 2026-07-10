@@ -101,7 +101,8 @@ subject to
 ## 5. 전체 구조
 
 ```text
-1 Hz image / pose / gaze / object observations
+1 Hz RGB manifest + image-grounded observations
+native-rate device pose / gaze / audio
                   |
                   v
         SpatialGeometryEncoder
@@ -139,8 +140,41 @@ visual store ------------------------------|       |
 코드상 `SpatialMemoryModel`은 encoder, projection head, token decoder, codec,
 selector와 옵션을 묶는 experiment-level composite model이다.
 
+### 5.1 Canonical 1 Hz sensor-frame manifest
+
+Memory builder마다 별도로 downsampling하지 않는다. 원본
+`sources.jsonl.frame_metadata`에서 source 시작 시각을 phase로 하는 고정 1초
+window를 만들고, 각 window의 첫 available frame만 선택한다. 선택은 timestamp만
+사용하며 질문, label, caption 내용은 사용하지 않는다. 빈 window에는 frame을
+합성하지 않으므로 실제 계약은 **at most 1 Hz**다.
+
+선택 결과는 run-scoped `manifests/sensor_frames.jsonl`에 기록한다. 각 video
+record는 다음을 포함한다.
+
+- sensor rate와 cadence origin
+- sampling policy와 1초 window index
+- 선택된 `frame_ref`, 실제 timestamp
+- 원본 frame inventory count와 SHA-256
+
+`WORLDMM_SENSOR_FRAME_MANIFEST`를 설정하면 중앙 `read_source_streams()`가 이
+manifest를 적용한다. 따라서 chunking, E/S/V/S memory 생성, retrieval, QA 32-frame
+sampling이 동일한 RGB inventory를 소비한다. Manifest와 원본 inventory가 달라지면
+실행을 중단한다.
+
+적용 시 선택되지 않은 frame과 frame-grounded OCR을 제거하고, 선택 timestamp와
+겹치지 않는 object detection도 제거한다. 기존 flat caption은 frame/timestamp
+provenance가 없으므로 sensed view에서 제외한다. 향후 caption provider는 manifest
+frame을 입력으로 사용하고 timestamp 또는 frame reference를 출력해야 한다.
+
+RGB 외 pose, gaze, audio는 목표 device가 제공하는 실제 sensor rate를 유지한다.
+이들을 1 Hz로 제한하는 별도 실험은 RGB sparse sensing과 분리한다. QA의 32-frame
+제한은 sensor rate가 아니라, 1 Hz manifest가 적용된 selected shard 위의 decoder
+input budget이다.
+
 - 구현:
   [spatial_compression.py](../src/worldmm_smvqa/worldmm/spatial_compression.py)
+- 1 Hz sensor manifest:
+  [sensor_frames.py](../src/worldmm_smvqa/sensor_frames.py)
 - 저장 schema:
   [spatial_types.py](../src/worldmm_smvqa/worldmm/spatial_types.py)
 - 기본 experiment:
@@ -553,6 +587,8 @@ artifact와 on-device mutable state의 평가 계약도 분리해야 한다.
 7. 실험 비교는 동일 evidence budget, frame budget, causal cutoff를 사용한다.
 8. 압축률 보고에는 저장 record metadata를 포함한 실제 artifact byte를 쓴다.
 9. 같은 window의 미래 후보는 이미 admission된 과거 token을 제거하지 않는다.
+10. Memory 생성과 QA frame sampling은 동일한 sensor-frame manifest를 사용한다.
+11. Manifest 선택은 question/label과 무관하며 원본 inventory 변경 시 실패한다.
 
 ## 15. 실행 예시
 
@@ -563,6 +599,15 @@ WORLDMM_SPATIAL_EXPERIMENT_CONFIG=configs/spatial/source_compact_v1.json \
 uv run worldmm-smvqa smoke \
   --fixture tests/fixtures/tiny_smvqa \
   --out /tmp/worldmm-spatial-smoke
+```
+
+1 Hz manifest 생성:
+
+```bash
+uv run worldmm-smvqa build-memory \
+  --stage sensor-frames \
+  --fixture tests/fixtures/tiny_smvqa \
+  --out /tmp/sensor_frames.jsonl
 ```
 
 Selector row 준비:

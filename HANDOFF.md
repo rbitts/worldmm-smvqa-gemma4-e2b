@@ -87,7 +87,9 @@ Before trusting remote numbers, verify all items below in the remote artifacts.
   `video_ids` pool, not only the primary `video_id`.
 - EgoButler hierarchy: retrieval traverses `shard_30m -> clip_30s -> records`.
 - Frame input: QA receives at most 32 frames sampled uniformly from the selected
-  pre-question shard.
+  pre-question shard after applying the shared 1 Hz sensor-frame manifest.
+- Sensor input: memory construction, retrieval, and QA use the same run-scoped
+  `sensor_frames.jsonl`; no unselected RGB frame is available downstream.
 - Frame scope: sampled frames must come from the selected shard video, and that
   shard video must be inside `question.video_ids` or the single-video fallback.
 - Memory input: retrieved memory snippets are passed to Gemma together with the
@@ -133,6 +135,11 @@ Accepted alternatives with the same stem: `.jpeg`, `.png`, `.webp`.
 The prepared company root already contains the three required JSONL files. Raw
 official dataset -> fixture-schema ingest remains outside this repo; rerun that
 external ingest only when rebuilding or changing the prepared dataset.
+
+`frame_metadata` is the candidate RGB inventory. Each run derives an at-most-1-Hz
+timestamp-only inventory at
+`$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl`. If prepared metadata is
+already sparser than 1 Hz, the command does not synthesize missing frames.
 
 Important SuperMemory-VQA metadata contract:
 
@@ -266,6 +273,13 @@ worldmm-smvqa validate-schema \
   --config configs/remote.example.yaml \
   --input "$SMVQA_DATA_ROOT"
 
+export WORLDMM_SENSOR_FRAME_MANIFEST="$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl"
+worldmm-smvqa build-memory \
+  --stage sensor-frames \
+  --config configs/remote.example.yaml \
+  --fixture "$SMVQA_DATA_ROOT" \
+  --out "$WORLDMM_SENSOR_FRAME_MANIFEST"
+
 wc -l \
   "$SMVQA_DATA_ROOT/sources.jsonl" \
   "$SMVQA_DATA_ROOT/questions.jsonl" \
@@ -278,6 +292,8 @@ Before expensive model work, additionally verify:
 - question IDs are unique and match between `questions.jsonl` and `labels.jsonl`
 - every `video_id`/`video_ids` entry exists in `sources.jsonl`
 - every selected `frame_ref` resolves below `$SMVQA_FRAME_ROOT`
+- manifest `sensor_rate_hz` is `1.0`, and selected count is no greater than raw
+  source frame count
 - `question_time` and source timestamps use the same relative-second convention
 - the number of questions with no pre-question records in any eligible shard is
   known
@@ -662,6 +678,7 @@ If E1 underperforms E3, inspect:
 Under `$WORLDMM_OUTPUT_ROOT`:
 
 - `manifests/source_roots.txt`
+- `manifests/sensor_frames.jsonl`
 - `manifests/question_ids.txt`
 - `manifests/spatial_experiment.json`
 - `chunks/source_chunks.jsonl`

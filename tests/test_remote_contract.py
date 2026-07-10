@@ -210,6 +210,11 @@ def test_remote_plan_script_uses_batch_retrieval_and_memory_manifest(
     assert "worldmm_sv/semantic.jsonl" in script_text
     assert "worldmm_sv/visual.jsonl" in script_text
     assert "SMVQA_FRAME_ROOT:=$SMVQA_DATA_ROOT/frames" in script_text
+    assert (
+        'WORLDMM_SENSOR_FRAME_MANIFEST="$WORLDMM_OUTPUT_ROOT/'
+        'manifests/sensor_frames.jsonl"'
+    ) in script_text
+    assert "build-memory --stage sensor-frames" in script_text
 
 
 def test_remote_plan_writes_deterministic_slurm_paths(tmp_path: Path) -> None:

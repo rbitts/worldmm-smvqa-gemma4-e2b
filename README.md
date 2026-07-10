@@ -129,6 +129,29 @@ experiment is written to `manifests/spatial_experiment.json`.
 Distributed spatial build writes rank-level compression measurements to
 `memory/worldmm_sv/spatial.stats.jsonl`.
 
+## 1 Hz Sensor Input Contract
+
+Every remote run first writes one run-scoped `sensor_frames.jsonl` from the raw
+`sources.jsonl.frame_metadata` inventory:
+
+```bash
+worldmm-smvqa build-memory \
+  --stage sensor-frames \
+  --fixture "$SMVQA_DATA_ROOT" \
+  --out "$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl"
+```
+
+Selection is timestamp-only: keep the first available frame in each fixed
+one-second window relative to the source start. Missing windows stay missing;
+frames are never synthesized. Set `WORLDMM_SENSOR_FRAME_MANIFEST` to that file.
+The shared source reader then applies the same at-most-1-Hz RGB inventory to
+memory construction, retrieval, and QA. It also removes unselected frame OCR and
+object detections and excludes legacy captions without frame/timestamp grounding.
+
+Pose, gaze, audio, and transcript streams retain their device-provided rates.
+QA's `32` frame cap is applied only after this manifest, over the selected
+pre-question shard.
+
 ## Retrieval Contract
 
 The default retrieval protocol is `worldmm-smvqa`: a WorldMM-augmented
@@ -208,6 +231,7 @@ Exact environment variables used by remote config and scripts:
 - `WORLDMM_GPUS_PER_NODE`
 - `WORLDMM_DDP_LAUNCHER`
 - `WORLDMM_TRITON_CACHE_ROOT` (optional node-local root; QA appends global rank)
+- `WORLDMM_SENSOR_FRAME_MANIFEST` (generated run-scoped 1 Hz RGB inventory)
 - `REMOTE_JOB_ID_OR_PROCESS_REF`
 - `WORLDMM_RUN_ID`
 - `WORLDMM_REMOTE_REPO`

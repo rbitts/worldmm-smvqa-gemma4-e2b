@@ -40,6 +40,7 @@ from worldmm_smvqa.report import IncompleteRemoteManifestError
 from worldmm_smvqa.retrieval import (
     InvalidRetrievalStoreError,
 )
+from worldmm_smvqa.sensor_frames import SensorFrameManifestError
 from worldmm_smvqa.smoke import NoLocalModelBackendError
 from worldmm_smvqa.transformers_backend import TransformersGenerationError
 from worldmm_smvqa.worldmm.episodic import (
@@ -156,6 +157,7 @@ def main() -> int:
         LLMMemoryError,
         SpatialCompressionError,
         SpatialDiagnosticsError,
+        SensorFrameManifestError,
         TransformersGenerationError,
     ) as exc:
         _ = sys.stderr.write(f"{exc}\n")

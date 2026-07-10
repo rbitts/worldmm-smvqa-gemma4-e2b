@@ -131,6 +131,9 @@ def _expected_outputs() -> ExpectedOutputs:
         "metrics": ["Ans-F1", "QA-Acc", "QA-MRR"],
         "outputs": {
             "source_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/source_roots.txt",
+            "sensor_frame_manifest": (
+                "$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl"
+            ),
             "question_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/question_ids.txt",
             "spatial_experiment": (
                 "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"

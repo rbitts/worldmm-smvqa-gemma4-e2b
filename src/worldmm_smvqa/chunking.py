@@ -14,6 +14,11 @@ from worldmm_smvqa.schema import (
     StreamChunk,
     TranscriptSpan,
 )
+from worldmm_smvqa.sensor_frames import (
+    apply_sensor_frame_manifest,
+    configured_sensor_frame_manifest,
+    read_sensor_frame_manifest,
+)
 
 CLIP_SECONDS: Final = 30.0
 SHARD_SECONDS: Final = 1800.0
@@ -73,7 +78,11 @@ def write_fixture_chunks(fixture_dir: Path, output: Path) -> ChunkBuildSummary:
     )
 
 
-def read_source_streams(fixture_dir: Path) -> tuple[SourceStreamExample, ...]:
+def read_source_streams(
+    fixture_dir: Path,
+    *,
+    use_sensor_manifest: bool = True,
+) -> tuple[SourceStreamExample, ...]:
     path = fixture_dir / "sources.jsonl"
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
@@ -89,7 +98,17 @@ def read_source_streams(fixture_dir: Path) -> tuple[SourceStreamExample, ...]:
         except ValidationError as exc:
             detail = f"line {line_number}: {exc}"
             raise FixtureValidationError(path=path, detail=detail) from exc
-    return tuple(records)
+    sources = tuple(records)
+    if not use_sensor_manifest:
+        return sources
+    manifest_path = configured_sensor_frame_manifest(fixture_dir)
+    if manifest_path is None:
+        return sources
+    return apply_sensor_frame_manifest(
+        sources,
+        read_sensor_frame_manifest(manifest_path),
+        path=manifest_path,
+    )
 
 
 def _granularities(chunks: Sequence[StreamChunk]) -> tuple[ChunkGranularity, ...]:

@@ -97,6 +97,9 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     assert "WORLDMM_MEMORY_SHARD_TIMEOUT_SECONDS" in script_text
     assert "WORLDMM_TRITON_CACHE_ROOT" in script_text
     assert "rank-local TRITON_CACHE_DIR" in script_text
+    assert "WORLDMM_SENSOR_FRAME_MANIFEST" in script_text
+    assert "build-memory --stage sensor-frames" in script_text
+    assert '"sensor_rate_hz": 1.0' in script_text
     assert "WORLDMM_SPATIAL_TOKEN_BUDGET:=16" in script_text
     assert "WORLDMM_SPATIAL_QUANTIZATION_M:=0.25" in script_text
     assert "WORLDMM_SPATIAL_SELECTOR_PATH" in script_text
@@ -125,6 +128,9 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     assert manifest["metrics"] == ["Ans-F1", "QA-Acc", "QA-MRR"]
     assert manifest["outputs"]["spatial_memory"] == (
         "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl"
+    )
+    assert manifest["outputs"]["sensor_frame_manifest"] == (
+        "$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl"
     )
     assert manifest["outputs"]["spatial_experiment"] == (
         "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"
