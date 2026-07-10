@@ -94,12 +94,12 @@ def write_llm_episodic_memory(
         if completed != output:
             _merge_rank_artifacts(output)
         return _episodic_summary(completed)
-    sources = _partition_by_video(read_source_streams(fixture_dir))
+    sources = partition_by_video(read_source_streams(fixture_dir))
     chunks = build_chunks(sources)
     clip_chunks = tuple(chunk for chunk in chunks if chunk.granularity == "clip_30s")
     memories = build_source_memories(clip_chunks)
     records = build_llm_episodic_graph(chunks, memories, generate)
-    written = _write_distributed_jsonl(records, output)
+    written = write_distributed_jsonl(records, output)
     return _episodic_summary(written)
 
 
@@ -113,9 +113,9 @@ def write_llm_semantic_memory(
         if completed != output:
             _merge_rank_artifacts(output)
         return SemanticBuildSummary(path=output, records=_line_count(completed))
-    nodes = _partition_by_video(_read_episodic_nodes(episodic_path))
+    nodes = partition_by_video(_read_episodic_nodes(episodic_path))
     records = build_llm_semantic_memory(nodes, generate)
-    written = _write_distributed_jsonl(records, output)
+    written = write_distributed_jsonl(records, output)
     return SemanticBuildSummary(path=output, records=_line_count(written))
 
 
@@ -132,11 +132,11 @@ def write_llm_visual_memory(
             _merge_rank_artifacts(output)
         return VisualBuildSummary(path=output, records=_line_count(completed))
     records = build_llm_visual_memory(
-        _partition_by_video(read_source_streams(fixture_dir)),
+        partition_by_video(read_source_streams(fixture_dir)),
         frame_root=frame_root,
         caption=caption,
     )
-    written = _write_distributed_jsonl(records, output)
+    written = write_distributed_jsonl(records, output)
     return VisualBuildSummary(path=output, records=_line_count(written))
 
 
@@ -153,11 +153,11 @@ def _read_episodic_nodes(path: Path) -> tuple[EpisodicNodeRecord, ...]:
     )
 
 
-def _write_distributed_jsonl(
+def write_distributed_jsonl(
     records: Sequence[BaseModel],
     output: Path,
 ) -> Path:
-    rank, world_size = _distributed_env()
+    rank, world_size = distributed_env()
     rank_output = _rank_output_path(output, rank, world_size)
     _write_jsonl_atomic(records, rank_output)
     _merge_rank_artifacts(output)
@@ -178,7 +178,7 @@ def _write_jsonl_atomic(records: Sequence[BaseModel], output: Path) -> None:
 
 
 def _merge_rank_artifacts(output: Path) -> None:
-    rank, world_size = _distributed_env()
+    rank, world_size = distributed_env()
     if world_size == 1 or rank != 0:
         return
     rank_outputs = tuple(
@@ -208,7 +208,7 @@ def _merge_rank_artifacts(output: Path) -> None:
 def _completed_rank_artifact(output: Path) -> Path | None:
     if output.exists():
         return output
-    rank, world_size = _distributed_env()
+    rank, world_size = distributed_env()
     rank_output = _rank_output_path(output, rank, world_size)
     return rank_output if rank_output.exists() else None
 
@@ -221,7 +221,7 @@ def _rank_output_path(output: Path, rank: int, world_size: int) -> Path:
     )
 
 
-def _distributed_env() -> tuple[int, int]:
+def distributed_env() -> tuple[int, int]:
     rank = _env_int("RANK", 0)
     world_size = _env_int("WORLD_SIZE", 1)
     if world_size < 1 or rank < 0 or rank >= world_size:
@@ -245,10 +245,10 @@ def _env_int(name: str, default: int) -> int:
         ) from exc
 
 
-def _partition_by_video[RecordT: _VideoScoped](
+def partition_by_video[RecordT: _VideoScoped](
     records: Sequence[RecordT],
 ) -> tuple[RecordT, ...]:
-    rank, world_size = _distributed_env()
+    rank, world_size = distributed_env()
     video_ids = sorted({record.video_id for record in records})
     selected = {
         video_id

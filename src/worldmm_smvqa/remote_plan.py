@@ -23,6 +23,7 @@ REMOTE_FIELDS: Final = {
     "output_root": "WORLDMM_OUTPUT_ROOT",
 }
 
+
 class ExpectedOutputs(TypedDict):
     remote_job_reference: str
     metrics: list[str]
@@ -103,8 +104,7 @@ def plan_stdout(result: RemotePlanResult) -> str:
         f"/opt/slurm/bin/sbatch --parsable remote-plan/{REMOTE_SCRIPT_NAME}"
     )
     remote_command = (
-        'ssh -J "$BASTION_HOST" "$HEAD_NODE" '
-        f"{shlex.quote(remote_shell_command)}"
+        f'ssh -J "$BASTION_HOST" "$HEAD_NODE" {shlex.quote(remote_shell_command)}'
     )
     return (
         f"remote plan mode={result.mode}\n"
@@ -132,6 +132,9 @@ def _expected_outputs() -> ExpectedOutputs:
         "outputs": {
             "source_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/source_roots.txt",
             "question_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/question_ids.txt",
+            "spatial_experiment": (
+                "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"
+            ),
             "chunk_manifest": "$WORLDMM_OUTPUT_ROOT/chunks/source_chunks.jsonl",
             "caption_ocr_object_frame_refs": (
                 "$WORLDMM_OUTPUT_ROOT/source_refs/source_memories.jsonl"
@@ -140,6 +143,9 @@ def _expected_outputs() -> ExpectedOutputs:
             "semantic_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/semantic.jsonl",
             "visual_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/visual.jsonl",
             "spatial_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl",
+            "spatial_compression": (
+                "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.stats.jsonl"
+            ),
             "retrieval_evidence": "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl",
             "retrieval_trace_evidence_packs": (
                 "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"
@@ -158,26 +164,19 @@ def _expected_outputs() -> ExpectedOutputs:
                 "metrics/official_metrics.json"
             ),
             "ablation_without_spatial_predictions": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/"
-                "qa/predictions.jsonl"
+                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/qa/predictions.jsonl"
             ),
             "ablation_protocol_legacy_predictions": (
                 "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
                 "qa/predictions.jsonl"
             ),
-            "slurm_stdout": (
-                "$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.out"
-            ),
-            "slurm_stderr": (
-                "$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.err"
-            ),
+            "slurm_stdout": ("$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.out"),
+            "slurm_stderr": ("$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.err"),
             "memory_manifest": "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json",
             "job_metadata": "$WORLDMM_OUTPUT_ROOT/summary/job.json",
             "slurm_job_id": "$WORLDMM_OUTPUT_ROOT/summary/slurm_job_id.txt",
             "summary": "$WORLDMM_OUTPUT_ROOT/summary/summary.txt",
-            "remote_manifest": (
-                "$WORLDMM_OUTPUT_ROOT/summary/remote_manifest.json"
-            ),
+            "remote_manifest": ("$WORLDMM_OUTPUT_ROOT/summary/remote_manifest.json"),
             "final_report": "$WORLDMM_OUTPUT_ROOT/summary/final_report.md",
         },
         "copyback_allowed": [

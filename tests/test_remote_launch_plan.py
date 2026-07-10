@@ -93,8 +93,18 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     assert "$GEMMA_MODEL_PATH" in script_text
     assert 'run_distributed_memory "episodic"' in script_text
     assert 'run_distributed_memory "semantic,visual"' in script_text
-    assert "worldmm-smvqa build-memory --stores spatial" in script_text
+    assert 'run_distributed_memory "spatial"' in script_text
     assert "WORLDMM_MEMORY_SHARD_TIMEOUT_SECONDS" in script_text
+    assert "WORLDMM_TRITON_CACHE_ROOT" in script_text
+    assert "rank-local TRITON_CACHE_DIR" in script_text
+    assert "WORLDMM_SPATIAL_TOKEN_BUDGET:=16" in script_text
+    assert "WORLDMM_SPATIAL_QUANTIZATION_M:=0.25" in script_text
+    assert "WORLDMM_SPATIAL_SELECTOR_PATH" in script_text
+    assert "WORLDMM_SPATIAL_EXPERIMENT_CONFIG" in script_text
+    assert "resolve_spatial_experiment_config" in script_text
+    assert "resolve_spatial_memory_model" not in script_text
+    assert "Spatial-Compression-Ratio" in script_text
+    assert "Spatial-Selected-Record-Count" in script_text
     _assert_qwen_memory_contract(script_text)
     assert '--input "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json"' in script_text
     assert "worldmm-smvqa retrieve-batch" in script_text
@@ -116,6 +126,12 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     assert manifest["outputs"]["spatial_memory"] == (
         "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl"
     )
+    assert manifest["outputs"]["spatial_experiment"] == (
+        "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"
+    )
+    assert manifest["outputs"]["spatial_compression"] == (
+        "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.stats.jsonl"
+    )
     assert manifest["outputs"]["retrieval_trace_evidence_packs"] == (
         "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"
     )
@@ -123,8 +139,7 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
         "$WORLDMM_OUTPUT_ROOT/diagnostics/spatial_diagnostics.json"
     )
     assert manifest["outputs"]["ablation_without_spatial"] == (
-        "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/"
-        "metrics/official_metrics.json"
+        "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/metrics/official_metrics.json"
     )
     assert manifest["outputs"]["ablation_protocol_legacy"] == (
         "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
@@ -151,8 +166,7 @@ def _assert_qwen_memory_contract(script_text: str) -> None:
     assert "--backend qwen" in script_text
     assert "WORLDMM_MEMORY_MODEL_ID:=Qwen/Qwen3-VL-8B-Instruct" in script_text
     assert (
-        "WORLDMM_MEMORY_MODEL_PATH:="
-        "/repo/VTteam/bongh.park/outputs/models/qwen3-vl"
+        "WORLDMM_MEMORY_MODEL_PATH:=/repo/VTteam/bongh.park/outputs/models/qwen3-vl"
     ) in script_text
     assert 'hf download "$WORLDMM_MEMORY_MODEL_ID" --local-dir' in script_text
     assert "WORLDMM_VISUAL_ENCODER_ID" not in script_text
@@ -246,7 +260,7 @@ def test_launch_remote_dry_run_replaces_stale_artifacts(tmp_path: Path) -> None:
     assert stale_script.read_text(encoding="utf-8") != "stale\n"
     script_text = stale_script.read_text(encoding="utf-8")
     assert 'run_distributed_memory "semantic,visual"' in script_text
-    assert "build-memory --stores spatial" in script_text
+    assert 'run_distributed_memory "spatial"' in script_text
 
 
 def test_launch_remote_config_requires_remote_placeholders(tmp_path: Path) -> None:

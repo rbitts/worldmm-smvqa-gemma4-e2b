@@ -2,7 +2,7 @@ from __future__ import annotations
 
 # allow: SIZE_OK - retrieval policy module predates this change; split loaders,
 # protocol selection, and scoring when retrieval behavior changes next.
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from math import floor
 from pathlib import Path
@@ -39,17 +39,18 @@ from worldmm_smvqa.worldmm.semantic import (
     SemanticTripleRecord,
     build_semantic_memory,
 )
-from worldmm_smvqa.worldmm.spatial import (
-    build_object_anchors,
-    build_object_state_snapshots,
-    build_trajectory_summaries,
-    build_zones,
-    derive_relations,
+from worldmm_smvqa.worldmm.spatial_compression import (
+    build_compressed_spatial_memory,
+    load_spatial_experiment_config,
+    load_spatial_plugins,
+    spatial_token_geometry,
+    spatial_token_snippet,
 )
 from worldmm_smvqa.worldmm.spatial_types import (
     ObjectStateSnapshotRecord,
     SpatialAnchorRecord,
     SpatialRelationRecord,
+    SpatialTokenRecord,
     WearerTrajectorySummaryRecord,
     ZoneRecord,
 )
@@ -90,6 +91,7 @@ type SpatialRetrievalRecord = (
     ZoneRecord
     | SpatialAnchorRecord
     | SpatialRelationRecord
+    | SpatialTokenRecord
     | ObjectStateSnapshotRecord
     | WearerTrajectorySummaryRecord
 )
@@ -108,6 +110,7 @@ class _MemoryManifest(BaseModel):
     semantic_memory: str
     visual_memory: str
     spatial_memory: _SpatialMemoryArtifact
+    spatial_experiment: str | None = None
 
 
 class _RecordHeader(BaseModel):
@@ -168,8 +171,7 @@ def retrieve_evidence(
     scoped = tuple(
         record
         for record in memory_records
-        if record.video_id in video_ids
-        and record.source_store in enabled_stores
+        if record.video_id in video_ids and record.source_store in enabled_stores
     )
     route = WorldMMRetrievalPolicy().route(
         question,
@@ -222,29 +224,19 @@ def _question_video_ids(question: QuestionRequest) -> tuple[str, ...]:
 
 def build_fixture_retrieval_stores(
     fixture_dir: Path,
+    *,
+    env: Mapping[str, str] | None = None,
 ) -> tuple[RetrievalMemoryRecord, ...]:
     sources = read_source_streams(fixture_dir)
     chunks = build_chunks(sources)
     clip_chunks = tuple(chunk for chunk in chunks if chunk.granularity == "clip_30s")
     source_memories = build_source_memories(clip_chunks)
-    zones = tuple(record for source in sources for record in build_zones(source))
-    anchors = tuple(
-        record for source in sources for record in build_object_anchors(source)
-    )
-    trajectory_chunks = tuple(
-        chunk for chunk in clip_chunks if _has_zone_overlap(chunk, zones)
-    )
+    spatial = build_compressed_spatial_memory(sources, clip_chunks, env=env)
     return build_retrieval_records(
         build_episodic_graph(chunks, source_memories),
         build_semantic_memory(sources),
         build_visual_memory(sources),
-        (
-            *zones,
-            *anchors,
-            *tuple(derive_relations(anchors)),
-            *build_object_state_snapshots(clip_chunks, anchors),
-            *build_trajectory_summaries(trajectory_chunks, zones),
-        ),
+        spatial.records,
     )
 
 
@@ -254,6 +246,11 @@ def read_retrieval_memory_artifacts(
     manifest = _MemoryManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8"),
     )
+    if manifest.spatial_experiment is not None:
+        spatial_config = load_spatial_experiment_config(
+            Path(manifest.spatial_experiment),
+        )
+        load_spatial_plugins(spatial_config)
     return build_retrieval_records(
         _read_episodic_artifact(Path(manifest.episodic_memory)),
         _read_jsonl_records(Path(manifest.semantic_memory), _semantic_artifact_record),
@@ -326,6 +323,8 @@ def _spatial_artifact_record(line: str) -> SpatialRetrievalRecord:
             return SpatialAnchorRecord.model_validate_json(line)
         case "spatial_relation":
             return SpatialRelationRecord.model_validate_json(line)
+        case "spatial_token":
+            return SpatialTokenRecord.model_validate_json(line)
         case "object_state_snapshot":
             return ObjectStateSnapshotRecord.model_validate_json(line)
         case "wearer_trajectory_summary":
@@ -455,6 +454,18 @@ def _spatial_candidate(record: SpatialRetrievalRecord) -> RetrievalMemoryRecord:
                 frame_refs=(),
                 base_score=1.0,
                 geometry=_relation_geometry(record),
+            )
+        case SpatialTokenRecord():
+            return RetrievalMemoryRecord(
+                memory_id=record.memory_id,
+                source_store="spatial",
+                video_id=record.video_id,
+                start_time=record.start_time,
+                end_time=record.end_time,
+                snippet=spatial_token_snippet(record),
+                frame_refs=record.frame_refs,
+                base_score=record.importance,
+                geometry=spatial_token_geometry(record),
             )
         case ObjectStateSnapshotRecord() | WearerTrajectorySummaryRecord():
             return RetrievalMemoryRecord(
@@ -592,9 +603,7 @@ def _protocol_records(
     shard_scoped = filter_records_to_shards(causal, eligible_shards)
     hierarchy = build_egobutler_hierarchy(chunks, scoped)
     coarse_selection = coarse_to_fine_candidates(question, hierarchy, scoped)
-    selected_memory_ids = {
-        record.memory_id for record in coarse_selection.records
-    }
+    selected_memory_ids = {record.memory_id for record in coarse_selection.records}
     selected_records = tuple(
         record for record in shard_scoped if record.memory_id in selected_memory_ids
     )
@@ -648,8 +657,7 @@ def _policy_evidence(
     used_ids: set[str] = set()
     frame_refs: list[str] = []
     candidates_by_store = {
-        store: iter(_store_candidates(scored, store))
-        for store in stores
+        store: iter(_store_candidates(scored, store)) for store in stores
     }
     while len(selected) < evidence_budget:
         added = False
@@ -837,20 +845,6 @@ def _zone_time_span(record: ZoneRecord) -> tuple[float, float]:
     starts = tuple(start for start, _end in record.visit_intervals)
     ends = tuple(end for _start, end in record.visit_intervals)
     return min(starts), max(ends)
-
-
-def _has_zone_overlap(
-    chunk: StreamChunk,
-    zones: Sequence[ZoneRecord],
-) -> bool:
-    return any(
-        zone.video_id == chunk.video_id
-        and any(
-            start < chunk.end_time and chunk.start_time < end
-            for start, end in zone.visit_intervals
-        )
-        for zone in zones
-    )
 
 
 def _format_float(value: float) -> str:

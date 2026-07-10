@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
 from worldmm_smvqa.chunking import build_chunks, read_source_streams
@@ -11,6 +12,7 @@ from worldmm_smvqa.retrieval import (
     RetrievalOptions,
     build_fixture_retrieval_stores,
     build_retrieval_records,
+    read_retrieval_memory_artifacts,
     retrieve_evidence,
 )
 from worldmm_smvqa.retrieval_types import (
@@ -19,6 +21,8 @@ from worldmm_smvqa.retrieval_types import (
 )
 from worldmm_smvqa.schema import QuestionRequest, StreamChunk
 from worldmm_smvqa.worldmm.semantic import SemanticTripleRecord
+from worldmm_smvqa.worldmm.spatial_compression import SpatialExperimentConfig
+from worldmm_smvqa.worldmm.spatial_types import SpatialTokenRecord
 from worldmm_smvqa.worldmm.visual import VisualMemoryRecord
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -254,7 +258,8 @@ def test_retrieve_evidence_uses_causal_records_from_current_shard() -> None:
     # Given: q_fake_001 is asked inside the first 30m shard.
     fixture_dir = Path("tests/fixtures/tiny_smvqa")
     question = next(
-        item for item in read_fixture_questions(fixture_dir)
+        item
+        for item in read_fixture_questions(fixture_dir)
         if item.question_id == "q_fake_001"
     )
     chunks = build_chunks(read_source_streams(fixture_dir))
@@ -538,6 +543,101 @@ def test_retrieve_cli_uses_manifest_memory_artifacts(tmp_path: Path) -> None:
     assert tuple(item.memory_id for item in pack.evidence) == (artifact_memory_id,)
 
 
+def test_artifact_reader_restores_custom_spatial_codec(tmp_path: Path) -> None:
+    # Given: a persisted custom codec whose decoder needs experiment options.
+    plugin = tmp_path / "artifact_codec_plugin.py"
+    _ = plugin.write_text(
+        """
+from worldmm_smvqa.worldmm.spatial_compression import (
+    ZoneToken,
+    register_spatial_memory_codec,
+)
+
+class ArtifactCodec:
+    name = "artifact-test-v1"
+
+    def __init__(self, options):
+        self.zone_id = str(options["zone_id"])
+
+    def encode(self, token):
+        return self.zone_id
+
+    def decode(self, record):
+        return ZoneToken(
+            scale_m=0.25,
+            zone_id=self.zone_id,
+            x=1.0,
+            y=2.0,
+            z=3.0,
+        )
+
+register_spatial_memory_codec("artifact-test-v1", ArtifactCodec)
+""".lstrip(),
+        encoding="utf-8",
+    )
+    experiment_path = tmp_path / "spatial_experiment.json"
+    _ = experiment_path.write_text(
+        SpatialExperimentConfig(
+            codec="artifact-test-v1",
+            plugins=("artifact_codec_plugin",),
+            codec_options={"zone_id": "plugin-zone"},
+        ).model_dump_json(),
+        encoding="utf-8",
+    )
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    for name in ("episodic", "semantic", "visual"):
+        _ = (memory_dir / f"{name}.jsonl").write_text("", encoding="utf-8")
+    spatial = memory_dir / "spatial.jsonl"
+    _ = spatial.write_text(
+        SpatialTokenRecord(
+            memory_id="custom-zone",
+            video_id="video",
+            codec="artifact-test-v1",
+            start_time=0.0,
+            end_time=1.0,
+            token="self-describing-payload",  # noqa: S106
+            importance=1.0,
+        ).model_dump_json()
+        + "\n",
+        encoding="utf-8",
+    )
+    manifest = tmp_path / "memory_manifest.json"
+    _ = manifest.write_text(
+        json.dumps(
+            {
+                "episodic_memory": str(memory_dir / "episodic.jsonl"),
+                "semantic_memory": str(memory_dir / "semantic.jsonl"),
+                "visual_memory": str(memory_dir / "visual.jsonl"),
+                "spatial_memory": {"path": str(spatial)},
+                "spatial_experiment": str(experiment_path),
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    # When: retrieval opens artifacts in a fresh artifact-loading path.
+    sys.path.insert(0, str(tmp_path))
+    try:
+        (record,) = read_retrieval_memory_artifacts(manifest)
+    finally:
+        _ = sys.path.pop(0)
+        _ = sys.modules.pop("artifact_codec_plugin", None)
+
+    # Then: plugin and codec options restore before token decoding.
+    assert record.memory_id == "custom-zone"
+    assert "plugin-zone" in record.snippet
+    assert record.geometry == {
+        "codec": "artifact-test-v1",
+        "encoder": "structured-v1",
+        "projection_head": "identity-v1",
+        "token_decoder": "delta-topk-v1",
+        "x": 1.0,
+        "y": 2.0,
+        "z": 3.0,
+    }
+
+
 def test_retrieve_batch_cli_atomically_writes_all_packs(tmp_path: Path) -> None:
     # Given: a stale output at the production evidence-pack path.
     output = tmp_path / "evidence_packs.jsonl"
@@ -678,9 +778,5 @@ def test_retrieve_cli_pre_question_evidence_has_no_future_frame_refs(
     # Then: selected evidence has no frame refs from after question_time.
     assert result.returncode == 0, result.stderr
     pack = EvidencePack.model_validate_json(output.read_text(encoding="utf-8"))
-    refs = {
-        frame_ref
-        for item in pack.evidence
-        for frame_ref in item.frame_refs
-    }
+    refs = {frame_ref for item in pack.evidence for frame_ref in item.frame_refs}
     assert "fake_video_001_frame_0072" not in refs

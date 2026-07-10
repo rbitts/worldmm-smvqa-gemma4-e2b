@@ -2,6 +2,11 @@
 
 Minimal scaffold for a WorldMM-style SuperMemory-VQA benchmark package.
 
+## Design Documents
+
+- [Spatial token compression architecture](docs/spatial-token-compression.md)
+- [Spatial token research roadmap](docs/spatial-token-research-roadmap.md)
+
 Local commands are limited to code, config, tiny fixtures, and dry-runs. Real
 model inference, dataset download, full evaluation, checkpoints, and large
 artifacts belong on approved remote compute only.
@@ -33,10 +38,96 @@ vertical, in meters. Empty fields are valid, so existing source fixtures remain
 compatible. When present, pose/gaze samples are sliced into the same clip and
 shard windows as captions, OCR, objects, and frame metadata.
 
-The `spatial` store contains deterministic text records for zones, object
-anchors, near-relations, per-chunk object state snapshots, and wearer trajectory
-summaries. Gaze targets are preferred for anchors when available; otherwise the
-anchor approximates the wearer pose at detection time.
+The `spatial` store contains compact tokens for zones, object anchors, and
+relations plus wearer trajectory summaries. Gaze targets are preferred for
+anchors when available; otherwise the anchor approximates the wearer pose at
+detection time.
+
+## Compressed Spatial Memory Model
+
+The on-device path is one composable model:
+
+```text
+SpatialGeometryEncoder
+  -> SpatialProjectionHead
+  -> SpatialTokenDecoder
+  -> SpatialTokenSelector
+  -> SpatialMemoryCodec
+  -> spatial store
+```
+
+The default experiment is
+`configs/spatial/source_compact_v1.json`:
+
+- `structured-v1` encoder: source object geometry, gaze, pose, and SLAM-style
+  primitives.
+- `identity-v1` projection: preserves the baseline scalar feature schema.
+- `delta-topk-v1` decoder: suppresses repeated static observations, canonicalizes
+  inverse relations, and emits spatial-token candidates.
+- `linear-v1` selector: applies a keep-score gate and causal 16-record cap per
+  30s window; future candidates cannot evict admitted past tokens.
+- `compact-json-v1` codec: quantized object, relation, and zone tokens.
+
+This replaces repeated per-window object geometry snapshots in the main spatial
+artifact. The original detailed builders remain available for diagnostics and
+compression comparison.
+
+The design follows object-centric 3D scene graphs such as ConceptGraphs, learned
+fixed-budget token selection such as TokenLearner, and duplicate-first reduction
+such as DART. Raw visual-token pruning is not the primary spatial path because
+localization-heavy tasks can regress when importance comes only from generic VLM
+attention.
+
+Run the complete local memory -> retrieval -> mock-QA path with one experiment:
+
+```bash
+WORLDMM_SPATIAL_EXPERIMENT_CONFIG=configs/spatial/source_compact_v1.json \
+uv run worldmm-smvqa smoke \
+  --fixture tests/fixtures/tiny_smvqa \
+  --out .omo/evidence/worldmm-smvqa/compressed-spatial-smoke
+```
+
+The spatial model does not answer QA separately:
+
+```text
+episodic + semantic + visual + spatial
+  -> WorldMM retrieval
+  -> one evidence pack
+  -> Gemma QA decoder
+```
+
+To add CUT3R or another geometry backbone, implement and register
+`SpatialGeometryEncoder`, `SpatialProjectionHead`, and optionally
+`SpatialTokenDecoder`, `SpatialTokenSelector`, or `SpatialMemoryCodec`. The
+encoder can pass an in-process opaque latent state through projection to the
+decoder; only decoder output tokens are persisted. List plugin modules and
+component names in a new experiment JSON. Projected feature names are dynamic,
+so the selector trainer accepts new dimensions without core changes.
+
+Prepare QA-supervised keep/drop rows locally on the tiny fixture:
+
+```bash
+uv run python -m worldmm_smvqa.spatial_selector_train prepare \
+  --fixture tests/fixtures/tiny_smvqa \
+  --experiment configs/spatial/source_compact_v1.json \
+  --out /tmp/spatial-selector-rows.jsonl
+```
+
+Real selector training remains remote-only:
+
+```bash
+WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST=1 \
+python -m worldmm_smvqa.spatial_selector_train train \
+  --config configs/remote.example.yaml \
+  --input "$WORLDMM_OUTPUT_ROOT/manifests/spatial-selector-rows.jsonl" \
+  --out "$WORLDMM_OUTPUT_ROOT/models/spatial-selector.json"
+```
+
+Set the trained weight path in a new experiment JSON, then run the normal remote
+memory, retrieval, Gemma QA, metrics, and ablation workflow. The effective
+experiment is written to `manifests/spatial_experiment.json`.
+Distributed spatial build writes rank-level compression measurements to
+`memory/worldmm_sv/spatial.stats.jsonl`.
 
 ## Retrieval Contract
 
@@ -116,6 +207,7 @@ Exact environment variables used by remote config and scripts:
 - `WORLDMM_REMOTE_NODES`
 - `WORLDMM_GPUS_PER_NODE`
 - `WORLDMM_DDP_LAUNCHER`
+- `WORLDMM_TRITON_CACHE_ROOT` (optional node-local root; QA appends global rank)
 - `REMOTE_JOB_ID_OR_PROCESS_REF`
 - `WORLDMM_RUN_ID`
 - `WORLDMM_REMOTE_REPO`

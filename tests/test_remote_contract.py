@@ -109,6 +109,7 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
     )
     assert smoke.returncode == 0, smoke.stderr
     predictions = tmp_path / "predictions.jsonl"
+    triton_cache_root = tmp_path / "triton-cache"
     command = [
         "uv",
         "run",
@@ -137,6 +138,7 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
             "PYTHONDONTWRITEBYTECODE": "1",
             "RANK": "1",
             "UV_NO_NETWORK": "1",
+            "WORLDMM_TRITON_CACHE_ROOT": str(triton_cache_root),
             "WORLD_SIZE": "2",
         },
         text=True,
@@ -151,6 +153,7 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
             "PYTHONDONTWRITEBYTECODE": "1",
             "RANK": "0",
             "UV_NO_NETWORK": "1",
+            "WORLDMM_TRITON_CACHE_ROOT": str(triton_cache_root),
             "WORLD_SIZE": "2",
         },
         text=True,
@@ -163,6 +166,8 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
     assert rank_zero.returncode == 0, rank_zero.stderr
     assert (tmp_path / "predictions.rank00001-of00002.jsonl").is_file()
     assert (tmp_path / "predictions.rank00000-of00002.jsonl").is_file()
+    assert (triton_cache_root / "rank-00000").is_dir()
+    assert (triton_cache_root / "rank-00001").is_dir()
     rows = [
         PredictionRecord.model_validate_json(line)
         for line in predictions.read_text(encoding="utf-8").splitlines()

@@ -192,6 +192,11 @@ def parse_cli_args(argv: Sequence[str]) -> TransformersCliArgs:
 
 def main(argv: Sequence[str] | None = None) -> int:
     try:
+        if cache_root := os.environ.get("WORLDMM_TRITON_CACHE_ROOT"):
+            rank = distributed_env(os.environ).rank
+            cache_dir = Path(cache_root) / f"rank-{rank:05d}"
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            os.environ["TRITON_CACHE_DIR"] = str(cache_dir)
         args = parse_cli_args(sys.argv[1:] if argv is None else argv)
         result = run_transformers_cli(args, env=os.environ)
     except (

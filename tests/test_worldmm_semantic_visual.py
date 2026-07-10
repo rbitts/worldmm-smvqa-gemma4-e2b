@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,8 @@ from worldmm_smvqa.schema import (
     SourceStreamExample,
 )
 from worldmm_smvqa.worldmm.semantic import SemanticTripleRecord, build_semantic_memory
-from worldmm_smvqa.worldmm.spatial_types import SpatialAnchorRecord
+from worldmm_smvqa.worldmm.spatial_compression import SpatialCompressionManifest
+from worldmm_smvqa.worldmm.spatial_types import SpatialTokenRecord
 from worldmm_smvqa.worldmm.visual import (
     MissingGroundingError,
     VisualMemoryRecord,
@@ -23,9 +25,13 @@ from worldmm_smvqa.worldmm.visual import (
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str,
+    env_overrides: Mapping[str, str] | None = None,
+) -> subprocess.CompletedProcess[str]:
     env = os.environ.copy()
     _ = env.pop("WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST", None)
+    env.update(env_overrides or {})
     return subprocess.run(
         ["uv", "run", "worldmm-smvqa", *args],
         cwd=ROOT,
@@ -147,17 +153,67 @@ def test_build_memory_semantic_visual_spatial_cli_writes_directory_without_label
     assert result.returncode == 0, result.stderr
     assert "spatial_records=" in result.stdout
     spatial_lines = (output / "spatial.jsonl").read_text(encoding="utf-8").splitlines()
+    stats_lines = (
+        (output / "spatial.stats.jsonl").read_text(encoding="utf-8").splitlines()
+    )
     assert spatial_lines
+    (stats_line,) = stats_lines
+    stats = SpatialCompressionManifest.model_validate_json(stats_line)
     payload = "\n".join(spatial_lines)
     for field in PROHIBITED_MEMORY_FIELDS:
         key = field.rsplit(".", maxsplit=1)[-1]
         assert f'"{key}":' not in payload
-    anchors = tuple(
-        SpatialAnchorRecord.model_validate_json(line)
+    tokens = tuple(
+        SpatialTokenRecord.model_validate_json(line)
         for line in spatial_lines
-        if '"record_type":"spatial_anchor"' in line
+        if '"record_type":"spatial_token"' in line
     )
-    assert anchors
+    assert tokens
+    assert all(len(token.frame_refs) <= 1 for token in tokens)
+    assert stats.rank == 0
+    assert stats.world_size == 1
+    assert stats.record_count == len(spatial_lines)
+    assert stats.token_count == len(tokens)
+    assert stats.raw_bytes > stats.compressed_bytes
+
+
+def test_spatial_cli_merges_distributed_video_partitions(tmp_path: Path) -> None:
+    # Given: two deterministic ranks and a fixture containing two videos.
+    output = tmp_path / "distributed_spatial"
+    args = (
+        "build-memory",
+        "--fixture",
+        "tests/fixtures/tiny_smvqa",
+        "--stores",
+        "spatial",
+        "--out",
+        str(output),
+    )
+
+    # When: a nonzero rank writes first and rank zero performs both merges.
+    rank_one = run_cli(
+        *args,
+        env_overrides={"RANK": "1", "WORLD_SIZE": "2"},
+    )
+    rank_zero = run_cli(
+        *args,
+        env_overrides={"RANK": "0", "WORLD_SIZE": "2"},
+    )
+
+    # Then: merged records and per-rank measurements cover each source once.
+    assert rank_one.returncode == 0, rank_one.stderr
+    assert rank_zero.returncode == 0, rank_zero.stderr
+    record_lines = (output / "spatial.jsonl").read_text(encoding="utf-8").splitlines()
+    stats = tuple(
+        SpatialCompressionManifest.model_validate_json(line)
+        for line in (output / "spatial.stats.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    assert {item.rank for item in stats} == {0, 1}
+    assert all(item.world_size == 2 for item in stats)
+    assert sum(item.source_count for item in stats) == 2
+    assert sum(item.record_count for item in stats) == len(record_lines)
 
 
 def test_build_memory_visual_cli_fails_without_timestamp(tmp_path: Path) -> None:

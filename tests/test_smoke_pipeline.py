@@ -9,6 +9,8 @@ from typing import TYPE_CHECKING
 from pydantic import Field
 
 from worldmm_smvqa import smoke as smoke_module
+from worldmm_smvqa.fixtures import read_fixture_questions
+from worldmm_smvqa.qa_prompt import build_qa_prompt
 from worldmm_smvqa.retrieval_types import EvidencePack
 from worldmm_smvqa.schema import FrozenModel, MemoryBuilderCandidate, PredictionRecord
 from worldmm_smvqa.smoke import SmokeMemoryManifest
@@ -155,6 +157,12 @@ def test_smoke_cli_writes_parseable_artifacts_and_replaces_rerun(
     assert manifest.spatial_memory.path.endswith("spatial_memory.jsonl")
     assert manifest.spatial_memory.count > 0
     assert Path(manifest.spatial_memory.path).is_file()
+    assert manifest.spatial_experiment.name == "source-compact-v1"
+    assert manifest.spatial_experiment.encoder == "structured-v1"
+    assert (
+        manifest.spatial_compression.compressed_bytes
+        < manifest.spatial_compression.raw_bytes
+    )
     assert (out_dir / "spatial_diagnostics.json").is_file()
     assert manifest.artifacts.spatial_diagnostics.endswith("spatial_diagnostics.json")
     diagnostics = SmokeSpatialDiagnostics.model_validate_json(
@@ -242,6 +250,49 @@ def test_smoke_retrieval_uses_current_worldmm_store_state(
         for pack in packs
         for item in pack.evidence
     )
+
+
+def test_spatial_experiment_flows_through_combined_worldmm_qa(
+    tmp_path: Path,
+) -> None:
+    # Given: one explicit encoder/projection/decoder experiment configuration.
+    out_dir = tmp_path / "smoke-spatial-experiment"
+    env = {
+        "WORLDMM_SPATIAL_EXPERIMENT_CONFIG": (
+            "configs/spatial/source_compact_v1.json"
+        ),
+    }
+
+    # When: smoke builds every memory store, retrieves, and runs QA.
+    result = smoke_module.run_smoke_pipeline(Path(FIXTURE), out_dir, env)
+    packs = tuple(
+        EvidencePack.model_validate_json(line)
+        for line in (out_dir / "evidence_packs.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    pack = next(item for item in packs if item.question_id == "q_fake_005")
+    question = next(
+        item
+        for item in read_fixture_questions(Path(FIXTURE))
+        if item.question_id == pack.question_id
+    )
+    prompt = build_qa_prompt(question, pack)
+
+    # Then: spatial and non-spatial evidence share one pack and one QA prompt.
+    assert result.predictions == 6
+    assert "spatial" in pack.selected_stores
+    assert any(store != "spatial" for store in pack.selected_stores)
+    assert '"source_store":"spatial"' in prompt
+    assert '"source_store":"episodic"' in prompt
+    spatial_geometry = next(
+        item.geometry
+        for item in pack.evidence
+        if item.source_store == "spatial" and item.geometry is not None
+    )
+    assert spatial_geometry["encoder"] == "structured-v1"
+    assert spatial_geometry["projection_head"] == "identity-v1"
+    assert spatial_geometry["token_decoder"] == "delta-topk-v1"  # noqa: S105
 
 
 def test_smoke_cli_writes_ablation_report_without_spatial(tmp_path: Path) -> None:

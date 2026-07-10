@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -67,6 +67,7 @@ class QARetrievalOptions:
     use_chunk_protocol: bool = True
     max_frame_refs: int = 32
     frame_root: Path | None = None
+    spatial_env: Mapping[str, str] | None = None
 
 
 DEFAULT_QA_RETRIEVAL_OPTIONS: Final = QARetrievalOptions()
@@ -187,7 +188,10 @@ def run_qa(
     retrieval_options: QARetrievalOptions = DEFAULT_QA_RETRIEVAL_OPTIONS,
 ) -> tuple[PredictionRecord, ...]:
     sources = read_source_streams(fixture_dir)
-    memories = build_fixture_retrieval_stores(fixture_dir)
+    memories = build_fixture_retrieval_stores(
+        fixture_dir,
+        env=retrieval_options.spatial_env,
+    )
     retrieval_chunks = retrieval_options.chunks
     if retrieval_chunks is None and retrieval_options.use_chunk_protocol:
         retrieval_chunks = build_chunks(sources)

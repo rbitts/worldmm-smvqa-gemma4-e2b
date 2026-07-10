@@ -4,6 +4,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, override
 
+from pydantic import Field
+
 from worldmm_smvqa.schema import FrozenModel
 
 type SpatialProvenance = Literal["object_geometry", "pose", "slam_pose", "gaze"]
@@ -83,6 +85,22 @@ class SpatialRelationRecord(FrozenModel):
     delta_x: float | None = None
     delta_y: float | None = None
     delta_z: float | None = None
+
+
+class SpatialTokenRecord(FrozenModel):
+    record_type: Literal["spatial_token"] = "spatial_token"
+    memory_id: str
+    store: Literal["spatial"] = "spatial"
+    video_id: str
+    encoder: str = "structured-v1"
+    projection_head: str = "identity-v1"
+    token_decoder: str = "delta-topk-v1"  # noqa: S105
+    codec: str = "compact-json-v1"
+    start_time: float
+    end_time: float
+    token: str
+    importance: float = Field(ge=0.0, le=1.0)
+    frame_refs: tuple[str, ...] = ()
 
 
 class ObjectStateSnapshotRecord(FrozenModel):

@@ -46,6 +46,7 @@ from worldmm_smvqa.worldmm.episodic import (
     InvalidTemporalGraphError,
 )
 from worldmm_smvqa.worldmm.llm_errors import LLMMemoryError
+from worldmm_smvqa.worldmm.spatial_compression import SpatialCompressionError
 from worldmm_smvqa.worldmm.spatial_diagnostics import SpatialDiagnosticsError
 from worldmm_smvqa.worldmm.visual import (
     MissingGroundingError,
@@ -153,6 +154,7 @@ def main() -> int:
         NoLocalModelBackendError,
         IncompleteRemoteManifestError,
         LLMMemoryError,
+        SpatialCompressionError,
         SpatialDiagnosticsError,
         TransformersGenerationError,
     ) as exc:

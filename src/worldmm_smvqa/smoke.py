@@ -35,19 +35,21 @@ from worldmm_smvqa.schema import (
 )
 from worldmm_smvqa.worldmm.episodic import build_episodic_graph
 from worldmm_smvqa.worldmm.semantic import build_semantic_memory
-from worldmm_smvqa.worldmm.spatial import (
-    build_object_anchors,
-    build_object_state_snapshots,
-    build_trajectory_summaries,
-    build_zones,
-    derive_relations,
+from worldmm_smvqa.worldmm.spatial_compression import (
+    SpatialCompressionResult,
+    SpatialExperimentConfig,
+    build_compressed_spatial_memory,
+    spatial_token_relation_record,
 )
 from worldmm_smvqa.worldmm.spatial_diagnostics import (
     ExpectedSpatialRelation,
     memory_recall_at_k,
     relation_accuracy,
 )
-from worldmm_smvqa.worldmm.spatial_types import SpatialRelationRecord, ZoneRecord
+from worldmm_smvqa.worldmm.spatial_types import (
+    SpatialRelationRecord,
+    SpatialTokenRecord,
+)
 from worldmm_smvqa.worldmm.visual import build_visual_memory
 
 if TYPE_CHECKING:
@@ -128,6 +130,13 @@ class SmokeMemoryArtifact(FrozenModel):
     count: int
 
 
+class SmokeSpatialCompression(FrozenModel):
+    candidate_count: int
+    raw_record_count: int
+    raw_bytes: int
+    compressed_bytes: int
+
+
 class SmokeMemoryManifest(FrozenModel):
     fixture: str
     source_examples: int
@@ -135,6 +144,8 @@ class SmokeMemoryManifest(FrozenModel):
     chunks: int
     source_memories: int
     spatial_memory: SmokeMemoryArtifact
+    spatial_experiment: SpatialExperimentConfig
+    spatial_compression: SmokeSpatialCompression
     counts_by_store: SmokeCountsByStore
     artifacts: SmokeArtifacts
 
@@ -194,7 +205,8 @@ def run_smoke_pipeline(
     episodic = build_episodic_graph(chunks, source_memories)
     semantic = build_semantic_memory(sources)
     visual = build_visual_memory(sources)
-    spatial = _build_spatial_memory(sources, clip_chunks)
+    spatial_result = _build_spatial_memory(sources, clip_chunks, env)
+    spatial = spatial_result.records
     retrieval_memories = build_retrieval_records(episodic, semantic, visual, spatial)
     backend = MockQABackend()
     packs, predictions = _run_retrieval_qa(
@@ -266,6 +278,13 @@ def run_smoke_pipeline(
         spatial_memory=SmokeMemoryArtifact(
             path=str(spatial_memory_path),
             count=len(spatial),
+        ),
+        spatial_experiment=spatial_result.experiment,
+        spatial_compression=SmokeSpatialCompression(
+            candidate_count=spatial_result.candidate_count,
+            raw_record_count=spatial_result.raw_record_count,
+            raw_bytes=spatial_result.raw_bytes,
+            compressed_bytes=spatial_result.compressed_bytes,
         ),
         counts_by_store=SmokeCountsByStore(
             source=_source_counts(source_memories),
@@ -417,20 +436,13 @@ def _ordered_stores(stores: frozenset[RetrievalStore]) -> tuple[RetrievalStore, 
 def _build_spatial_memory(
     sources: Sequence[SourceStreamExample],
     clip_chunks: Sequence[StreamChunk],
-) -> tuple[SpatialRetrievalRecord, ...]:
-    zones = tuple(record for source in sources for record in build_zones(source))
-    anchors = tuple(
-        record for source in sources for record in build_object_anchors(source)
-    )
-    trajectory_chunks = tuple(
-        chunk for chunk in clip_chunks if _has_zone_overlap(chunk, zones)
-    )
-    return (
-        *zones,
-        *anchors,
-        *tuple(derive_relations(anchors)),
-        *build_object_state_snapshots(clip_chunks, anchors),
-        *build_trajectory_summaries(trajectory_chunks, zones),
+    env: Mapping[str, str],
+) -> SpatialCompressionResult:
+    return build_compressed_spatial_memory(
+        sources,
+        clip_chunks,
+        env=env,
+        measure_legacy=True,
     )
 
 
@@ -443,7 +455,20 @@ def _write_spatial_diagnostics(
     labels = _read_labels(fixture_dir / "labels.jsonl")
     expected = _read_expected_relations(fixture_dir / "expected_relations.jsonl")
     predicted = tuple(
-        record for record in spatial if isinstance(record, SpatialRelationRecord)
+        relation
+        for record in spatial
+        if (
+            relation := (
+                record
+                if isinstance(record, SpatialRelationRecord)
+                else (
+                    spatial_token_relation_record(record)
+                    if isinstance(record, SpatialTokenRecord)
+                    else None
+                )
+            )
+        )
+        is not None
     )
     relation = relation_accuracy(predicted, expected)
     recall = memory_recall_at_k(packs, labels, 6)
@@ -474,20 +499,6 @@ def _read_expected_relations(path: Path) -> tuple[ExpectedSpatialRelation, ...]:
         ExpectedSpatialRelation.model_validate_json(line)
         for line in path.read_text(encoding="utf-8").splitlines()
         if line.strip()
-    )
-
-
-def _has_zone_overlap(
-    chunk: StreamChunk,
-    zones: Sequence[ZoneRecord],
-) -> bool:
-    return any(
-        zone.video_id == chunk.video_id
-        and any(
-            start < chunk.end_time and chunk.start_time < end
-            for start, end in zone.visit_intervals
-        )
-        for zone in zones
     )
 
 

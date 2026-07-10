@@ -24,6 +24,12 @@ Implemented locally:
 - 30s clip / 30m shard chunking
 - source memories for captions, transcript, OCR, objects, frame metadata
 - WorldMM stores: `episodic`, `semantic`, `visual`, `spatial`
+- pluggable spatial model:
+  `encoder -> projection head -> token decoder -> selector -> codec`
+- compact causal spatial tokens with quantization, duplicate suppression,
+  canonical relations, and per-window token budgets
+- QA-supervised selector data preparation and remote-only tiny linear-head training
+- effective spatial experiment persisted in local/remote manifests
 - Video-RAG causal shard eligibility
 - EgoButler-style `shard_30m -> clip_30s -> memory records` retrieval
 - WorldMM store routing with spatial-first route for location questions
@@ -59,7 +65,7 @@ locally.
 Latest local gate:
 
 ```text
-uv run --offline pytest -q       -> 171 passed
+uv run --offline pytest -q       -> 185 passed
 uv run --offline ruff check .    -> PASS
 uv run --offline basedpyright    -> 0 errors, 0 warnings
 generated Slurm bash -n          -> PASS
@@ -186,6 +192,8 @@ export WORLDMM_OUTPUT_ROOT="/repo/VTteam/bongh.park/outputs/$WORLDMM_RUN_ID"
 export WORLDMM_REMOTE_NODES=10
 export WORLDMM_GPUS_PER_NODE=8
 export WORLDMM_DDP_LAUNCHER='python -m torch.distributed.run'
+export WORLDMM_TRITON_CACHE_ROOT=\
+"${SLURM_TMPDIR:-/tmp}/worldmm-triton-${SLURM_JOB_ID}"
 
 # Required only when downloading gated/missing models. Inject from the company
 # secret mechanism or interactive shell; never save this value in the repo.
@@ -194,6 +202,11 @@ export WORLDMM_DDP_LAUNCHER='python -m torch.distributed.run'
 # Memory-model paths must be on company storage. These models may be downloaded
 # remotely if they are not already present.
 export WORLDMM_MEMORY_MODEL_PATH=/repo/VTteam/bongh.park/outputs/models/qwen3-vl
+
+# One config controls spatial encoder, projection head, token decoder, codec,
+# selector weights, token budget, and quantization for the full QA run.
+export WORLDMM_SPATIAL_EXPERIMENT_CONFIG=\
+"$WORLDMM_REMOTE_REPO/configs/spatial/source_compact_v1.json"
 ```
 
 Activate the checked-in remote virtual environment:
@@ -275,6 +288,36 @@ Generated Slurm workload runs Qwen episodic/semantic/visual builders across all
 80 ranks, partitioned by video, with resumable rank artifacts. Commands below
 are single-process equivalents for a bounded probe:
 
+Spatial memory is built by one composable model:
+
+```text
+SpatialGeometryEncoder -> SpatialProjectionHead -> SpatialTokenDecoder
+-> keep-score head -> SpatialMemoryCodec -> spatial store
+```
+
+The resulting spatial store is not decoded as a separate QA answer. Retrieval
+combines it with episodic, semantic, and visual stores before Gemma QA.
+
+Optional selector fitting should run on a company CPU node because the current
+head is a tiny linear model:
+
+```bash
+python -m worldmm_smvqa.spatial_selector_train prepare \
+  --fixture "$SMVQA_DATA_ROOT" \
+  --experiment "$WORLDMM_SPATIAL_EXPERIMENT_CONFIG" \
+  --out "$WORLDMM_OUTPUT_ROOT/manifests/spatial-selector-rows.jsonl"
+
+WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST=1 \
+python -m worldmm_smvqa.spatial_selector_train train \
+  --config configs/remote.example.yaml \
+  --input "$WORLDMM_OUTPUT_ROOT/manifests/spatial-selector-rows.jsonl" \
+  --out "$WORLDMM_OUTPUT_ROOT/models/spatial-selector.json"
+```
+
+Point a new experiment JSON at the trained selector before the main run. CUT3R
+or another geometry model should be added as an encoder plugin plus a projection
+head; the retrieval and QA stages remain unchanged.
+
 ```bash
 worldmm-smvqa build-memory \
   --stage chunk \
@@ -330,6 +373,12 @@ payload = {
         "path": str(spatial),
         "count": sum(1 for _ in spatial.open(encoding="utf-8")),
     },
+    "spatial_experiment": str(
+        root / "manifests/spatial_experiment.json"
+    ),
+    "spatial_compression": str(
+        root / "memory/worldmm_sv/spatial.stats.jsonl"
+    ),
 }
 print(json.dumps(payload, sort_keys=True))
 PY
@@ -342,7 +391,9 @@ test -s "$WORLDMM_OUTPUT_ROOT/memory/episodic.jsonl"
 test -s "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/semantic.jsonl"
 test -s "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/visual.jsonl"
 test -s "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl"
+test -s "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.stats.jsonl"
 test -s "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json"
+test -s "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"
 ```
 
 ### 3. Build Retrieval Evidence
@@ -612,12 +663,14 @@ Under `$WORLDMM_OUTPUT_ROOT`:
 
 - `manifests/source_roots.txt`
 - `manifests/question_ids.txt`
+- `manifests/spatial_experiment.json`
 - `chunks/source_chunks.jsonl`
 - `source_refs/source_memories.jsonl`
 - `memory/episodic.jsonl`
 - `memory/worldmm_sv/semantic.jsonl`
 - `memory/worldmm_sv/visual.jsonl`
 - `memory/worldmm_sv/spatial.jsonl`
+- `memory/worldmm_sv/spatial.stats.jsonl`
 - `memory/memory_manifest.json`
 - `retrieval/evidence_packs.jsonl`
 - `qa/predictions.jsonl`

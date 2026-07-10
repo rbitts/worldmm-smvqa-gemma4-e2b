@@ -32,7 +32,6 @@ from worldmm_smvqa.remote_plan import plan_stdout, write_remote_plan
 from worldmm_smvqa.report import write_report
 from worldmm_smvqa.retrieval import (
     RetrievalOptions,
-    SpatialRetrievalRecord,
     build_fixture_retrieval_stores,
     injected_future_memory,
     parse_retrieval_stores,
@@ -43,28 +42,28 @@ from worldmm_smvqa.smoke import run_smoke_pipeline, smoke_stdout
 from worldmm_smvqa.worldmm.episodic import write_fixture_episodic_memory
 from worldmm_smvqa.worldmm.llm_memory_io import (
     LLMMemoryBindings,
+    distributed_env,
+    partition_by_video,
     qwen_bindings,
+    write_distributed_jsonl,
     write_llm_episodic_memory,
     write_llm_semantic_memory,
     write_llm_visual_memory,
 )
 from worldmm_smvqa.worldmm.semantic import write_fixture_semantic_memory
-from worldmm_smvqa.worldmm.spatial import (
-    build_object_anchors,
-    build_object_state_snapshots,
-    build_trajectory_summaries,
-    build_zones,
-    derive_relations,
+from worldmm_smvqa.worldmm.spatial_compression import (
+    SpatialCompressionManifest,
+    build_compressed_spatial_memory,
 )
 from worldmm_smvqa.worldmm.spatial_diagnostics import (
     write_spatial_retrieval_diagnostics,
 )
+from worldmm_smvqa.worldmm.spatial_types import SpatialTokenRecord
 from worldmm_smvqa.worldmm.visual import write_fixture_visual_memory
 
 if TYPE_CHECKING:
     from worldmm_smvqa.retrieval_types import EvidencePack, RetrievalMemoryRecord
     from worldmm_smvqa.schema import QuestionRequest, StreamChunk
-    from worldmm_smvqa.worldmm.spatial_types import ZoneRecord
 
 SUPPORTED_BUILD_STORES: Final = frozenset(
     {"episodic", "semantic", "visual", "spatial"},
@@ -241,6 +240,7 @@ def handle_qa(args: ParsedArgs) -> CommandResult:
             use_chunk_protocol=args.retrieval_protocol == "worldmm-smvqa",
             max_frame_refs=args.max_frame_refs,
             frame_root=fixture_dir / "frames",
+            spatial_env=os.environ,
         ),
     )
     write_predictions_jsonl(predictions, args.out)
@@ -339,8 +339,7 @@ def _handle_source_memory_build(args: ParsedArgs) -> CommandResult:
     stores = ",".join(summary.stores)
     return CommandResult(
         stdout=(
-            f"wrote {summary.path}\n"
-            f"source_memories={summary.records} stores={stores}\n"
+            f"wrote {summary.path}\nsource_memories={summary.records} stores={stores}\n"
         ),
     )
 
@@ -368,7 +367,11 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
         raise CliUsageError(detail="build-memory semantic/visual requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
     stores = _requested_stores(args.store or "")
-    bindings = _llm_bindings(args) if args.backend == "qwen" else None
+    bindings = (
+        _llm_bindings(args)
+        if args.backend == "qwen" and stores & {"semantic", "visual"}
+        else None
+    )
     args.out.mkdir(parents=True, exist_ok=True)
     semantic_records = 0
     visual_records = 0
@@ -450,35 +453,36 @@ def _frame_root(fixture_dir: Path) -> Path:
 
 
 def _write_fixture_spatial_memory(fixture_dir: Path, output: Path) -> int:
-    records = _build_fixture_spatial_memory(fixture_dir)
-    output.parent.mkdir(parents=True, exist_ok=True)
-    _ = output.write_text(
-        "".join(f"{record.model_dump_json()}\n" for record in records),
-        encoding="utf-8",
-    )
-    return len(records)
-
-
-def _build_fixture_spatial_memory(
-    fixture_dir: Path,
-) -> tuple[SpatialRetrievalRecord, ...]:
-    sources = read_source_streams(fixture_dir)
+    sources = partition_by_video(read_source_streams(fixture_dir))
     chunks = build_chunks(sources)
     clip_chunks = tuple(chunk for chunk in chunks if chunk.granularity == "clip_30s")
-    zones = tuple(record for source in sources for record in build_zones(source))
-    anchors = tuple(
-        record for source in sources for record in build_object_anchors(source)
+    result = build_compressed_spatial_memory(
+        sources,
+        clip_chunks,
+        measure_legacy=True,
     )
-    trajectory_chunks = tuple(
-        chunk for chunk in clip_chunks if _has_zone_overlap(chunk, zones)
+    written = write_distributed_jsonl(result.records, output)
+    rank, world_size = distributed_env()
+    manifest = SpatialCompressionManifest(
+        experiment=result.experiment,
+        rank=rank,
+        world_size=world_size,
+        source_count=len(sources),
+        record_count=len(result.records),
+        token_count=sum(
+            isinstance(record, SpatialTokenRecord) for record in result.records
+        ),
+        trajectory_count=sum(
+            not isinstance(record, SpatialTokenRecord) for record in result.records
+        ),
+        candidate_count=result.candidate_count,
+        raw_record_count=result.raw_record_count,
+        raw_bytes=result.raw_bytes,
+        compressed_bytes=result.compressed_bytes,
     )
-    return (
-        *zones,
-        *anchors,
-        *tuple(derive_relations(anchors)),
-        *build_object_state_snapshots(clip_chunks, anchors),
-        *build_trajectory_summaries(trajectory_chunks, zones),
-    )
+    stats_path = output.with_name(f"{output.stem}.stats{output.suffix}")
+    _ = write_distributed_jsonl((manifest,), stats_path)
+    return sum(1 for line in written.read_text(encoding="utf-8").splitlines() if line)
 
 
 def _retrieval_chunks(
@@ -504,20 +508,6 @@ def _validate_ablation_protocol(ablation_protocol: str) -> None:
         raise CliUsageError(
             detail=f"unsupported ablation protocol: {ablation_protocol}",
         )
-
-
-def _has_zone_overlap(
-    chunk: StreamChunk,
-    zones: tuple[ZoneRecord, ...],
-) -> bool:
-    return any(
-        zone.video_id == chunk.video_id
-        and any(
-            start < chunk.end_time and chunk.start_time < end
-            for start, end in zone.visit_intervals
-        )
-        for zone in zones
-    )
 
 
 def _read_fixture_question(fixture_dir: Path, question_id: str) -> QuestionRequest:

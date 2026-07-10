@@ -1,0 +1,21 @@
+{
+  "name": "source-compact-v1",
+  "encoder": "structured-v1",
+  "projection_head": "identity-v1",
+  "token_decoder": "delta-topk-v1",
+  "codec": "compact-json-v1",
+  "selector": "linear-v1",
+  "selector_path": null,
+  "token_budget": 16,
+  "quantization_m": 0.25,
+  "window_seconds": 30.0,
+  "min_keep_score": 0.5,
+  "plugins": [],
+  "encoder_options": {},
+  "projection_options": {},
+  "decoder_options": {
+    "object_delta_multiplier": 2.0
+  },
+  "codec_options": {},
+  "selector_options": {}
+}
