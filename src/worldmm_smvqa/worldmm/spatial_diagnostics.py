@@ -26,6 +26,7 @@ type DiagnosticStore = Literal[
     "semantic",
     "visual",
     "spatial",
+    "supermemory",
 ]
 type DiagnosticProtocol = Literal["smvqa-video-rag", "egobutler", "worldmm"]
 
@@ -37,6 +38,7 @@ STORES: tuple[DiagnosticStore, ...] = (
     "semantic",
     "visual",
     "spatial",
+    "supermemory",
 )
 PROTOCOLS: tuple[DiagnosticProtocol, ...] = (
     "smvqa-video-rag",
@@ -242,7 +244,10 @@ def memory_recall_at_k(
     )
 
 
-def _parse_store(raw_span: str, raw_store: str) -> DiagnosticStore:
+def _parse_store(  # noqa: PLR0911
+    raw_span: str,
+    raw_store: str,
+) -> DiagnosticStore:
     match raw_store:
         case "transcript":
             return "transcript"
@@ -256,6 +261,8 @@ def _parse_store(raw_span: str, raw_store: str) -> DiagnosticStore:
             return "visual"
         case "spatial":
             return "spatial"
+        case "supermemory":
+            return "supermemory"
         case other:
             raise InvalidEvidenceSpanError(
                 raw_span=raw_span,
@@ -263,7 +270,7 @@ def _parse_store(raw_span: str, raw_store: str) -> DiagnosticStore:
             )
 
 
-def _retrieval_store_for_label(store: DiagnosticStore) -> RetrievalStore:
+def _retrieval_store_for_label(store: DiagnosticStore) -> RetrievalStore | None:
     match store:
         case "transcript" | "episodic":
             return "episodic"
@@ -273,6 +280,8 @@ def _retrieval_store_for_label(store: DiagnosticStore) -> RetrievalStore:
             return "semantic"
         case "spatial":
             return "spatial"
+        case "supermemory":
+            return None
 
 
 def _relation_tuple(relation: RelationInput) -> RelationTuple:

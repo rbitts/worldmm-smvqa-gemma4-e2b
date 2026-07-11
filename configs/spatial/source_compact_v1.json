@@ -7,6 +7,7 @@
   "selector": "linear-v1",
   "selector_path": null,
   "token_budget": 16,
+  "byte_budget": 4096,
   "quantization_m": 0.25,
   "window_seconds": 30.0,
   "min_keep_score": 0.5,

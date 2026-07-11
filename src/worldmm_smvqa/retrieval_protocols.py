@@ -26,6 +26,8 @@ type AvailableWorldMMStores = Sequence[WorldMMPolicyStore] | frozenset[
 
 LOCATION_TERMS: Final = (
     "where",
+    "how far",
+    "distance",
     "last seen",
     "near",
     "zone",
@@ -377,7 +379,7 @@ def _clip_score_key(
     records: Sequence[RetrievalMemoryRecord],
 ) -> tuple[float, float, str]:
     score = _snippet_score(question, _memory_snippet(clip.memory_ids, records))
-    return (-score, clip.start_time, clip.clip_id)
+    return (-score, -clip.start_time, clip.clip_id)
 
 
 def _shard_score_key(
@@ -393,7 +395,7 @@ def _shard_score_key(
         for memory_id in clip.memory_ids
     )
     score = _snippet_score(question, _memory_snippet(memory_ids, records))
-    return (-score, shard.start_time, shard.shard_id)
+    return (-score, -shard.start_time, shard.shard_id)
 
 
 def _memory_snippet(

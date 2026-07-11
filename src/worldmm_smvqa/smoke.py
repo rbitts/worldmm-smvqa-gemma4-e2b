@@ -34,6 +34,7 @@ from worldmm_smvqa.schema import (
     StreamChunk,
 )
 from worldmm_smvqa.worldmm.episodic import build_episodic_graph
+from worldmm_smvqa.worldmm.geometry_executor import geometry_proofs_for_question
 from worldmm_smvqa.worldmm.semantic import build_semantic_memory
 from worldmm_smvqa.worldmm.spatial_compression import (
     SpatialCompressionResult,
@@ -45,6 +46,7 @@ from worldmm_smvqa.worldmm.spatial_diagnostics import (
     ExpectedSpatialRelation,
     memory_recall_at_k,
     relation_accuracy,
+    relation_metric_accuracy,
 )
 from worldmm_smvqa.worldmm.spatial_types import (
     SpatialRelationRecord,
@@ -343,7 +345,12 @@ def _run_retrieval_qa(
             enabled_stores=enabled_stores,
             options=RetrievalOptions(chunks=chunks, max_frame_refs=32),
         )
-        prompt = build_qa_prompt(question, pack)
+        geometry_proofs = geometry_proofs_for_question(
+            question,
+            pack,
+            coordinate_frame="source_world",
+        )
+        prompt = build_qa_prompt(question, pack, geometry_proofs=geometry_proofs)
         packs.append(pack)
         predictions.append(
             parse_qa_output(
@@ -352,6 +359,7 @@ def _run_retrieval_qa(
                 prompt_token_count=len(prompt.split()),
                 raw_model_output_path=None,
                 evidence_pack=pack,
+                geometry_proofs=geometry_proofs,
             ),
         )
     return tuple(packs), tuple(predictions)
@@ -471,9 +479,11 @@ def _write_spatial_diagnostics(
         is not None
     )
     relation = relation_accuracy(predicted, expected)
+    metric_relation = relation_metric_accuracy(predicted, expected)
     recall = memory_recall_at_k(packs, labels, 6)
     payload = {
         "relation_accuracy": relation.model_dump(),
+        "relation_metric_accuracy": metric_relation.model_dump(),
         "recall_at_k": recall.recall_at_k,
         "protocol_recall_at_k": recall.protocol_recall_at_k,
         "k": recall.k,

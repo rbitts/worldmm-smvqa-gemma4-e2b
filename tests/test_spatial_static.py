@@ -29,9 +29,7 @@ def _source() -> SourceStreamExample:
             PoseSample(timestamp=6.0, x=2.4, y=0.4, z=0.0),
             PoseSample(timestamp=8.0, x=0.5, y=0.5, z=0.0),
         ),
-        gaze_samples=(
-            GazeSample(timestamp=2.0, x=0.4, y=0.4, z=1.0),
-        ),
+        gaze_samples=(GazeSample(timestamp=2.0, x=0.4, y=0.4, z=1.0),),
         object_detections=(
             ObjectMetadata(label="mug", confidence=0.9, start_time=1.0, end_time=3.0),
             ObjectMetadata(
@@ -101,8 +99,8 @@ def test_build_object_anchors_prefers_gaze_then_interpolated_pose() -> None:
     assert mug.frame_refs == ("spatial_video_frame_0002",)
     assert notebook.object_label == "notebook"
     assert notebook.zone_id == "zone_spatial_video_0_0"
-    assert notebook.x == pytest.approx(1.29)
-    assert notebook.y == pytest.approx(0.235)
+    assert notebook.x == pytest.approx(0.8)
+    assert notebook.y == pytest.approx(0.2)
     assert notebook.z == pytest.approx(0.0)
     assert notebook.provenance == "pose"
     assert notebook.frame_refs == ("spatial_video_frame_0002",)
@@ -141,23 +139,15 @@ def test_build_object_anchors_prefers_object_geometry_over_gaze() -> None:
     assert anchor.geometry_embedding_ref == "geometry:object_geometry:geo_video_mug_1"
 
 
-def test_derive_relations_emits_one_ordered_near_relation() -> None:
-    # Given: two overlapping anchors in the same zone under the near threshold.
+def test_derive_relations_rejects_proxy_metric_relation() -> None:
+    # Given: overlapping gaze/pose proxy anchors under the near threshold.
     anchors = build_object_anchors(_source())
 
     # When: static spatial relations are derived.
     relations = derive_relations(anchors)
 
-    # Then: one lexicographically ordered near relation covers the overlap.
-    assert len(relations) == 1
-    relation = relations[0]
-    assert relation.memory_id == "spatial_relation:spatial_video:mug:near:notebook:2.2"
-    assert relation.subject == "mug"
-    assert relation.relation == "near"
-    assert relation.object == "notebook"
-    assert relation.zone_id == "zone_spatial_video_0_0"
-    assert relation.start_time == 2.2
-    assert relation.end_time == 3.0
+    # Then: proxy coordinates never become metric facts.
+    assert relations == ()
 
 
 def test_derive_relations_emits_directional_geometry_relations() -> None:
@@ -193,8 +183,7 @@ def test_derive_relations_emits_directional_geometry_relations() -> None:
 
     # Then: metric direction survives as structured relation records.
     relation_keys = {
-        (relation.subject, relation.relation, relation.object)
-        for relation in relations
+        (relation.subject, relation.relation, relation.object) for relation in relations
     }
     assert ("mug", "left_of", "notebook") in relation_keys
     assert ("notebook", "right_of", "mug") in relation_keys
@@ -206,11 +195,206 @@ def test_derive_relations_emits_directional_geometry_relations() -> None:
         relation for relation in relations if relation.relation == "left_of"
     )
     assert left_relation.distance_m == pytest.approx(1.5)
+    assert left_relation.coordinate_frame == "source_world"
     assert (
         left_relation.delta_x,
         left_relation.delta_y,
         left_relation.delta_z,
     ) == pytest.approx((1.0, -1.0, -0.5))
+
+
+def test_same_label_instances_keep_distinct_ids_and_relations() -> None:
+    source = SourceStreamExample(
+        video_id="two-mugs",
+        start_time=0.0,
+        end_time=5.0,
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=1.0,
+                end_time=2.0,
+                x=0.0,
+                y=0.0,
+                z=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=1.0,
+                end_time=2.0,
+                x=1.0,
+                y=0.0,
+                z=1.0,
+            ),
+        ),
+    )
+
+    anchors = build_object_anchors(source)
+    relations = derive_relations(anchors)
+
+    assert len({anchor.instance_id for anchor in anchors}) == 2
+    assert len({anchor.memory_id for anchor in anchors}) == 2
+    assert any(
+        relation.subject == relation.object == "mug"
+        and relation.subject_instance_id != relation.object_instance_id
+        for relation in relations
+    )
+
+
+def test_overlapping_revisits_cannot_claim_the_same_prior_instance() -> None:
+    source = SourceStreamExample(
+        video_id="two-mug-revisit",
+        start_time=0.0,
+        end_time=5.0,
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=0.0,
+                end_time=1.0,
+                x=0.0,
+                y=0.0,
+                z=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=2.0,
+                end_time=3.0,
+                x=0.1,
+                y=0.0,
+                z=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=2.0,
+                end_time=3.0,
+                x=0.2,
+                y=0.0,
+                z=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=4.0,
+                end_time=5.0,
+                x=0.1,
+                y=0.0,
+                z=1.0,
+            ),
+        ),
+    )
+
+    initial, first_revisit, second_revisit, later_revisit = build_object_anchors(source)
+
+    assert initial.instance_id == first_revisit.instance_id
+    assert second_revisit.instance_id != first_revisit.instance_id
+    assert later_revisit.instance_id == first_revisit.instance_id
+
+
+def test_relation_is_available_only_after_both_observations_complete() -> None:
+    source = SourceStreamExample(
+        video_id="relation-causal",
+        start_time=0.0,
+        end_time=100.0,
+        object_detections=(
+            ObjectMetadata(
+                label="table",
+                confidence=0.9,
+                start_time=0.0,
+                end_time=100.0,
+                x=0.0,
+                y=0.0,
+                z=0.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=0.0,
+                end_time=1.0,
+                x=0.5,
+                y=0.0,
+                z=0.0,
+            ),
+        ),
+    )
+
+    relation = next(
+        item
+        for item in derive_relations(build_object_anchors(source))
+        if item.relation == "near"
+    )
+
+    assert relation.valid_to == 1.0
+    assert relation.end_time == 100.0
+
+
+def test_moved_instance_closes_previous_validity_interval() -> None:
+    source = SourceStreamExample(
+        video_id="moved-validity",
+        start_time=0.0,
+        end_time=20.0,
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                instance_id="mug-1",
+                confidence=0.9,
+                start_time=1.0,
+                end_time=2.0,
+                x=0.0,
+                y=0.0,
+                z=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                instance_id="mug-1",
+                confidence=0.9,
+                start_time=10.0,
+                end_time=11.0,
+                x=2.0,
+                y=0.0,
+                z=1.0,
+            ),
+        ),
+    )
+
+    before, after = build_object_anchors(source)
+
+    assert before.valid_to == 10.0
+    assert after.valid_from == 10.0
+    assert after.change_type == "moved"
+
+
+def test_anchor_geometry_binding_never_uses_future_primitives() -> None:
+    source = SourceStreamExample(
+        video_id="binding-causal",
+        start_time=0.0,
+        end_time=20.0,
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=0.0,
+                end_time=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=10.0,
+                end_time=11.0,
+                x=9.0,
+                y=9.0,
+                z=9.0,
+            ),
+        ),
+        pose_samples=(PoseSample(timestamp=0.0, x=0.0, y=0.0, z=1.5),),
+    )
+
+    first, _future = build_object_anchors(source)
+
+    assert first.geometry_frame_ref != "binding-causal_mug_10"
 
 
 def test_build_zones_rejects_unsorted_pose_samples() -> None:

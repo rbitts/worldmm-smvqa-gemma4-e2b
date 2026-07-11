@@ -17,10 +17,12 @@ from worldmm_smvqa.fixture_cli import prepare_fixture_stdout, validate_schema_st
 from worldmm_smvqa.fixtures import read_fixture_questions
 from worldmm_smvqa.memory_sources import write_fixture_source_memories
 from worldmm_smvqa.metrics import (
+    InvalidPredictionError,
     evaluate_prediction_files,
     metrics_stdout,
     write_metrics,
 )
+from worldmm_smvqa.preflight import write_preflight_report
 from worldmm_smvqa.qa import (
     Gemma4QABackend,
     MockQABackend,
@@ -80,6 +82,29 @@ def handle_prepare_fixture(args: ParsedArgs) -> CommandResult:
 
 def handle_validate_schema(args: ParsedArgs) -> CommandResult:
     return CommandResult(stdout=validate_schema_stdout(args.config, args.input))
+
+
+def handle_preflight(args: ParsedArgs) -> CommandResult:
+    input_dir = args.input or args.fixture
+    if input_dir is None:
+        raise CliUsageError(detail="preflight requires --input/--fixture")
+    if args.out is None:
+        raise CliUsageError(detail="preflight requires --out")
+    configured_frame_root = os.environ.get("SMVQA_FRAME_ROOT")
+    report = write_preflight_report(
+        input_dir,
+        args.out,
+        frame_root=(
+            None if configured_frame_root is None else Path(configured_frame_root)
+        ),
+    )
+    return CommandResult(
+        stdout=(
+            f"wrote {args.out}\nstatus={report.status} "
+            f"errors={len(report.errors)} warnings={len(report.warnings)}\n"
+        ),
+        exit_code=1 if report.errors else 0,
+    )
 
 
 def handle_build_memory(args: ParsedArgs) -> CommandResult:
@@ -261,6 +286,14 @@ def handle_evaluate(args: ParsedArgs) -> CommandResult:
     if args.out is None:
         raise CliUsageError(detail="evaluate requires --out")
     metrics = evaluate_prediction_files(args.pred, args.labels)
+    if metrics.diagnostics.causal_violation_count:
+        raise InvalidPredictionError(
+            question_id="predictions",
+            detail=(
+                "causal evidence violations: "
+                f"{metrics.diagnostics.causal_violation_count}"
+            ),
+        )
     write_metrics(metrics, args.out)
     return CommandResult(stdout=metrics_stdout(metrics, args.out))
 

@@ -8,12 +8,19 @@ from pathlib import Path
 from typing import Final, Literal, TypedDict, override
 
 from worldmm_smvqa.config import AppConfig, MissingRemoteConfigError
-from worldmm_smvqa.remote_script import script_text
+from worldmm_smvqa.remote_script import (
+    dag_stage_script_text,
+    dag_submit_script_text,
+    script_text,
+)
 
 APPROVAL_ENV: Final = "WORLDMM_SMVQA_REMOTE_APPROVED"
 REMOTE_SCRIPT_NAME: Final = "run_worldmm_smvqa.sh"
+DAG_SUBMIT_SCRIPT_NAME: Final = "submit_worldmm_smvqa_dag.sh"
+DAG_STAGE_SCRIPT_NAME: Final = "run_worldmm_smvqa_stage.sh"
 EXPECTED_OUTPUTS_NAME: Final = "expected_outputs.json"
 COPYBACK_POLICY_NAME: Final = "copyback_policy.txt"
+DEFAULT_REMOTE_REPO: Final = "/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b"
 
 REMOTE_FIELDS: Final = {
     "bastion_host": "BASTION_HOST",
@@ -66,11 +73,17 @@ def write_remote_plan(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     script = out_dir / REMOTE_SCRIPT_NAME
+    dag_submit_script = out_dir / DAG_SUBMIT_SCRIPT_NAME
+    dag_stage_script = out_dir / DAG_STAGE_SCRIPT_NAME
     expected_outputs = out_dir / EXPECTED_OUTPUTS_NAME
     copyback_policy = out_dir / COPYBACK_POLICY_NAME
 
     _ = script.write_text(script_text(), encoding="utf-8")
     script.chmod(0o755)
+    _ = dag_submit_script.write_text(dag_submit_script_text(), encoding="utf-8")
+    dag_submit_script.chmod(0o755)
+    _ = dag_stage_script.write_text(dag_stage_script_text(), encoding="utf-8")
+    dag_stage_script.chmod(0o755)
     _ = expected_outputs.write_text(
         json.dumps(_expected_outputs(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
@@ -88,20 +101,33 @@ def write_remote_plan(
 
 def plan_stdout(result: RemotePlanResult) -> str:
     plan_dir = shlex.quote(str(result.script.parent))
-    remote_plan_dir = "$WORLDMM_REMOTE_REPO/remote-plan"
+    remote_repo_ref = f"${{WORLDMM_REMOTE_REPO:-{DEFAULT_REMOTE_REPO}}}"
+    remote_plan_dir = f"{remote_repo_ref}/remote-plan"
     sync_repo = (
         'rsync -az -e "ssh -J $BASTION_HOST" '
-        "--exclude .git --exclude .venv --exclude .omo ./ "
-        '"$HEAD_NODE:$WORLDMM_REMOTE_REPO/"'
+        "--exclude .git --exclude .venv --exclude .omo --exclude '.env*' ./ "
+        f'"$HEAD_NODE:{remote_repo_ref}/"'
     )
     sync_plan = (
-        f'rsync -az -e "ssh -J $BASTION_HOST" {plan_dir}/ '
+        f'rsync -az -e "ssh -J $BASTION_HOST" --exclude \'.env*\' '
+        f'{plan_dir}/ '
         f'"$HEAD_NODE:{remote_plan_dir}/"'
     )
-    remote_shell_command = (
-        'cd "$WORLDMM_REMOTE_REPO" && '
+    remote_repo = f'"${{WORLDMM_REMOTE_REPO:-{DEFAULT_REMOTE_REPO}}}"'
+    legacy_remote_shell_command = (
+        f"cd {remote_repo} && "
         "mkdir -p remote-plan/logs && "
         f"/opt/slurm/bin/sbatch --parsable remote-plan/{REMOTE_SCRIPT_NAME}"
+    )
+    legacy_remote_command = (
+        f'ssh -J "$BASTION_HOST" "$HEAD_NODE" '
+        f"{shlex.quote(legacy_remote_shell_command)}"
+    )
+    remote_shell_command = (
+        f"cd {remote_repo} && "
+        "mkdir -p remote-plan/logs && "
+        f"{f'{APPROVAL_ENV}=1 ' if result.mode == 'approved-plan-only' else ''}"
+        f"bash remote-plan/{DAG_SUBMIT_SCRIPT_NAME}"
     )
     remote_command = (
         f'ssh -J "$BASTION_HOST" "$HEAD_NODE" {shlex.quote(remote_shell_command)}'
@@ -111,7 +137,10 @@ def plan_stdout(result: RemotePlanResult) -> str:
         f"wrote {result.script}\n"
         f"wrote {result.expected_outputs}\n"
         f"wrote {result.copyback_policy}\n"
+        f"wrote {result.script.parent / DAG_SUBMIT_SCRIPT_NAME}\n"
+        f"wrote {result.script.parent / DAG_STAGE_SCRIPT_NAME}\n"
         "# dry-run/plan only; no ssh, remote shell, or job submission opened locally\n"
+        f"# legacy single-job compatibility: {legacy_remote_command}\n"
         f"{sync_repo}\n"
         f"{sync_plan}\n"
         f"{remote_command}\n"
@@ -127,60 +156,43 @@ def _require_remote_placeholders(config: AppConfig) -> None:
 
 def _expected_outputs() -> ExpectedOutputs:
     return {
-        "remote_job_reference": "slurm-${SLURM_JOB_ID}",
+        "remote_job_reference": (
+            "$WORLDMM_OUTPUT_ROOT/summary/dag_jobs.env#REPORT_JOB_ID"
+        ),
         "metrics": ["Ans-F1", "QA-Acc", "QA-MRR"],
         "outputs": {
-            "source_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/source_roots.txt",
             "sensor_frame_manifest": (
                 "$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl"
             ),
-            "question_manifest": "$WORLDMM_OUTPUT_ROOT/manifests/question_ids.txt",
-            "spatial_experiment": (
-                "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"
+            "chunk_manifest": (
+                "$WORLDMM_OUTPUT_ROOT/manifests/source_chunks.jsonl"
             ),
-            "chunk_manifest": "$WORLDMM_OUTPUT_ROOT/chunks/source_chunks.jsonl",
-            "caption_ocr_object_frame_refs": (
-                "$WORLDMM_OUTPUT_ROOT/source_refs/source_memories.jsonl"
+            "source_memories": (
+                "$WORLDMM_OUTPUT_ROOT/manifests/source_memories.jsonl"
             ),
-            "episodic_memory": "$WORLDMM_OUTPUT_ROOT/memory/episodic.jsonl",
-            "semantic_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/semantic.jsonl",
-            "visual_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/visual.jsonl",
-            "spatial_memory": "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl",
-            "spatial_compression": (
-                "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.stats.jsonl"
-            ),
-            "retrieval_evidence": "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl",
-            "retrieval_trace_evidence_packs": (
+            "retrieval_evidence": (
                 "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"
             ),
             "predictions": "$WORLDMM_OUTPUT_ROOT/qa/predictions.jsonl",
             "metrics": "$WORLDMM_OUTPUT_ROOT/metrics/official_metrics.json",
-            "spatial_diagnostics": (
-                "$WORLDMM_OUTPUT_ROOT/diagnostics/spatial_diagnostics.json"
-            ),
-            "ablation_without_spatial": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/"
-                "metrics/official_metrics.json"
-            ),
-            "ablation_protocol_legacy": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
-                "metrics/official_metrics.json"
-            ),
-            "ablation_without_spatial_predictions": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/qa/predictions.jsonl"
-            ),
-            "ablation_protocol_legacy_predictions": (
-                "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
-                "qa/predictions.jsonl"
-            ),
-            "slurm_stdout": ("$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.out"),
-            "slurm_stderr": ("$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.err"),
-            "memory_manifest": "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json",
-            "job_metadata": "$WORLDMM_OUTPUT_ROOT/summary/job.json",
-            "slurm_job_id": "$WORLDMM_OUTPUT_ROOT/summary/slurm_job_id.txt",
+            "stage_logs": "$WORLDMM_OUTPUT_ROOT/logs/*-*.out",
             "summary": "$WORLDMM_OUTPUT_ROOT/summary/summary.txt",
-            "remote_manifest": ("$WORLDMM_OUTPUT_ROOT/summary/remote_manifest.json"),
-            "final_report": "$WORLDMM_OUTPUT_ROOT/summary/final_report.md",
+            "dag_job_manifest": "$WORLDMM_OUTPUT_ROOT/summary/dag_jobs.env",
+            "preflight_report": "$WORLDMM_OUTPUT_ROOT/diagnostics/preflight.json",
+            "teacher_cache_report": (
+                "$WORLDMM_OUTPUT_ROOT/diagnostics/teacher_cache.json"
+            ),
+            "teacher_cache": "$WORLDMM_OUTPUT_ROOT/teacher/cache.jsonl",
+            "student_teacher_cache": (
+                "$WORLDMM_OUTPUT_ROOT/training/student_teacher_cache.jsonl"
+            ),
+            "utility_labels": (
+                "$WORLDMM_OUTPUT_ROOT/training/selector_rows.jsonl"
+            ),
+            "spatial_selector": "$WORLDMM_OUTPUT_ROOT/training/selector.json",
+            "spatial_checkpoint": (
+                "$WORLDMM_OUTPUT_ROOT/checkpoints/spatial_student.pt"
+            ),
         },
         "copyback_allowed": [
             "metrics",

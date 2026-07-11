@@ -1,15 +1,42 @@
 # WorldMM-SMVQA
 
-Minimal scaffold for a WorldMM-style SuperMemory-VQA benchmark package.
+Local-preparation implementation for explicit, compressed spatial memory on
+SuperMemory-VQA. This repository prepares and validates code, contracts, tiny
+fixtures, and launch plans; production artifacts belong on company compute.
 
 ## Design Documents
 
-- [Spatial token compression architecture](docs/spatial-token-compression.md)
-- [Spatial token research roadmap](docs/spatial-token-research-roadmap.md)
+- [Documentation index](docs/README.md)
+- [Spatial Memory project home](docs/spatial-memory/README.md)
+- [Current implementation status](docs/spatial-memory/status.md)
+- [Evidence-to-result traceability](docs/spatial-memory/traceability.md)
+
+The previous spatial architecture, roadmap, and implementation-review files are
+retained as migration sources. New canonical research updates belong under
+`docs/spatial-memory/`.
 
 Local commands are limited to code, config, tiny fixtures, and dry-runs. Real
 model inference, dataset download, full evaluation, checkpoints, and large
 artifacts belong on approved remote compute only.
+
+No real model or dataset download, training, benchmark evaluation, or remote job
+has been run as part of this implementation work.
+
+## Prepared-Data Preflight
+
+Run preflight before any expensive stage:
+
+```bash
+uv run worldmm-smvqa preflight \
+  --fixture tests/fixtures/tiny_smvqa \
+  --out /tmp/worldmm-preflight.json
+```
+
+It validates all three JSONL schemas, question/label ID parity, video scope,
+time ranges, answer/evidence contracts, optional frame-file resolution, task and
+choice distributions, spatial/pose coverage, and the derived at-most-1-Hz frame
+inventory. Errors return a non-zero exit code; warnings remain visible in the
+JSON report.
 
 ## Local Smoke
 
@@ -64,9 +91,16 @@ The default experiment is
 - `identity-v1` projection: preserves the baseline scalar feature schema.
 - `delta-topk-v1` decoder: suppresses repeated static observations, canonicalizes
   inverse relations, and emits spatial-token candidates.
-- `linear-v1` selector: applies a keep-score gate and causal 16-record cap per
-  30s window; future candidates cannot evict admitted past tokens.
+- `linear-v1` selector: applies a keep-score gate plus causal 16-record and
+  4096-byte caps per 30s window. Byte cost is the actual serialized
+  `SpatialTokenRecord` JSONL size. Candidates at the same observation time are
+  greedily ordered by score per byte; future candidates cannot evict admitted
+  past tokens.
 - `compact-json-v1` codec: quantized object, relation, and zone tokens.
+
+The final cap includes static tokens and wearer trajectory summaries. A
+trajectory summary is admitted only when both record and serialized-byte budget
+remain in its 30-second window.
 
 This replaces repeated per-window object geometry snapshots in the main spatial
 artifact. The original detailed builders remain available for diagnostics and
@@ -96,38 +130,100 @@ episodic + semantic + visual + spatial
   -> Gemma QA decoder
 ```
 
-To add CUT3R or another geometry backbone, implement and register
-`SpatialGeometryEncoder`, `SpatialProjectionHead`, and optionally
-`SpatialTokenDecoder`, `SpatialTokenSelector`, or `SpatialMemoryCodec`. The
-encoder can pass an in-process opaque latent state through projection to the
-decoder; only decoder output tokens are persisted. List plugin modules and
-component names in a new experiment JSON. Projected feature names are dynamic,
-so the selector trainer accepts new dimensions without core changes.
+## Typed Teacher And Student Preparation
 
-Prepare QA-supervised keep/drop rows locally on the tiny fixture:
+`worldmm.typed_memory` defines explicit `object`, `plane`, `portal`,
+`free_space`, `landmark`, `event`, and `no_write` records. Geometry,
+uncertainty, validity, instance identity, provenance, and evidence references
+stay explicit; writable records are charged by canonical serialized JSONL bytes.
+
+G-CUT3R is an external teacher contract, not a bundled dependency. An external
+provider receives one causal observation plus only the previous opaque state and
+must emit typed records. The cache records backend/provider identity, request and
+response digests, prefix hash continuity, state references, and observation
+cutoffs. The package never downloads or imports G-CUT3R automatically. Remote
+provider paths use:
+
+- `WORLDMM_GCUT3R_CODE_PATH`
+- `WORLDMM_GCUT3R_CHECKPOINT_PATH`
+- `WORLDMM_GCUT3R_EXTRACTOR` for the staged DAG, or
+  `WORLDMM_TEACHER_CACHE_INPUT` for a precomputed cache
+
+Validate and materialize an external cache:
 
 ```bash
-uv run python -m worldmm_smvqa.spatial_selector_train prepare \
-  --fixture tests/fixtures/tiny_smvqa \
+python -m worldmm_smvqa.worldmm.gcut3r_teacher validate-cache \
+  --cache "$WORLDMM_TEACHER_CACHE_INPUT"
+
+python -m worldmm_smvqa.teacher_materializer \
+  --teacher-cache "$WORLDMM_TEACHER_CACHE_INPUT" \
+  --supervision "$WORLDMM_STUDENT_SUPERVISION_INPUT" \
+  --out /tmp/student_teacher_cache.jsonl
+```
+
+The materializer performs a complete one-to-one join between digest-validated
+teacher records and supervision, rejects split leakage and target mismatch, and
+uses the typed record's actual serialized byte cost.
+
+Prepare selector rows only from an explicit counterfactual utility cache and
+split manifest:
+
+```bash
+python -m worldmm_smvqa.spatial_selector_train prepare \
+  --fixture "$SMVQA_DATA_ROOT" \
   --experiment configs/spatial/source_compact_v1.json \
+  --utility-cache "$WORLDMM_UTILITY_CACHE_INPUT" \
+  --split-manifest "$WORLDMM_SPLIT_MANIFEST_INPUT" \
+  --supervision-mode counterfactual \
   --out /tmp/spatial-selector-rows.jsonl
 ```
 
-Real selector training remains remote-only:
+Utility combines deletion-induced QA loss/score change, geometry coverage,
+uncertainty reduction, pose information, surprise, redundancy, and actual bytes.
+Rows carry hashes of both inputs. Split validation keeps question, participant,
+session, and video groups out of conflicting train/validation/test partitions.
+
+The typed candidate head is a PyTorch multi-head model for record type, typed
+geometry, association, uncertainty, byte rate, and teacher distillation. It is
+not yet a raw RGB/IMU encoder and has no checkpoint-to-record inference decoder.
+CPU
+`dry-run` validates one forward/loss pass; `train` is CUDA and remote-only, uses
+`torch.distributed`, `DistributedSampler`, DDP, reduced validation metrics, and
+atomic resumable checkpoints:
 
 ```bash
-WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST=1 \
-python -m worldmm_smvqa.spatial_selector_train train \
+python -m worldmm_smvqa.spatial_train dry-run \
+  --teacher-cache /tmp/student_teacher_cache.jsonl
+
+# Company GPU environment only, normally launched by the generated Slurm DAG.
+python -m torch.distributed.run ... \
+  -m worldmm_smvqa.spatial_train train \
   --config configs/remote.example.yaml \
-  --input "$WORLDMM_OUTPUT_ROOT/manifests/spatial-selector-rows.jsonl" \
-  --out "$WORLDMM_OUTPUT_ROOT/models/spatial-selector.json"
+  --teacher-cache "$WORLDMM_OUTPUT_ROOT/training/student_teacher_cache.jsonl" \
+  --checkpoint "$WORLDMM_OUTPUT_ROOT/checkpoints/spatial_student.pt"
 ```
 
-Set the trained weight path in a new experiment JSON, then run the normal remote
-memory, retrieval, Gemma QA, metrics, and ablation workflow. The effective
-experiment is written to `manifests/spatial_experiment.json`.
-Distributed spatial build writes rank-level compression measurements to
-`memory/worldmm_sv/spatial.stats.jsonl`.
+## Deterministic Geometry Proofs
+
+QA prompt construction removes spatial snippets and geometry dictionaries, then
+passes only executor proofs. Retrieval bundles the required spatial relation and
+endpoint objects; the deterministic executor supports
+distance, relative direction, near, last-seen, and count. Each answerable proof
+contains the operation, entity IDs, coordinate frame, value, propagated
+uncertainty, provenance, and evidence refs. Ambiguous entities, frame mismatch,
+unsupported provenance, missing yaw, or excessive uncertainty yield an explicit
+unanswerable proof. Count requires an explicit complete-index certificate. Model
+output may persist only known answerable proof IDs. Current memory IDs can still
+encode entity labels; an opaque-ID layer remains future work.
+
+## Learned-Path Boundary
+
+Local preparation does not yet close the learned end-to-end path. Missing pieces
+are checkpoint inference, type-specific geometry decoding, open-world
+association, and generation of student-backed spatial evidence. The staged DAG
+therefore fails closed on externally supplied teacher, supervision, utility,
+split, and student-evidence artifacts. The source-compact path is a tested
+heuristic baseline, not evidence that the learned G-CUT3R student is reproduced.
 
 ## 1 Hz Sensor Input Contract
 
@@ -216,7 +312,7 @@ uv run worldmm-smvqa launch-remote \
   --out .omo/evidence/worldmm-smvqa/remote-plan
 ```
 
-Exact environment variables used by remote config and scripts:
+Core environment variables used by remote config and scripts:
 
 - `WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST=1`
 - `WORLDMM_SMVQA_REMOTE_APPROVED=1`
@@ -235,8 +331,28 @@ Exact environment variables used by remote config and scripts:
 - `REMOTE_JOB_ID_OR_PROCESS_REF`
 - `WORLDMM_RUN_ID`
 - `WORLDMM_REMOTE_REPO`
+- `WORLDMM_SPATIAL_BYTE_BUDGET` (optional, default `4096` per 30s complete-token window)
+- `WORLDMM_TRAIN_EPOCHS`, `WORLDMM_TRAIN_BATCH_SIZE`,
+  `WORLDMM_TRAIN_HIDDEN_DIM`, `WORLDMM_TRAIN_LEARNING_RATE`
+- `WORLDMM_TRAIN_RESUME` (optional existing checkpoint path; missing/empty files fail)
 - `WORLDMM_MODEL_ID` (optional, default `google/gemma-4-E2B-it`)
 - `HF_TOKEN` (remote only, required for the gated Gemma download)
+
+The staged DAG intentionally fails closed unless externally produced inputs are
+provided:
+
+- `WORLDMM_GCUT3R_EXTRACTOR` **or** `WORLDMM_TEACHER_CACHE_INPUT`
+- `WORLDMM_STUDENT_SUPERVISION_INPUT`
+- `WORLDMM_UTILITY_CACHE_INPUT`
+- `WORLDMM_SPLIT_MANIFEST_INPUT`
+- `WORLDMM_QA_EVIDENCE_INPUT` (evidence generated from the trained student path)
+
+CPU/GPU resource controls include `WORLDMM_CPU_PARTITION`,
+`WORLDMM_GPU_PARTITION`, and the `WORLDMM_{PREFLIGHT,TEACHER,UTILITY,TRAIN,REPORT}_*`
+node/CPU/GPU/memory/time variables. GPU stages inherit the project contract of
+10 nodes and 8 GPUs per node; set
+`WORLDMM_TEACHER_NODES`, `WORLDMM_TRAIN_NODES`, and their GPU counts explicitly
+lower for an approved bounded probe.
 
 Remote-only commands also require `runtime.location=remote` in the selected
 config.
@@ -249,17 +365,45 @@ On the remote host (via bastion/head node), install the inference stack once:
 uv sync --extra remote
 ```
 
+The generated plan writes a legacy single-job script plus the preferred staged
+DAG:
+
+```text
+preflight_ingest (CPU)
+  -> teacher_extract (GPU)
+  -> merge_utility (CPU)
+  -> train_qa (GPU, torch.distributed/DDP)
+  -> metrics_report (CPU)
+```
+
+Each dependency uses Slurm `afterok`; any failed or missing prerequisite blocks
+all downstream work. Submission is guarded by a run-scoped lock, validates
+numeric `sbatch --parsable` IDs, writes every job ID to
+`summary/dag_jobs.env`, and keeps outputs under a unique
+`$WORLDMM_OUTPUT_ROOT`. The submitter independently requires and exports
+`WORLDMM_SMVQA_REMOTE_APPROVED=1`; `WORLDMM_OUTPUT_ROOT` must end exactly in
+`/$WORLDMM_RUN_ID`.
+
+External teacher extraction runs one worker per allocated GPU. Each invocation
+receives `--rank`, `--world-size`, the generated 1 Hz
+`--sensor-frame-manifest`, and a unique `rank-NNNNN.jsonl` output path. Empty,
+missing, stale, or incomplete shard sets stop the DAG.
+
 The generated plan prints three copy/paste commands, in order:
 
 1. `rsync` the repo to `$WORLDMM_REMOTE_REPO` on company storage.
 2. `rsync` the generated plan directory to `$WORLDMM_REMOTE_REPO/remote-plan/`.
-3. `ssh` through `$BASTION_HOST` to run the plan script with the job launcher.
+3. `ssh` through `$BASTION_HOST` and `$HEAD_NODE` to run
+   `remote-plan/submit_worldmm_smvqa_dag.sh`.
 
-The remote script `cd`s into `$WORLDMM_REMOTE_REPO`, downloads
-`$WORLDMM_MODEL_ID` to `$GEMMA_MODEL_PATH` via `hf download` if missing
-(stage 0), then runs memory build, retrieval, DDP QA, and evaluation. All
-remote-side environment variables must be set in the remote execution
-environment.
+Both `rsync` commands use the same default remote repository as the SSH command
+and exclude `.env*`. `expected_outputs.json` lists only outputs produced by the
+preferred DAG; its job reference points to `summary/dag_jobs.env`.
+
+Plan generation never opens SSH, runs a remote shell, downloads an artifact, or
+submits a job. The DAG also does not fabricate teacher caches, supervision,
+counterfactual utility, split assignments, or student-backed evidence; missing
+inputs stop their stage with a clear shell error.
 
 Frame assets for real QA must be readable as
 `$SMVQA_FRAME_ROOT/<video_id>/<frame_ref>.jpg` by default. Existing `.jpeg`,
@@ -283,8 +427,12 @@ plans, reports, logs, summaries, and small sample artifacts only.
 Official report metrics are:
 
 - `Ans-F1`: answerability F1 across answerable/unanswerable decisions.
-- `QA-Acc`: top-1 multiple-choice accuracy on answerable questions.
-- `QA-MRR`: reciprocal-rank quality for the correct answer choice.
+- `QA-Acc`: top-1 four-choice accuracy across all questions, including the
+  unanswerable/N/A choice.
+- `QA-MRR`: reciprocal rank of the gold four-choice answer across all questions.
+
+These three official metrics are serialized on the benchmark's `0–100` scale.
+Diagnostic Memory-Recall@K remains a `0–1` fraction.
 
 Diagnostics can include memory recall at K, causal violation count, prompt token
 summary, and memory size summary. If the remote run has not executed, reports

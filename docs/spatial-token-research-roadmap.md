@@ -1,5 +1,9 @@
 # Spatial Token Compression Research Roadmap
 
+> Legacy migration source. Canonical research navigation now lives in
+> [spatial-memory/roadmap.md](spatial-memory/roadmap.md), with one page per paper
+> under [spatial-memory/papers](spatial-memory/papers/README.md).
+
 ## 1. 목적
 
 이 문서는 spatial token compression을 고도화할 때 검토할 논문과 접근법을
@@ -41,7 +45,8 @@ object/zone/relation explicit core
 
 - Object-centric graph는 language QA와 직접 연결하기 쉽다.
 - Event-driven write는 1 Hz 반복 관측의 저장 비용을 직접 줄인다.
-- Fixed budget은 device memory upper bound를 관리하기 쉽다.
+- Static token의 window별 fixed budget은 write rate upper bound를 관리하기
+  쉽다. Trajectory와 lifetime storage까지 포함한 full-artifact bound는 별도다.
 - Explicit token은 failure analysis와 geometry metric 계산이 가능하다.
 - Dense neural scene representation 전체를 저장하는 것보다 구현 및 검증
   비용이 작다.
@@ -477,6 +482,7 @@ Recall Spaces](https://arxiv.org/abs/2412.14171)
 변수:
 
 - `token_budget`: 4, 8, 16, 32
+- `byte_budget`: 1024, 2048, 4096, 8192
 - `quantization_m`: 0.10, 0.25, 0.50, 1.00
 - object delta threshold: 1x, 2x, 4x quantization step
 - trajectory summary 포함/제외
@@ -514,15 +520,23 @@ Recall Spaces](https://arxiv.org/abs/2412.14171)
 
 #### P0-C. Byte budget
 
-현재 record-count admission cap을 serialized-byte budget으로 확장한다.
+상태: static spatial-token baseline 구현 완료.
 
 ```text
-select candidates maximizing utility
-subject to sum(serialized_bytes(candidate)) <= B
+default per 30s window:
+  records(SpatialTokenRecord) <= 16
+  sum(actual JSONL bytes(SpatialTokenRecord)) <= 4096
 ```
 
-첫 구현은 score/byte greedy면 충분하다. Knapsack 또는 differentiable
-selection은 greedy가 실제 Pareto에서 부족할 때만 추가한다.
+각 candidate의 전체 `SpatialTokenRecord` JSON 직렬화와 newline을 실제 byte
+비용으로 측정한다. 관측시각 순서로 admission하고 같은 시각 후보만 score/byte
+greedy로 정렬한다. 미래 token은 이미 admission된 과거 token을 퇴출하지 않아
+prefix causality를 유지한다. 기존 16-token cap도 byte cap과 병행한다.
+
+남은 한계: trajectory summary가 admission 뒤 추가되므로 현재 4096-byte cap은
+full spatial artifact cap이 아니다. Full-artifact budget은 trajectory 비용 정책과
+lifetime compaction 계약을 정한 뒤 추가한다. Knapsack 또는 differentiable
+selection은 greedy가 SuperMemory-VQA Pareto에서 부족할 때만 검토한다.
 
 ### P1. Selector supervision 개선
 
@@ -732,7 +746,7 @@ Mem3R 방향:
 | Decoder | delta-topk-v1 | event gate, voxel slot, fixed-K query, pointer |
 | Selector | linear-v1 | score/byte, coverage greedy, MLP |
 | Codec | compact-json-v1 | packed integer, FSQ, VQ |
-| Budget | 16/30s | token, byte, adaptive |
+| Budget | 16 records + 4096 B / 30s static tokens | token, byte, adaptive |
 
 최소 ablation:
 
@@ -856,7 +870,8 @@ provider latency만 낮고 compressed-memory QA가 나쁘면 채택하지 않는
 
 ### Experiment 1: Rate-quality baseline
 
-코드 변경 최소. `token_budget`, `quantization_m`, delta threshold만 sweep한다.
+코드 변경 최소. `token_budget`, `byte_budget`, `quantization_m`, delta threshold를
+sweep한다.
 전체 dataset의 Pareto curve와 spatial subset QA를 만든다.
 
 ### Experiment 2: Instance-aware delta memory

@@ -76,7 +76,7 @@ def test_visual_memory_records_frame_grounding_and_fake_embedding_refs() -> None
     assert first.timestamp == 8.0
     assert first.embedding_ref == "fixture-embedding:fake_video_001_frame_0008:8"
     assert first.ocr_refs == ("NOTE-42",)
-    assert first.object_refs == ("mug",)
+    assert first.object_refs == ("mug", "notebook")
     for record in records:
         assert record.start_time <= record.timestamp <= record.end_time
         assert record.frame_ref

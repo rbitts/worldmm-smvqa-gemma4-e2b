@@ -86,10 +86,10 @@ def test_tiny_fixture_includes_spatial_and_unanswerable_questions() -> None:
     assert video_001.gaze_samples[-1].timestamp >= 1900.0
     assert video_001.frame_metadata[-1].timestamp >= 1900.0
     assert q_fake_005.question_time == 1850.0
-    assert q_fake_005.answer == "A"
+    assert q_fake_005.answer == "B"
     assert q_fake_005.evidence_list == ("fake_video_001:5:12:spatial",)
     assert q_fake_006.question_time == 15.0
-    assert q_fake_006.answer == ""
+    assert q_fake_006.answer == "D"
     assert not q_fake_006.is_answerable
     assert q_fake_006.evidence_list == ()
     assert video_002.pose_samples

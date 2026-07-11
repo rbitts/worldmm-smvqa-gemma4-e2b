@@ -9,6 +9,8 @@ from pydantic import Field
 from worldmm_smvqa.schema import FrozenModel
 
 type SpatialProvenance = Literal["object_geometry", "pose", "slam_pose", "gaze"]
+type SpatialCoordinateFrame = str
+type SpatialChangeType = Literal["appeared", "observed", "moved"]
 type SpatialRelationKind = Literal[
     "near",
     "left_of",
@@ -47,6 +49,8 @@ class ZoneRecord(FrozenModel):
     centroid_z: float
     cell: tuple[int, int]
     visit_intervals: tuple[tuple[float, float], ...]
+    visit_centroids: tuple[tuple[float, float, float], ...] = ()
+    coordinate_frame: SpatialCoordinateFrame = "source_world"
 
 
 class SpatialAnchorRecord(FrozenModel):
@@ -64,6 +68,14 @@ class SpatialAnchorRecord(FrozenModel):
     frame_refs: tuple[str, ...]
     confidence: float
     provenance: SpatialProvenance
+    instance_id: str | None = None
+    coordinate_frame: SpatialCoordinateFrame = "source_world"
+    uncertainty_m: float | None = Field(default=None, ge=0.0)
+    first_seen_time: float | None = None
+    last_seen_time: float | None = None
+    valid_from: float | None = None
+    valid_to: float | None = None
+    change_type: SpatialChangeType = "observed"
     geometry_frame_ref: str | None = None
     geometry_source: SpatialProvenance | None = None
     geometry_distance_m: float | None = None
@@ -85,6 +97,11 @@ class SpatialRelationRecord(FrozenModel):
     delta_x: float | None = None
     delta_y: float | None = None
     delta_z: float | None = None
+    subject_instance_id: str | None = None
+    object_instance_id: str | None = None
+    coordinate_frame: SpatialCoordinateFrame = "source_world"
+    valid_from: float | None = None
+    valid_to: float | None = None
 
 
 class SpatialTokenRecord(FrozenModel):
@@ -118,6 +135,7 @@ class ObjectStateSnapshotRecord(FrozenModel):
     end_time: float
     snippet: str
     base_score: float
+    instance_id: str | None = None
 
 
 class WearerTrajectorySummaryRecord(FrozenModel):

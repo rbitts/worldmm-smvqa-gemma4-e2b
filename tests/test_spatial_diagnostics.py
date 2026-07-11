@@ -368,6 +368,32 @@ def test_memory_recall_uses_item_video_and_accepts_frame_points() -> None:
     assert result.recall_at_k["visual"] == pytest.approx(1.0)
 
 
+def test_supermemory_evidence_span_accepts_any_retrieval_store() -> None:
+    labels = (
+        _label(
+            "q_supermemory",
+            evidence_list=("fake_video_001:5:12:supermemory",),
+        ),
+    )
+    packs = (
+        _pack(
+            "q_supermemory",
+            (
+                _item(
+                    "spatial:fake_video_001:mug",
+                    store="spatial",
+                    start_time=6.0,
+                    end_time=8.0,
+                ),
+            ),
+        ),
+    )
+
+    result = memory_recall_at_k(packs, labels, 1)
+
+    assert result.recall_at_k["supermemory"] == pytest.approx(1.0)
+
+
 def test_write_spatial_retrieval_diagnostics_emits_run_artifact(
     tmp_path: Path,
 ) -> None:

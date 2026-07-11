@@ -8,6 +8,7 @@ from pydantic import BaseModel, ValidationError
 
 from worldmm_smvqa.fixture_data import tiny_fixture_examples
 from worldmm_smvqa.schema import (
+    ANSWER_CHOICE_COUNT,
     QALabelExample,
     QuestionRequest,
     SourceStreamExample,
@@ -86,6 +87,8 @@ def _questions(labels: tuple[QALabelExample, ...]) -> tuple[QuestionRequest, ...
             question=label.question,
             question_time=label.question_time,
             answer_choices=label.answer_choices,
+            task=label.task,
+            skill=label.skill,
         )
         for label in labels
     )
@@ -195,18 +198,18 @@ def _require_valid_label_answers(
 ) -> None:
     for label in labels:
         choice_ids = tuple(choice.choice_id for choice in label.answer_choices)
+        if len(choice_ids) != ANSWER_CHOICE_COUNT:
+            raise FixtureValidationError(
+                path=path,
+                detail=f"{label.question_id}: expected exactly four answer choices",
+            )
         if len(choice_ids) != len(set(choice_ids)):
             raise FixtureValidationError(
                 path=path,
                 detail=f"{label.question_id}: duplicate answer choice ID",
             )
-        if label.is_answerable and label.answer not in choice_ids:
+        if label.answer not in choice_ids:
             raise FixtureValidationError(
                 path=path,
                 detail=f"{label.question_id}: answer is not a choice ID",
-            )
-        if not label.is_answerable and label.answer:
-            raise FixtureValidationError(
-                path=path,
-                detail=f"{label.question_id}: unanswerable row must use empty answer",
             )

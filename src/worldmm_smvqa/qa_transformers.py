@@ -5,15 +5,18 @@ import json
 import os
 import sys
 from collections.abc import Mapping, Sequence
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, override
+from tempfile import NamedTemporaryFile
+from typing import TYPE_CHECKING, Final, Literal, cast, override
 
 from pydantic import ValidationError
 
 from worldmm_smvqa.chunking import read_source_streams
 from worldmm_smvqa.config import REMOTE_ENV_FLAG, RemoteOnlyError
 from worldmm_smvqa.fixtures import read_fixture_questions
+from worldmm_smvqa.qa import evidence_pack_validation_error
 from worldmm_smvqa.qa_shards import (
     QAShardError,
     checkpoint_rank,
@@ -22,6 +25,7 @@ from worldmm_smvqa.qa_shards import (
     load_rank_progress,
     merge_shards,
     packs_for_rank,
+    partial_output_path,
     rank_output_path,
     wait_for_shards,
 )
@@ -35,6 +39,10 @@ if TYPE_CHECKING:
     from worldmm_smvqa.schema import PredictionRecord, QuestionRequest
 
 type TransformersBackendName = Literal["gemma4", "real", "mock"]
+
+QA_RESUME_MANIFEST_VERSION: Final = "qa-resume-manifest-v1"
+# Bump whenever prompt serialization or parsed prediction schema changes.
+QA_PROMPT_SCHEMA_VERSION: Final = "qa-prompt-prediction-schema-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +69,7 @@ class TransformersCliUsageError(Exception):
         return f"UsageError: {self.detail}"
 
 
-def run_transformers_cli(
+def run_transformers_cli(  # noqa: PLR0915
     args: TransformersCliArgs,
     env: Mapping[str, str],
 ) -> TransformersCliResult:
@@ -73,10 +81,14 @@ def run_transformers_cli(
         parse_qa_output,
     )
     from worldmm_smvqa.qa_prompt import build_qa_prompt  # noqa: PLC0415
+    from worldmm_smvqa.worldmm.geometry_executor import (  # noqa: PLC0415
+        geometry_proofs_for_question,
+    )
 
     questions = _questions_by_id(args.fixture)
     sources = read_source_streams(args.fixture)
     packs = _read_evidence_packs(args.evidence)
+    validate_external_evidence_packs(packs, questions)
     frame_root = Path(env.get("SMVQA_FRAME_ROOT", args.fixture / "frames"))
     match args.backend:
         case "mock":
@@ -89,6 +101,7 @@ def run_transformers_cli(
     distributed = distributed_env(env)
     rank_packs = packs_for_rank(packs, distributed)
     written = rank_output_path(args.out, distributed)
+    _bind_resume_manifest(args, written)
     predictions = list(load_rank_progress(written))
     _validate_rank_progress(rank_packs, predictions, completed=written.exists())
     completed_question_ids = {
@@ -105,7 +118,17 @@ def run_transformers_cli(
             frame_root=frame_root,
             max_frames=32,
         )
-        prompt = build_qa_prompt(question, pack, video_frames)
+        geometry_proofs = geometry_proofs_for_question(
+            question,
+            pack,
+            coordinate_frame="source_world",
+        )
+        prompt = build_qa_prompt(
+            question,
+            pack,
+            video_frames,
+            geometry_proofs,
+        )
         raw_outputs: list[str] = []
         raw_output_path = _raw_output_path(args.out, question.question_id)
         try:
@@ -123,6 +146,7 @@ def run_transformers_cli(
                         prompt_token_count=len(prompt.split()),
                         raw_model_output_path=str(raw_output_path),
                         evidence_pack=pack,
+                        geometry_proofs=geometry_proofs,
                     )
                 except QAParseError as exc:
                     last_parse_error = exc
@@ -246,6 +270,41 @@ def _question_for_pack(
     return question
 
 
+def validate_external_evidence_packs(
+    packs: Sequence[EvidencePack],
+    questions: Mapping[str, QuestionRequest],
+) -> None:
+    """Fail closed before externally materialized evidence enters QA."""
+    pack_question_ids = tuple(pack.question_id for pack in packs)
+    seen: set[str] = set()
+    duplicates: set[str] = set()
+    for question_id in pack_question_ids:
+        if question_id in seen:
+            duplicates.add(question_id)
+        seen.add(question_id)
+    if duplicates:
+        raise TransformersCliUsageError(
+            detail=f"duplicate evidence pack: {sorted(duplicates)[0]}",
+        )
+    actual = set(pack_question_ids)
+    expected = set(questions)
+    if unknown := sorted(actual - expected):
+        raise TransformersCliUsageError(
+            detail=f"unknown evidence pack question: {unknown[0]}",
+        )
+    if missing := sorted(expected - actual):
+        raise TransformersCliUsageError(
+            detail=f"missing evidence pack: {missing[0]}",
+        )
+
+    for pack in packs:
+        question = questions[pack.question_id]
+        if detail := evidence_pack_validation_error(question, pack):
+            raise TransformersCliUsageError(
+                detail=f"invalid evidence pack {pack.question_id}: {detail}",
+            )
+
+
 def _parse_backend(value: str) -> TransformersBackendName:
     match value:
         case "gemma4" | "real" | "mock":
@@ -282,6 +341,124 @@ def _validate_rank_progress(
         raise QAShardError(
             detail=f"incomplete final QA shard; missing: {', '.join(missing)}",
         )
+
+
+def qa_resume_manifest_path(out: Path) -> Path:
+    return out.with_name(f"{out.name}.manifest.json")
+
+
+def _bind_resume_manifest(args: TransformersCliArgs, written: Path) -> None:
+    path = qa_resume_manifest_path(args.out)
+    expected = _resume_manifest(args)
+    if path.exists():
+        _validate_resume_manifest(path, expected)
+        return
+    if _prediction_progress_exists(args.out, written):
+        raise QAShardError(
+            detail=f"QA resume manifest missing for existing predictions: {path}",
+        )
+    _install_manifest_atomic(path, expected)
+    _validate_resume_manifest(path, expected)
+
+
+def _resume_manifest(args: TransformersCliArgs) -> dict[str, str]:
+    return {
+        "manifest_version": QA_RESUME_MANIFEST_VERSION,
+        "prompt_schema_version": QA_PROMPT_SCHEMA_VERSION,
+        "evidence_sha256": _sha256_file(args.evidence),
+        "questions_sha256": _sha256_file(args.fixture / "questions.jsonl"),
+        "sources_sha256": _sha256_file(args.fixture / "sources.jsonl"),
+        "backend": args.backend,
+        "model": args.model,
+    }
+
+
+def _prediction_progress_exists(out: Path, written: Path) -> bool:
+    direct = {out, partial_output_path(out), written, partial_output_path(written)}
+    if any(path.exists() for path in direct):
+        return True
+    if not out.parent.is_dir():
+        return False
+    rank_prefix = f"{out.stem}.rank"
+    return any(
+        child.name.startswith(rank_prefix)
+        and (
+            child.name.endswith(out.suffix)
+            or child.name.endswith(f"{out.suffix}.partial")
+        )
+        for child in out.parent.iterdir()
+    )
+
+
+def _install_manifest_atomic(path: Path, manifest: Mapping[str, str]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temporary: Path | None = None
+    try:
+        with NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as output:
+            temporary = Path(output.name)
+            _ = output.write(
+                json.dumps(
+                    dict(manifest),
+                    ensure_ascii=True,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                )
+                + "\n",
+            )
+            output.flush()
+            os.fsync(output.fileno())
+        # Identical ranks may concurrently bind the shared output.
+        with suppress(FileExistsError):
+            os.link(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _validate_resume_manifest(
+    path: Path,
+    expected: Mapping[str, str],
+) -> None:
+    try:
+        loaded_object = cast(
+            "object",
+            json.loads(path.read_text(encoding="utf-8")),
+        )
+    except (json.JSONDecodeError, OSError) as exc:
+        raise QAShardError(detail=f"invalid QA resume manifest: {path}: {exc}") from exc
+    if not isinstance(loaded_object, dict):
+        raise QAShardError(detail=f"invalid QA resume manifest object: {path}")
+    loaded_values = cast("dict[object, object]", loaded_object)
+    if not all(
+        isinstance(key, str) and isinstance(value, str)
+        for key, value in loaded_values.items()
+    ):
+        raise QAShardError(detail=f"invalid QA resume manifest fields: {path}")
+    loaded = cast("dict[str, str]", loaded_values)
+    mismatched = sorted(
+        key for key, value in expected.items() if loaded.get(key) != value
+    )
+    unexpected = sorted(set(loaded) - set(expected))
+    if mismatched or unexpected:
+        fields = ", ".join((*mismatched, *unexpected))
+        raise QAShardError(
+            detail=f"QA resume manifest mismatch ({fields}): {path}",
+        )
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as input_file:
+        while chunk := input_file.read(1024 * 1024):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _raw_output_path(out: Path, question_id: str) -> Path:
