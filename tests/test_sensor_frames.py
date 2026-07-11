@@ -52,7 +52,7 @@ def test_sensor_manifest_rejects_changed_source_frame_inventory(tmp_path: Path) 
     # Given: a manifest generated from one raw frame inventory.
     source = _dense_source()
     _write_sources(tmp_path, source)
-    write_sensor_frame_manifest((source,), tmp_path / SENSOR_FRAME_MANIFEST_NAME)
+    _ = write_sensor_frame_manifest((source,), tmp_path / SENSOR_FRAME_MANIFEST_NAME)
     changed = source.model_copy(
         update={"frame_metadata": source.frame_metadata[:-1]},
     )

@@ -16,6 +16,7 @@ from worldmm_smvqa.cli_commands import (
     handle_diagnose_spatial,
     handle_evaluate,
     handle_launch_remote,
+    handle_preflight,
     handle_prepare_fixture,
     handle_qa,
     handle_report,
@@ -58,22 +59,27 @@ def command_specs() -> tuple[CommandSpec, ...]:
     return (
         CommandSpec("prepare-fixture", "Prepare tiny fixture.", handle_prepare_fixture),
         CommandSpec("validate-schema", "Validate schema.", handle_validate_schema),
-        CommandSpec("build-memory", "Build memory placeholder.", handle_build_memory),
-        CommandSpec("retrieve", "Retrieve evidence placeholder.", handle_retrieve),
+        CommandSpec("preflight", "Inspect prepared dataset.", handle_preflight),
+        CommandSpec(
+            "build-memory",
+            "Build benchmark memory artifacts.",
+            handle_build_memory,
+        ),
+        CommandSpec("retrieve", "Retrieve causal evidence packs.", handle_retrieve),
         CommandSpec(
             "retrieve-batch",
             "Retrieve all evidence packs.",
             handle_retrieve_batch,
         ),
-        CommandSpec("qa", "Run QA placeholder.", handle_qa),
-        CommandSpec("evaluate", "Evaluate predictions placeholder.", handle_evaluate),
+        CommandSpec("qa", "Run QA over evidence packs.", handle_qa),
+        CommandSpec("evaluate", "Evaluate prediction files.", handle_evaluate),
         CommandSpec(
             "diagnose-spatial",
             "Write spatial retrieval diagnostics.",
             handle_diagnose_spatial,
         ),
-        CommandSpec("report", "Write report placeholder.", handle_report),
-        CommandSpec("smoke", "Run local smoke placeholder.", handle_smoke),
+        CommandSpec("report", "Write a run handoff report.", handle_report),
+        CommandSpec("smoke", "Run the tiny local pipeline.", handle_smoke),
         CommandSpec("launch-remote", "Print remote commands.", handle_launch_remote),
     )
 

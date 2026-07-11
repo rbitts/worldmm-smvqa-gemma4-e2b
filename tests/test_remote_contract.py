@@ -264,7 +264,7 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
     lines = result.stdout.splitlines()
     plan_sync_argv = shlex.split(lines[-2])
     assert plan_sync_argv[0] == "rsync"
-    assert plan_sync_argv[4] == f"{out_dir}/"
+    assert plan_sync_argv[-2] == f"{out_dir}/"
     argv = shlex.split(lines[-1])
     assert argv[:4] == [
         "ssh",
@@ -275,15 +275,17 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
     remote_argv = shlex.split(argv[4])
     assert remote_argv == [
         "cd",
-        "$WORLDMM_REMOTE_REPO",
+        (
+            "${WORLDMM_REMOTE_REPO:-/repo/VTteam/bongh.park/"
+            "worldmm-smvqa-gemma4-e2b}"
+        ),
         "&&",
         "mkdir",
         "-p",
         "remote-plan/logs",
         "&&",
-        "/opt/slurm/bin/sbatch",
-        "--parsable",
-        "remote-plan/run_worldmm_smvqa.sh",
+        "bash",
+        "remote-plan/submit_worldmm_smvqa_dag.sh",
     ]
     assert str(out_dir) not in argv[4]
 

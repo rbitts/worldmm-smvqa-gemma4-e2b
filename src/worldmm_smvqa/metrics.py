@@ -8,9 +8,18 @@ from typing import Final, override
 
 from pydantic import BaseModel, Field, ValidationError
 
-from worldmm_smvqa.schema import FrozenModel, PredictionRecord, QALabelExample
+from worldmm_smvqa.schema import (
+    ANSWER_CHOICE_COUNT,
+    FrozenModel,
+    PredictionRecord,
+    QALabelExample,
+    is_unanswerable_choice,
+)
 
 EVIDENCE_SPAN_PARTS: Final = 4
+PERCENT_SCALE: Final = 100.0
+EMPTY_EVALUATION_SOURCE: Final = "labels"
+EMPTY_EVALUATION_DETAIL: Final = "evaluation set is empty"
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,12 +54,24 @@ class MetricDiagnostics(FrozenModel):
 
 
 class EvaluationMetrics(FrozenModel):
-    ans_f1: float = Field(serialization_alias="Ans-F1")
-    qa_acc: float = Field(serialization_alias="QA-Acc")
-    qa_mrr: float = Field(serialization_alias="QA-MRR")
-    memory_recall_at_1: float = Field(serialization_alias="Memory-Recall@1")
-    memory_recall_at_3: float = Field(serialization_alias="Memory-Recall@3")
-    memory_recall_at_5: float = Field(serialization_alias="Memory-Recall@5")
+    ans_f1: float = Field(ge=0.0, le=100.0, serialization_alias="Ans-F1")
+    qa_acc: float = Field(ge=0.0, le=100.0, serialization_alias="QA-Acc")
+    qa_mrr: float = Field(ge=0.0, le=100.0, serialization_alias="QA-MRR")
+    memory_recall_at_1: float = Field(
+        ge=0.0,
+        le=1.0,
+        serialization_alias="Memory-Recall@1",
+    )
+    memory_recall_at_3: float = Field(
+        ge=0.0,
+        le=1.0,
+        serialization_alias="Memory-Recall@3",
+    )
+    memory_recall_at_5: float = Field(
+        ge=0.0,
+        le=1.0,
+        serialization_alias="Memory-Recall@5",
+    )
     diagnostics: MetricDiagnostics
 
 
@@ -68,11 +89,10 @@ def evaluate_predictions(
     predictions: Sequence[PredictionRecord],
 ) -> EvaluationMetrics:
     rows = _scored_predictions(labels, predictions)
-    answerable_rows = tuple(row for row in rows if row.label.is_answerable)
     return EvaluationMetrics(
-        ans_f1=_answer_f1(rows),
-        qa_acc=_qa_accuracy(answerable_rows),
-        qa_mrr=_qa_mrr(answerable_rows),
+        ans_f1=PERCENT_SCALE * _answer_f1(rows),
+        qa_acc=PERCENT_SCALE * _qa_accuracy(rows),
+        qa_mrr=PERCENT_SCALE * _qa_mrr(rows),
         memory_recall_at_1=_memory_recall(rows, 1),
         memory_recall_at_3=_memory_recall(rows, 3),
         memory_recall_at_5=_memory_recall(rows, 5),
@@ -138,6 +158,11 @@ def _scored_predictions(
     labels: Sequence[QALabelExample],
     predictions: Sequence[PredictionRecord],
 ) -> tuple[ScoredPrediction, ...]:
+    if not labels:
+        raise InvalidPredictionError(
+            EMPTY_EVALUATION_SOURCE,
+            EMPTY_EVALUATION_DETAIL,
+        )
     labels_by_id = _unique_labels(labels)
     predictions_by_id = _unique_predictions(predictions)
     _require_matching_questions(labels_by_id, predictions_by_id)
@@ -194,7 +219,38 @@ def _require_valid_choices(
     prediction: PredictionRecord,
 ) -> None:
     seen: set[str] = set()
-    choice_ids = {choice.choice_id for choice in label.answer_choices}
+    choice_ids = tuple(choice.choice_id for choice in label.answer_choices)
+    if len(choice_ids) != ANSWER_CHOICE_COUNT:
+        raise InvalidPredictionError(
+            prediction.question_id,
+            "label must contain exactly four answer choices",
+        )
+    if len(choice_ids) != len(set(choice_ids)):
+        raise InvalidPredictionError(
+            prediction.question_id,
+            "label contains duplicate answer choice IDs",
+        )
+    if label.answer not in choice_ids:
+        raise InvalidPredictionError(
+            prediction.question_id,
+            "label answer is not a choice ID",
+        )
+    unanswerable_ids = tuple(
+        choice.choice_id
+        for choice in label.answer_choices
+        if is_unanswerable_choice(choice)
+    )
+    if len(unanswerable_ids) != 1:
+        raise InvalidPredictionError(
+            prediction.question_id,
+            "label must contain exactly one unanswerable choice",
+        )
+    unanswerable_id = unanswerable_ids[0]
+    if label.is_answerable == (label.answer == unanswerable_id):
+        raise InvalidPredictionError(
+            prediction.question_id,
+            "label answerability disagrees with its gold choice",
+        )
     for choice_id in prediction.ranked_choices:
         if choice_id in seen:
             raise InvalidPredictionError(
@@ -207,8 +263,17 @@ def _require_valid_choices(
                 f"unknown ranked choice: {choice_id}",
             )
         seen.add(choice_id)
-    if not prediction.ranked_choices:
-        raise InvalidPredictionError(prediction.question_id, "ranked choices are empty")
+    if set(prediction.ranked_choices) != set(choice_ids):
+        missing = sorted(set(choice_ids) - set(prediction.ranked_choices))
+        raise InvalidPredictionError(
+            prediction.question_id,
+            f"ranked choices must contain every answer choice; missing={missing}",
+        )
+    if prediction.answerable == (prediction.ranked_choices[0] == unanswerable_id):
+        raise InvalidPredictionError(
+            prediction.question_id,
+            "prediction answerability disagrees with its top-ranked choice",
+        )
 
 
 def _correct_rank(label: QALabelExample, prediction: PredictionRecord) -> int | None:
@@ -240,8 +305,7 @@ def _qa_accuracy(rows: Sequence[ScoredPrediction]) -> float:
     correct = sum(
         1
         for row in rows
-        if row.prediction.answerable
-        and row.prediction.ranked_choices[0] == row.label.answer
+        if row.prediction.ranked_choices[0] == row.label.answer
     )
     return correct / len(rows)
 
@@ -252,7 +316,7 @@ def _qa_mrr(rows: Sequence[ScoredPrediction]) -> float:
     reciprocal_rank = sum(
         1.0 / row.correct_rank
         for row in rows
-        if row.prediction.answerable and row.correct_rank is not None
+        if row.correct_rank is not None
     )
     return reciprocal_rank / len(rows)
 

@@ -85,6 +85,10 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     assert "python -m torch.distributed.run" in script_text
     assert 'cd "$WORLDMM_REMOTE_REPO"' in script_text
     assert 'source "$WORLDMM_REMOTE_REPO/.venv/bin/activate"' in script_text
+    assert (
+        "export WORLDMM_REMOTE_REPO SMVQA_DATA_ROOT SMVQA_FRAME_ROOT"
+        in script_text
+    )
     assert 'hf download "$WORLDMM_MODEL_ID" --local-dir "$GEMMA_MODEL_PATH"' in (
         script_text
     )
@@ -101,6 +105,12 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     assert "build-memory --stage sensor-frames" in script_text
     assert '"sensor_rate_hz": 1.0' in script_text
     assert "WORLDMM_SPATIAL_TOKEN_BUDGET:=16" in script_text
+    assert "WORLDMM_SPATIAL_BYTE_BUDGET:=4096" in script_text
+    assert (
+        "export WORLDMM_SPATIAL_TOKEN_BUDGET WORLDMM_SPATIAL_BYTE_BUDGET"
+        in script_text
+    )
+    assert '"spatial_byte_budget": int(' in script_text
     assert "WORLDMM_SPATIAL_QUANTIZATION_M:=0.25" in script_text
     assert "WORLDMM_SPATIAL_SELECTOR_PATH" in script_text
     assert "WORLDMM_SPATIAL_EXPERIMENT_CONFIG" in script_text
@@ -124,39 +134,31 @@ def test_launch_remote_dry_run_writes_full_plan_contract(  # noqa: PLR0915
     manifest = TypeAdapter(ExpectedOutputs).validate_json(
         expected.read_text(encoding="utf-8"),
     )
-    assert manifest["remote_job_reference"] == "slurm-${SLURM_JOB_ID}"
-    assert manifest["metrics"] == ["Ans-F1", "QA-Acc", "QA-MRR"]
-    assert manifest["outputs"]["spatial_memory"] == (
-        "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.jsonl"
+    assert manifest["remote_job_reference"] == (
+        "$WORLDMM_OUTPUT_ROOT/summary/dag_jobs.env#REPORT_JOB_ID"
     )
+    assert manifest["metrics"] == ["Ans-F1", "QA-Acc", "QA-MRR"]
     assert manifest["outputs"]["sensor_frame_manifest"] == (
         "$WORLDMM_OUTPUT_ROOT/manifests/sensor_frames.jsonl"
     )
-    assert manifest["outputs"]["spatial_experiment"] == (
-        "$WORLDMM_OUTPUT_ROOT/manifests/spatial_experiment.json"
-    )
-    assert manifest["outputs"]["spatial_compression"] == (
-        "$WORLDMM_OUTPUT_ROOT/memory/worldmm_sv/spatial.stats.jsonl"
-    )
-    assert manifest["outputs"]["retrieval_trace_evidence_packs"] == (
-        "$WORLDMM_OUTPUT_ROOT/retrieval/evidence_packs.jsonl"
-    )
-    assert manifest["outputs"]["spatial_diagnostics"] == (
-        "$WORLDMM_OUTPUT_ROOT/diagnostics/spatial_diagnostics.json"
-    )
-    assert manifest["outputs"]["ablation_without_spatial"] == (
-        "$WORLDMM_OUTPUT_ROOT/ablation/without_spatial/metrics/official_metrics.json"
-    )
-    assert manifest["outputs"]["ablation_protocol_legacy"] == (
-        "$WORLDMM_OUTPUT_ROOT/ablation/protocol_legacy_round_robin/"
-        "metrics/official_metrics.json"
-    )
-    assert manifest["outputs"]["slurm_stdout"] == (
-        "$WORLDMM_OUTPUT_ROOT/logs/slurm-${SLURM_JOB_ID}.out"
-    )
-    assert manifest["outputs"]["slurm_job_id"] == (
-        "$WORLDMM_OUTPUT_ROOT/summary/slurm_job_id.txt"
-    )
+    assert set(manifest["outputs"]) == {
+        "chunk_manifest",
+        "dag_job_manifest",
+        "metrics",
+        "predictions",
+        "preflight_report",
+        "retrieval_evidence",
+        "sensor_frame_manifest",
+        "source_memories",
+        "spatial_checkpoint",
+        "spatial_selector",
+        "stage_logs",
+        "student_teacher_cache",
+        "summary",
+        "teacher_cache",
+        "teacher_cache_report",
+        "utility_labels",
+    }
     for value in manifest["outputs"].values():
         assert isinstance(value, str)
         assert value.startswith("$WORLDMM_OUTPUT_ROOT/")
@@ -242,6 +244,37 @@ def test_launch_remote_submit_requires_explicit_env_approval(tmp_path: Path) -> 
     combined = f"{result.stdout}\n{result.stderr}"
     assert "ssh " not in combined
     assert "REMOTE_JOB_LAUNCHER" not in combined
+
+
+def test_launch_remote_approved_plan_prints_approved_submit_command(
+    tmp_path: Path,
+) -> None:
+    env = os.environ.copy()
+    env["WORLDMM_SMVQA_REMOTE_APPROVED"] = "1"
+    result = subprocess.run(
+        [
+            "uv",
+            "run",
+            "worldmm-smvqa",
+            "launch-remote",
+            "--submit",
+            "--config",
+            "configs/remote.example.yaml",
+            "--out",
+            str(tmp_path / "remote_plan"),
+        ],
+        cwd=ROOT,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert (
+        "WORLDMM_SMVQA_REMOTE_APPROVED=1 bash "
+        "remote-plan/submit_worldmm_smvqa_dag.sh"
+    ) in result.stdout
 
 
 def test_launch_remote_dry_run_replaces_stale_artifacts(tmp_path: Path) -> None:

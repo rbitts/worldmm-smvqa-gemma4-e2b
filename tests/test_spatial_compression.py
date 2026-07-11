@@ -20,6 +20,7 @@ from worldmm_smvqa.schema import (
     StreamChunk,
 )
 from worldmm_smvqa.worldmm.spatial_compression import (
+    CompactJsonSpatialMemoryCodec,
     DeltaTopKSpatialTokenDecoder,
     ExperimentOption,
     ObjectToken,
@@ -43,7 +44,10 @@ from worldmm_smvqa.worldmm.spatial_compression import (
     resolve_spatial_memory_model,
     select_spatial_tokens,
 )
-from worldmm_smvqa.worldmm.spatial_types import SpatialTokenRecord
+from worldmm_smvqa.worldmm.spatial_types import (
+    SpatialRelationKind,
+    SpatialTokenRecord,
+)
 
 
 def _clips(source: SourceStreamExample) -> tuple[StreamChunk, ...]:
@@ -142,6 +146,58 @@ def test_object_tokens_bound_quantization_error() -> None:
     assert abs(mug.x - 0.12) <= 0.125
     assert abs(mug.y - 1.0) <= 0.125
     assert abs(mug.z - 0.75) <= 0.125
+    assert mug.uncertainty_m == pytest.approx(0.25)
+
+
+@pytest.mark.parametrize(
+    ("relation", "canonical_relation"),
+    [
+        ("right_of", "left_of"),
+        ("behind", "in_front_of"),
+        ("below", "above"),
+    ],
+)
+def test_codec_canonicalizes_inverse_relation_endpoints(
+    relation: SpatialRelationKind,
+    canonical_relation: SpatialRelationKind,
+) -> None:
+    # Given: a direct codec caller supplies an inverse relation direction.
+    codec = CompactJsonSpatialMemoryCodec()
+    token = RelationToken(
+        scale_m=0.25,
+        subject="mug",
+        relation=relation,
+        object="notebook",
+        zone_id="desk",
+        distance_m=0.5,
+        subject_instance_id="mug-1",
+        object_instance_id="notebook-1",
+        valid_from=1.0,
+        valid_to=2.0,
+    )
+
+    # When: the compact payload is encoded and decoded.
+    decoded = codec.decode(
+        SpatialTokenRecord(
+            memory_id="relation",
+            video_id="video",
+            start_time=1.0,
+            end_time=2.0,
+            token=codec.encode(token),
+            importance=1.0,
+        ),
+    )
+
+    # Then: canonical direction preserves meaning by swapping both endpoints.
+    assert isinstance(decoded, RelationToken)
+    assert decoded.relation == canonical_relation
+    assert decoded.subject == "notebook"
+    assert decoded.object == "mug"
+    assert decoded.subject_instance_id == "notebook-1"
+    assert decoded.object_instance_id == "mug-1"
+    assert decoded.distance_m == pytest.approx(0.5)
+    assert decoded.valid_from == pytest.approx(1.0)
+    assert decoded.valid_to == pytest.approx(2.0)
 
 
 def test_moved_object_emits_causal_delta_not_future_state() -> None:
@@ -257,6 +313,7 @@ def test_relation_deltas_are_causal_and_emit_returned_state() -> None:
         env={},
         options=SpatialCompressionOptions(
             max_tokens_per_window=100,
+            max_bytes_per_window=100_000,
             min_keep_score=0.0,
         ),
     ).records
@@ -310,15 +367,102 @@ def test_selector_enforces_per_window_token_budget() -> None:
         record for record in result.records if isinstance(record, SpatialTokenRecord)
     )
 
-    # Then: exactly two learned-score winners are persisted for the window.
+    # Then: prefix-causal admission keeps the first zone and one object.
     assert len(tokens) == 2
-    assert all(":object:" in record.memory_id for record in tokens)
+    assert sum(":zone:" in record.memory_id for record in tokens) == 1
+    assert sum(":object:" in record.memory_id for record in tokens) == 1
     assert result.experiment.token_budget == 2
 
 
 class _FeatureScoreSelector:
     def score(self, features: Mapping[str, float]) -> float:
         return features["score"]
+
+
+def _scored_candidate(
+    memory_id: str,
+    *,
+    score: float,
+    end_time: float = 1.0,
+    frame_refs: tuple[str, ...] = (),
+) -> SpatialTokenCandidate:
+    return SpatialTokenCandidate(
+        record=SpatialTokenRecord(
+            memory_id=memory_id,
+            video_id="byte-budget",
+            start_time=end_time - 0.5,
+            end_time=end_time,
+            token='["Z",25,"zone",0,0,0]',  # noqa: S106
+            importance=0.0,
+            frame_refs=frame_refs,
+        ),
+        features={"score": score},
+    )
+
+
+def _selected_jsonl_bytes(candidate: SpatialTokenCandidate) -> int:
+    score = candidate.features["score"]
+    record = candidate.record.model_copy(update={"importance": round(score, 6)})
+    return len(record.model_dump_json().encode("utf-8")) + 1
+
+
+def test_selector_enforces_strict_serialized_byte_budget() -> None:
+    # Given: two equal-size writes that individually fit but jointly exceed budget.
+    candidates = (
+        _scored_candidate("high", score=0.9),
+        _scored_candidate("low_", score=0.8),
+    )
+    candidate_bytes = tuple(_selected_jsonl_bytes(item) for item in candidates)
+    assert candidate_bytes[0] == candidate_bytes[1]
+    byte_budget = sum(candidate_bytes) - 1
+
+    # When: admission applies actual serialized JSONL byte cost.
+    selected = select_spatial_tokens(
+        candidates,
+        selector=_FeatureScoreSelector(),
+        options=SpatialCompressionOptions(
+            max_tokens_per_window=2,
+            max_bytes_per_window=byte_budget,
+        ),
+    )
+    selected_bytes = sum(
+        len(record.model_dump_json().encode("utf-8")) + 1 for record in selected
+    )
+
+    # Then: greedy selection never crosses the hard per-window cap.
+    assert tuple(record.memory_id for record in selected) == ("high",)
+    assert selected_bytes <= byte_budget
+    assert selected_bytes + candidate_bytes[1] > byte_budget
+
+
+def test_same_timestamp_selection_prefers_score_per_serialized_byte() -> None:
+    # Given: compact candidate has lower score but greater value per serialized byte.
+    compact = _scored_candidate("compact", score=0.6)
+    bloated = _scored_candidate(
+        "bloated",
+        score=0.9,
+        frame_refs=("x" * 1_000,),
+    )
+    assert 0.6 / _selected_jsonl_bytes(compact) > (0.9 / _selected_jsonl_bytes(bloated))
+
+    # When: only one simultaneous write can be retained.
+    selected = select_spatial_tokens(
+        (bloated, compact),
+        selector=_FeatureScoreSelector(),
+        options=SpatialCompressionOptions(max_tokens_per_window=1),
+    )
+
+    # Then: greedy admission maximizes selector value per actual byte.
+    assert tuple(record.memory_id for record in selected) == ("compact",)
+
+
+def test_selector_rejects_non_positive_byte_budget() -> None:
+    with pytest.raises(SpatialCompressionError, match="max_bytes_per_window"):
+        _ = select_spatial_tokens(
+            (),
+            selector=_FeatureScoreSelector(),
+            options=SpatialCompressionOptions(max_bytes_per_window=0),
+        )
 
 
 def test_window_selection_is_prefix_causal() -> None:
@@ -399,7 +543,7 @@ def test_decode_spatial_token_rejects_malformed_payload() -> None:
     )
 
     # When / Then: artifact parsing fails with a typed error.
-    with pytest.raises(SpatialCompressionError, match="expected 9 token fields"):
+    with pytest.raises(SpatialCompressionError, match="expected 9 or 15 token fields"):
         _ = decode_spatial_token(record)
 
 
@@ -443,9 +587,7 @@ class _Cut3RStubEncoder:
 
     def encode(self, source: SourceStreamExample) -> SpatialGeometryFeatureSet:
         baseline = StructuredSpatialGeometryEncoder().encode(source)
-        zone_ids = {
-            zone.zone_id: f"cut3r_{zone.zone_id}" for zone in baseline.zones
-        }
+        zone_ids = {zone.zone_id: f"cut3r_{zone.zone_id}" for zone in baseline.zones}
         return SpatialGeometryFeatureSet(
             encoder=self.name,
             projection_head=None,
@@ -702,9 +844,115 @@ def test_decoder_options_change_object_delta_policy() -> None:
         experiment=strict,
     ).records
 
-    # Then: the configured threshold retains the second movement delta.
-    assert sum(":object:mug:" in item.memory_id for item in default_records) == 1
+    # Then: an explicit movement event survives both dedup policies.
+    assert sum(":object:mug:" in item.memory_id for item in default_records) == 2
     assert sum(":object:mug:" in item.memory_id for item in strict_records) == 2
+
+
+def test_unchanged_object_refreshes_once_per_budget_window() -> None:
+    source = SourceStreamExample(
+        video_id="last-seen",
+        start_time=0.0,
+        end_time=120.0,
+        object_detections=(
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=1.0,
+                end_time=2.0,
+                x=1.0,
+                y=2.0,
+                z=1.0,
+            ),
+            ObjectMetadata(
+                label="mug",
+                confidence=0.9,
+                start_time=100.0,
+                end_time=101.0,
+                x=1.0,
+                y=2.0,
+                z=1.0,
+            ),
+        ),
+    )
+
+    records = build_compressed_spatial_memory(
+        (source,),
+        _clips(source),
+        env={},
+        options=SpatialCompressionOptions(
+            max_tokens_per_window=100,
+            max_bytes_per_window=100_000,
+            min_keep_score=0.0,
+        ),
+    ).records
+    object_records = tuple(
+        (record, token)
+        for record in records
+        if isinstance(record, SpatialTokenRecord)
+        and isinstance((token := decode_spatial_token(record)), ObjectToken)
+    )
+
+    assert tuple(record.end_time for record, _token in object_records) == (2.0, 101.0)
+    assert len({token.instance_id for _record, token in object_records}) == 1
+    assert tuple(token.change_type for _record, token in object_records) == (
+        "appeared",
+        "observed",
+    )
+
+
+def test_zone_candidate_uses_first_causal_pose_not_future_revisit() -> None:
+    source = SourceStreamExample(
+        video_id="zone-prefix",
+        start_time=0.0,
+        end_time=120.0,
+        pose_samples=(
+            PoseSample(timestamp=1.0, x=0.0, y=0.0, z=1.5),
+            PoseSample(timestamp=100.0, x=1.0, y=0.0, z=1.5),
+        ),
+    )
+
+    candidates = build_spatial_token_candidates((source,), env={}).candidates
+    zone_record, zone = next(
+        (candidate.record, token)
+        for candidate in candidates
+        if isinstance((token := decode_spatial_token(candidate.record)), ZoneToken)
+    )
+
+    assert zone_record.end_time == 1.0
+    assert zone.x == 0.0
+    selected = build_compressed_spatial_memory(
+        (source,),
+        _clips(source),
+        env={},
+    ).records
+    assert any(
+        isinstance(record, SpatialTokenRecord)
+        and isinstance(decode_spatial_token(record), ZoneToken)
+        for record in selected
+    )
+
+
+def test_final_artifact_byte_cap_includes_trajectory_records() -> None:
+    source = SourceStreamExample(
+        video_id="trajectory-budget",
+        start_time=0.0,
+        end_time=60.0,
+        pose_samples=(
+            PoseSample(timestamp=1.0, x=0.0, y=0.0, z=1.5),
+            PoseSample(timestamp=59.0, x=0.0, y=0.0, z=1.5),
+        ),
+    )
+
+    result = build_compressed_spatial_memory(
+        (source,),
+        _clips(source),
+        env={},
+        options=SpatialCompressionOptions(max_bytes_per_window=1),
+    )
+
+    assert result.records == ()
+    assert result.compressed_bytes == 0
 
 
 def test_builtin_components_reject_unknown_options() -> None:
@@ -743,3 +991,21 @@ def test_effective_config_resolution_does_not_construct_plugins(tmp_path: Path) 
     assert resolved.encoder == "gpu-only-test"
     assert resolved.plugins == ("module_that_must_not_be_imported",)
     assert resolved.selector_path == str(selector_path)
+
+
+def test_byte_budget_propagates_from_environment_and_experiment_config() -> None:
+    # Given / When: byte budgets come from either runtime env or explicit config.
+    env = {"WORLDMM_SPATIAL_BYTE_BUDGET": "1024"}
+    env_config = resolve_spatial_experiment_config(env)
+    env_model = resolve_spatial_memory_model(env)
+    explicit_model = resolve_spatial_memory_model(
+        {},
+        config=SpatialExperimentConfig(byte_budget=512),
+    )
+
+    # Then: effective config and runtime admission options carry the same budget.
+    assert env_config.byte_budget == 1024
+    assert env_model.config.byte_budget == 1024
+    assert env_model.options.max_bytes_per_window == 1024
+    assert explicit_model.config.byte_budget == 512
+    assert explicit_model.options.max_bytes_per_window == 512

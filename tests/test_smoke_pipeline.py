@@ -61,6 +61,7 @@ class SmokeRelationDiagnostics(FrozenModel):
 
 class SmokeSpatialDiagnostics(FrozenModel):
     relation_accuracy: SmokeRelationDiagnostics
+    relation_metric_accuracy: dict[str, float | int]
     recall_at_k: dict[str, float]
     protocol_recall_at_k: dict[str, float]
     k: int
@@ -168,7 +169,9 @@ def test_smoke_cli_writes_parseable_artifacts_and_replaces_rerun(
     diagnostics = SmokeSpatialDiagnostics.model_validate_json(
         (out_dir / "spatial_diagnostics.json").read_text(encoding="utf-8"),
     )
-    assert diagnostics.relation_accuracy.f1 >= 0.0
+    assert diagnostics.relation_accuracy.expected > 0
+    assert diagnostics.relation_accuracy.f1 == 1.0
+    assert diagnostics.relation_metric_accuracy["f1"] == 1.0
     assert "spatial" in diagnostics.recall_at_k
     assert all(
         pack.retrieval_trace.protocols
@@ -324,10 +327,22 @@ def test_smoke_cli_writes_ablation_report_without_spatial(tmp_path: Path) -> Non
     assert report.baseline.config.protocol == "worldmm-smvqa"
     assert report.ablation.config.stores == ("episodic", "semantic", "visual")
     assert report.ablation.config.protocol == "worldmm-smvqa"
-    assert "Ans-F1" in report.delta
+    assert report.delta["QA-Acc"] < 0.0
+    assert report.delta["QA-MRR"] < 0.0
     assert report.baseline.trace_summary.pack_count == 6
     assert report.ablation.trace_summary.pack_count == 6
     assert "spatial" not in report.ablation.trace_summary.selected_stores
+    predictions = tuple(
+        PredictionRecord.model_validate_json(line)
+        for line in (out_dir / "predictions.jsonl")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
+    spatial_prediction = next(
+        item for item in predictions if item.question_id == "q_fake_005"
+    )
+    assert spatial_prediction.answer == "B"
+    assert spatial_prediction.geometry_proofs[0]["operation"] == "distance"
 
 
 def test_smoke_cli_writes_protocol_only_ablation_report(tmp_path: Path) -> None:

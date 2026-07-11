@@ -1,6 +1,6 @@
 {"question_id":"q_fake_001","answerable":true,"ranked_choices":["A","B","C","D"],"answer":"A","confidence":0.9,"supporting_memory_ids":["fake_video_001:5:12:transcript"],"prompt_token_count":10,"raw_model_output_path":null}
 {"question_id":"q_fake_002","answerable":true,"ranked_choices":["A","B","C","D"],"answer":"A","confidence":0.7,"supporting_memory_ids":["fake_video_001:70:79:transcript"],"prompt_token_count":20,"raw_model_output_path":null}
-{"question_id":"q_fake_003","answerable":true,"ranked_choices":["A","C","D"],"answer":"A","confidence":0.4,"supporting_memory_ids":[],"prompt_token_count":30,"raw_model_output_path":null}
-{"question_id":"q_fake_004","answerable":true,"ranked_choices":["D","A","B","C"],"answer":"D","confidence":0.95,"supporting_memory_ids":["fake_video_002:170:180:future","fake_video_002:130:138:transcript"],"prompt_token_count":40,"raw_model_output_path":null}
-{"question_id":"q_fake_005","answerable":true,"ranked_choices":["A","B","C","D"],"answer":"A","confidence":0.9,"supporting_memory_ids":["fake_video_001:5:12:spatial"],"prompt_token_count":50,"raw_model_output_path":null}
+{"question_id":"q_fake_003","answerable":true,"ranked_choices":["A","C","D","B"],"answer":"A","confidence":0.4,"supporting_memory_ids":[],"prompt_token_count":30,"raw_model_output_path":null}
+{"question_id":"q_fake_004","answerable":true,"ranked_choices":["D","A","B","C"],"answer":"D","confidence":0.95,"supporting_memory_ids":["fake_video_002:130:138:transcript"],"prompt_token_count":40,"raw_model_output_path":null}
+{"question_id":"q_fake_005","answerable":true,"ranked_choices":["B","C","A","D"],"answer":"B","confidence":0.9,"supporting_memory_ids":["fake_video_001:5:12:spatial"],"prompt_token_count":50,"raw_model_output_path":null}
 {"question_id":"q_fake_006","answerable":false,"ranked_choices":["D","A","B","C"],"answer":null,"confidence":0.0,"supporting_memory_ids":[],"prompt_token_count":60,"raw_model_output_path":null}

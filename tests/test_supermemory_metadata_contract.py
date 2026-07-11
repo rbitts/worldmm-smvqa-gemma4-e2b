@@ -5,7 +5,16 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
-from worldmm_smvqa.schema import AnswerChoice, QALabelExample, SourceStreamExample
+from worldmm_smvqa.schema import (
+    AnswerChoice,
+    FrameMetadata,
+    GazeSample,
+    ObjectMetadata,
+    PoseSample,
+    QALabelExample,
+    QuestionRequest,
+    SourceStreamExample,
+)
 
 
 def test_supermemory_all_qa_record_is_not_a_source_stream_example() -> None:
@@ -51,6 +60,98 @@ def test_supermemory_qa_metadata_preserves_multiple_video_ids() -> None:
     assert label.video_ids == video_ids
 
 
+def test_supermemory_task_skill_and_choice_types_survive_adapter() -> None:
+    payload = _supermemory_all_qa_record()
+
+    label = _tentative_qa_label(payload)
+
+    assert label.task == "conversational_memory"
+    assert label.skill == "cross_session_recall"
+    assert tuple(choice.choice_ltype for choice in label.answer_choices) == tuple(
+        _str_list(payload["choice_types"]),
+    )
+
+
+def test_unanswerable_label_keeps_na_choice_id() -> None:
+    payload = _supermemory_all_qa_record()
+    payload["is_answerable"] = False
+    payload["correct_option_index"] = 0
+    payload["correct_answer"] = _str_list(payload["choices"])[0]
+
+    label = _tentative_qa_label(payload)
+
+    assert not label.is_answerable
+    assert label.answer == "A"
+    assert label.answer_choices[0].choice_ltype == "incorrect"
+
+
+def test_optional_spatial_sensor_contract_round_trips() -> None:
+    source = SourceStreamExample(
+        video_id="video-1",
+        start_time=0.0,
+        end_time=1.0,
+        object_detections=(
+            ObjectMetadata(
+                start_time=0.0,
+                end_time=1.0,
+                label="mug",
+                confidence=0.9,
+                instance_id="mug-7",
+                x=1.0,
+                y=2.0,
+                z=3.0,
+            ),
+        ),
+        pose_samples=(
+            PoseSample(
+                timestamp=0.5,
+                x=1.0,
+                y=2.0,
+                z=3.0,
+                roll=0.1,
+                pitch=0.2,
+                yaw=0.3,
+                coordinate_frame="slam_world",
+                pose_covariance=(0.0,) * 36,
+            ),
+        ),
+    )
+
+    restored = SourceStreamExample.model_validate_json(source.model_dump_json())
+
+    assert restored.object_detections[0].instance_id == "mug-7"
+    assert restored.pose_samples[0].coordinate_frame == "slam_world"
+    assert restored.pose_samples[0].pose_covariance == (0.0,) * 36
+
+
+def test_sensor_and_question_numeric_contract_rejects_non_finite_values() -> None:
+    with pytest.raises(ValidationError):
+        _ = ObjectMetadata(
+            start_time=0.0,
+            end_time=1.0,
+            label="mug",
+            confidence=float("nan"),
+        )
+    with pytest.raises(ValidationError):
+        _ = PoseSample(timestamp=float("inf"), x=0.0, y=0.0, z=0.0)
+    with pytest.raises(ValidationError):
+        _ = GazeSample(timestamp=float("nan"), x=0.0, y=0.0, z=0.0)
+    with pytest.raises(ValidationError):
+        _ = FrameMetadata(
+            frame_ref="frame-1",
+            timestamp=float("inf"),
+            description="invalid",
+        )
+    with pytest.raises(ValidationError):
+        _ = QuestionRequest(
+            question_id="q-1",
+            video_id="video-1",
+            question="Where?",
+            question_time=float("nan"),
+            answer_choices=(),
+        )
+
+
 def _supermemory_all_qa_record() -> dict[str, object]:
     return {
         "question_id": 1,
@@ -66,7 +167,8 @@ def _supermemory_all_qa_record() -> dict[str, object]:
         "choice_types": ["incorrect", "correct", "incorrect", "vague"],
         "subject": 1,
         "metadata": {
-            "skill": "conversational_memory",
+            "task": "conversational_memory",
+            "skill": "cross_session_recall",
             "primary_video_id": "Person_1_session_8_03102026_glasses_1264",
             "primary_video_start_time": 1773180268,
         },
@@ -119,6 +221,8 @@ def _tentative_qa_label(payload: dict[str, object]) -> QALabelExample:
             )
             for index, choice in enumerate(choices)
         ),
+        task=str(metadata["task"]),
+        skill=str(metadata["skill"]),
         answer=chr(ord("A") + answer_index),
         is_answerable=bool(payload["is_answerable"]),
         evidence_list=_evidence_refs(payload),

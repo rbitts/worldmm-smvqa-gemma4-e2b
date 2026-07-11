@@ -44,11 +44,23 @@ def test_launch_remote_dry_run_prints_bastion_ssh(tmp_path: Path) -> None:
         str(out_dir),
     )
 
-    # Then: CLI prints a head-node sbatch command and opens no connection.
+    # Then: CLI prints the staged DAG command and opens no connection.
     assert result.returncode == 0
     assert 'ssh -J "$BASTION_HOST" "$HEAD_NODE"' in result.stdout
-    assert "/opt/slurm/bin/sbatch --parsable" in result.stdout
+    assert "bash remote-plan/submit_worldmm_smvqa_dag.sh" in result.stdout
+    assert "WORLDMM_SMVQA_REMOTE_APPROVED=1" not in result.stdout
+    assert "legacy single-job compatibility" in result.stdout
     assert "dry-run" in result.stdout
+    default_repo = "/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b"
+    assert (
+        f'"$HEAD_NODE:${{WORLDMM_REMOTE_REPO:-{default_repo}}}/"'
+        in result.stdout
+    )
+    assert (
+        f'"$HEAD_NODE:${{WORLDMM_REMOTE_REPO:-{default_repo}}}/remote-plan/"'
+        in result.stdout
+    )
+    assert result.stdout.count("--exclude '.env*'") == 2
     assert (out_dir / "run_worldmm_smvqa.sh").is_file()
 
 

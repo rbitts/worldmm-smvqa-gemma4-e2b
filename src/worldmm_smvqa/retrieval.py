@@ -54,6 +54,15 @@ from worldmm_smvqa.worldmm.spatial_types import (
     WearerTrajectorySummaryRecord,
     ZoneRecord,
 )
+from worldmm_smvqa.worldmm.typed_memory import (
+    EventMemoryRecord,
+    FreeSpaceMemoryRecord,
+    LandmarkMemoryRecord,
+    NoWriteMemoryRecord,
+    ObjectMemoryRecord,
+    PlaneMemoryRecord,
+    PortalMemoryRecord,
+)
 from worldmm_smvqa.worldmm.visual import VisualMemoryRecord, build_visual_memory
 
 if TYPE_CHECKING:
@@ -68,6 +77,7 @@ STORE_ORDER: Final[tuple[RetrievalStore, ...]] = (
 DEFAULT_EVIDENCE_BUDGET: Final = 6
 CLIP_SECONDS: Final = 30.0
 SHARD_SECONDS: Final = 1800.0
+RELATION_ENDPOINT_KEYS: Final = ("subject_instance_id", "object_instance_id")
 STOP_WORDS: Final = frozenset(
     {"a", "and", "is", "on", "the", "what", "which", "with"},
 )
@@ -76,10 +86,15 @@ GEOMETRY_TERMS: Final = frozenset(
         "above",
         "behind",
         "below",
+        "count",
+        "distance",
+        "far",
         "front",
         "in_front_of",
         "left",
         "left_of",
+        "last",
+        "many",
         "near",
         "right",
         "right_of",
@@ -94,6 +109,21 @@ type SpatialRetrievalRecord = (
     | SpatialTokenRecord
     | ObjectStateSnapshotRecord
     | WearerTrajectorySummaryRecord
+    | ObjectMemoryRecord
+    | PlaneMemoryRecord
+    | PortalMemoryRecord
+    | FreeSpaceMemoryRecord
+    | LandmarkMemoryRecord
+    | EventMemoryRecord
+    | NoWriteMemoryRecord
+)
+type TypedWritableRetrievalRecord = (
+    ObjectMemoryRecord
+    | PlaneMemoryRecord
+    | PortalMemoryRecord
+    | FreeSpaceMemoryRecord
+    | LandmarkMemoryRecord
+    | EventMemoryRecord
 )
 
 
@@ -194,6 +224,7 @@ def retrieve_evidence(
         route.store_order,
         options.evidence_budget,
         max_frame_refs=options.max_frame_refs,
+        geometry_query=bool(_query_terms(question) & GEOMETRY_TERMS),
     )
     return EvidencePack(
         question_id=question.question_id,
@@ -276,7 +307,10 @@ def build_retrieval_records(
     )
     records.extend(_semantic_candidate(record) for record in semantic)
     records.extend(_visual_candidate(record) for record in visual)
-    records.extend(_spatial_candidate(record) for record in spatial)
+    for record in spatial:
+        candidate = _spatial_candidate(record)
+        if candidate is not None:
+            records.append(candidate)
     return tuple(records)
 
 
@@ -314,7 +348,9 @@ def _visual_artifact_record(line: str) -> VisualMemoryRecord:
     return VisualMemoryRecord.model_validate_json(line)
 
 
-def _spatial_artifact_record(line: str) -> SpatialRetrievalRecord:
+def _spatial_artifact_record(  # noqa: PLR0911, PLR0912
+    line: str,
+) -> SpatialRetrievalRecord:
     header = _RecordHeader.model_validate_json(line)
     match header.record_type:
         case "zone":
@@ -329,6 +365,20 @@ def _spatial_artifact_record(line: str) -> SpatialRetrievalRecord:
             return ObjectStateSnapshotRecord.model_validate_json(line)
         case "wearer_trajectory_summary":
             return WearerTrajectorySummaryRecord.model_validate_json(line)
+        case "object":
+            return ObjectMemoryRecord.model_validate_json(line)
+        case "plane":
+            return PlaneMemoryRecord.model_validate_json(line)
+        case "portal":
+            return PortalMemoryRecord.model_validate_json(line)
+        case "free_space":
+            return FreeSpaceMemoryRecord.model_validate_json(line)
+        case "landmark":
+            return LandmarkMemoryRecord.model_validate_json(line)
+        case "event":
+            return EventMemoryRecord.model_validate_json(line)
+        case "no_write":
+            return NoWriteMemoryRecord.model_validate_json(line)
         case other:
             raise InvalidRetrievalStoreError(store=other)
 
@@ -400,7 +450,9 @@ def _visual_candidate(record: VisualMemoryRecord) -> RetrievalMemoryRecord:
     )
 
 
-def _spatial_candidate(record: SpatialRetrievalRecord) -> RetrievalMemoryRecord:
+def _spatial_candidate(  # noqa: PLR0911, PLR0912
+    record: SpatialRetrievalRecord,
+) -> RetrievalMemoryRecord | None:
     match record:
         case ZoneRecord():
             start_time, end_time = _zone_time_span(record)
@@ -478,6 +530,201 @@ def _spatial_candidate(record: SpatialRetrievalRecord) -> RetrievalMemoryRecord:
                 frame_refs=(),
                 base_score=record.base_score,
             )
+        case ObjectMemoryRecord():
+            x, y, z = record.geometry.centroid
+            extent_x, extent_y, extent_z = record.geometry.extent
+            geometry = _typed_geometry(record, record.semantic_label)
+            geometry.update(
+                {
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "extent_x": extent_x,
+                    "extent_y": extent_y,
+                    "extent_z": extent_z,
+                },
+            )
+            return _typed_candidate(
+                record,
+                snippet=(
+                    f"{record.semantic_label} {record.instance_id} in "
+                    f"{record.local_frame_id} near "
+                    f"({_format_float(x)},{_format_float(y)},{_format_float(z)})"
+                ),
+                geometry=geometry,
+            )
+        case PlaneMemoryRecord():
+            nx, ny, nz = record.geometry.normal
+            geometry = _typed_geometry(record, "plane")
+            geometry.update(
+                {
+                    "normal_x": nx,
+                    "normal_y": ny,
+                    "normal_z": nz,
+                    "offset_m": record.geometry.offset_m,
+                    "boundary_vertex_count": float(len(record.geometry.boundary)),
+                },
+            )
+            return _typed_candidate(
+                record,
+                snippet=(
+                    f"plane {record.instance_id} in {record.local_frame_id} "
+                    f"normal=({_format_float(nx)},{_format_float(ny)},"
+                    f"{_format_float(nz)}) "
+                    f"offset_m={_format_float(record.geometry.offset_m)}"
+                ),
+                geometry=geometry,
+            )
+        case PortalMemoryRecord():
+            x, y, z = record.geometry.centroid
+            nx, ny, nz = record.geometry.normal
+            geometry = _typed_geometry(record, "portal")
+            geometry.update(
+                {
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "normal_x": nx,
+                    "normal_y": ny,
+                    "normal_z": nz,
+                    "width_m": record.geometry.width_m,
+                    "height_m": record.geometry.height_m,
+                    "connects_frame_a": record.connects_frame_ids[0],
+                    "connects_frame_b": record.connects_frame_ids[1],
+                },
+            )
+            return _typed_candidate(
+                record,
+                snippet=(
+                    f"portal {record.instance_id} connects "
+                    f"{record.connects_frame_ids[0]} and "
+                    f"{record.connects_frame_ids[1]} near "
+                    f"({_format_float(x)},{_format_float(y)},{_format_float(z)})"
+                ),
+                geometry=geometry,
+            )
+        case FreeSpaceMemoryRecord():
+            geometry = _typed_geometry(record, "free_space")
+            geometry.update(
+                {
+                    "height_m": record.geometry.height_m,
+                    "floor_vertex_count": float(
+                        len(record.geometry.floor_polygon),
+                    ),
+                },
+            )
+            return _typed_candidate(
+                record,
+                snippet=(
+                    f"free space {record.instance_id} in {record.local_frame_id} "
+                    f"height_m={_format_float(record.geometry.height_m)}"
+                ),
+                geometry=geometry,
+            )
+        case LandmarkMemoryRecord():
+            x, y, z = record.geometry.position
+            ray_x, ray_y, ray_z = record.geometry.ray_direction
+            geometry = _typed_geometry(record, "landmark")
+            geometry.update(
+                {
+                    "x": x,
+                    "y": y,
+                    "z": z,
+                    "ray_x": ray_x,
+                    "ray_y": ray_y,
+                    "ray_z": ray_z,
+                    "view_cone_degrees": record.geometry.view_cone_degrees,
+                },
+            )
+            if record.descriptor_ref is not None:
+                geometry["descriptor_ref"] = record.descriptor_ref
+            return _typed_candidate(
+                record,
+                snippet=(
+                    f"landmark {record.instance_id} in {record.local_frame_id} "
+                    f"near ({_format_float(x)},{_format_float(y)},"
+                    f"{_format_float(z)})"
+                ),
+                geometry=geometry,
+            )
+        case EventMemoryRecord():
+            geometry = _typed_geometry(record, "event")
+            geometry["event_kind"] = record.event_kind
+            geometry["involved_entity_ids"] = " ".join(
+                record.involved_entity_ids,
+            )
+            if record.geometry.before_position is not None:
+                before_x, before_y, before_z = record.geometry.before_position
+                geometry.update(
+                    {
+                        "before_x": before_x,
+                        "before_y": before_y,
+                        "before_z": before_z,
+                    },
+                )
+            if record.geometry.after_position is not None:
+                after_x, after_y, after_z = record.geometry.after_position
+                geometry.update(
+                    {
+                        "after_x": after_x,
+                        "after_y": after_y,
+                        "after_z": after_z,
+                    },
+                )
+            return _typed_candidate(
+                record,
+                snippet=(
+                    f"{record.event_kind} event {record.instance_id} involves "
+                    f"{' '.join(record.involved_entity_ids)} in "
+                    f"{record.local_frame_id}"
+                ),
+                geometry=geometry,
+            )
+        case NoWriteMemoryRecord():
+            return None
+
+
+def _typed_candidate(
+    record: TypedWritableRetrievalRecord,
+    *,
+    snippet: str,
+    geometry: dict[str, float | str],
+) -> RetrievalMemoryRecord:
+    return RetrievalMemoryRecord(
+        memory_id=record.memory_id,
+        source_store="spatial",
+        video_id=record.source_video_id,
+        start_time=record.validity.start_time,
+        end_time=record.validity.end_time,
+        snippet=(
+            f"{snippet} during "
+            f"[{_format_float(record.validity.start_time)},"
+            f"{_format_float(record.validity.end_time)}] "
+            f"provenance={record.provenance}"
+        ),
+        frame_refs=record.evidence_refs,
+        base_score=record.confidence,
+        geometry=geometry,
+    )
+
+
+def _typed_geometry(
+    record: TypedWritableRetrievalRecord,
+    label: str,
+) -> dict[str, float | str]:
+    geometry: dict[str, float | str] = {
+        "record_type": record.record_type,
+        "entity_id": record.entity_id,
+        "instance_id": record.instance_id,
+        "label": label,
+        "coordinate_frame": record.local_frame_id,
+        "uncertainty_m": record.geometry_uncertainty.standard_deviation_m,
+        "last_seen_time": record.last_seen_time,
+        "provenance": record.provenance,
+    }
+    if record.evidence_refs:
+        geometry["evidence_refs"] = "\n".join(record.evidence_refs)
+    return geometry
 
 
 def _parse_retrieval_store(store: str) -> RetrievalStore:
@@ -507,11 +754,23 @@ def _relation_geometry_text(record: SpatialRelationRecord) -> str:
 
 def _anchor_geometry(record: SpatialAnchorRecord) -> dict[str, float | str]:
     geometry: dict[str, float | str] = {
+        "entity_id": record.instance_id or record.memory_id,
+        "instance_id": record.instance_id or record.memory_id,
+        "label": record.object_label,
         "x": record.x,
         "y": record.y,
         "z": record.z,
+        "coordinate_frame": record.coordinate_frame,
+        "last_seen_time": (
+            record.end_time
+            if record.last_seen_time is None
+            else record.last_seen_time
+        ),
         "provenance": record.provenance,
+        "evidence_refs": "\n".join((record.memory_id, *record.frame_refs)),
     }
+    if record.uncertainty_m is not None:
+        geometry["uncertainty_m"] = record.uncertainty_m
     if record.geometry_frame_ref is not None:
         geometry["geometry_frame_ref"] = record.geometry_frame_ref
     if record.geometry_source is not None:
@@ -529,7 +788,16 @@ def _relation_geometry(record: SpatialRelationRecord) -> dict[str, float | str] 
     geometry: dict[str, float | str] = {
         "relation": record.relation,
         "distance_m": record.distance_m,
+        "coordinate_frame": record.coordinate_frame,
     }
+    if record.subject_instance_id is not None:
+        geometry["subject_instance_id"] = record.subject_instance_id
+    if record.object_instance_id is not None:
+        geometry["object_instance_id"] = record.object_instance_id
+    if record.valid_from is not None:
+        geometry["valid_from"] = record.valid_from
+    if record.valid_to is not None:
+        geometry["valid_to"] = record.valid_to
     if record.delta_x is not None:
         geometry["delta_x"] = record.delta_x
     if record.delta_y is not None:
@@ -649,6 +917,7 @@ def _policy_evidence(
     evidence_budget: int,
     *,
     max_frame_refs: int,
+    geometry_query: bool = False,
 ) -> EvidenceSelection:
     if evidence_budget <= 0:
         return EvidenceSelection(items=(), frame_ref_count=0)
@@ -656,6 +925,17 @@ def _policy_evidence(
     selected: list[EvidenceItem] = []
     used_ids: set[str] = set()
     frame_refs: list[str] = []
+    if geometry_query:
+        for candidate in _geometry_bundle(scored):
+            if len(selected) >= evidence_budget:
+                break
+            item, item_frame_refs = _evidence_item(
+                candidate,
+                remaining_frame_refs=max_frame_refs - len(frame_refs),
+            )
+            selected.append(item)
+            frame_refs.extend(item_frame_refs)
+            used_ids.add(candidate.record.memory_id)
     candidates_by_store = {
         store: iter(_store_candidates(scored, store)) for store in stores
     }
@@ -688,6 +968,83 @@ def _policy_evidence(
         items=tuple(selected),
         frame_ref_count=len(frame_refs),
     )
+
+
+def _geometry_bundle(
+    scored: Sequence[ScoredCandidate],
+) -> tuple[ScoredCandidate, ...]:
+    """Return one relation plus both endpoint objects needed by the executor."""
+    relation = next(
+        (
+            candidate
+            for candidate in scored
+            if candidate.record.source_store == "spatial"
+            and candidate.record.geometry is not None
+            and "relation" in candidate.record.geometry
+        ),
+        None,
+    )
+    if relation is not None:
+        if relation.record.geometry is None:
+            return ()
+        endpoint_ids = tuple(
+            value
+            for key in RELATION_ENDPOINT_KEYS
+            if isinstance((value := relation.record.geometry.get(key)), str) and value
+        )
+        if len(endpoint_ids) != len(RELATION_ENDPOINT_KEYS):
+            return ()
+        endpoints = tuple(
+            next(
+                (
+                    candidate
+                    for candidate in scored
+                    if candidate.record.source_store == "spatial"
+                    and candidate.record.video_id == relation.record.video_id
+                    and candidate.record.start_time <= relation.record.end_time
+                    and candidate.record.end_time >= relation.record.start_time
+                    and candidate.record.geometry is not None
+                    and candidate.record.geometry.get("coordinate_frame")
+                    == relation.record.geometry.get("coordinate_frame")
+                    and entity_id
+                    in (
+                        candidate.record.geometry.get("entity_id"),
+                        candidate.record.geometry.get("instance_id"),
+                    )
+                ),
+                None,
+            )
+            for entity_id in endpoint_ids
+        )
+        if any(endpoint is None for endpoint in endpoints):
+            return ()
+        return (
+            relation,
+            *(endpoint for endpoint in endpoints if endpoint is not None),
+        )
+
+    typed_objects = tuple(
+        candidate
+        for candidate in scored
+        if candidate.record.source_store == "spatial"
+        and candidate.record.geometry is not None
+        and candidate.record.geometry.get("record_type") == "object"
+        and isinstance(candidate.record.geometry.get("entity_id"), str)
+    )
+    endpoint_count = len(RELATION_ENDPOINT_KEYS)
+    for first in typed_objects:
+        compatible = tuple(
+            candidate
+            for candidate in typed_objects
+            if candidate.record.video_id == first.record.video_id
+            and candidate.record.geometry is not None
+            and first.record.geometry is not None
+            and candidate.record.geometry.get("coordinate_frame")
+            == first.record.geometry.get("coordinate_frame")
+        )
+        if len(compatible) >= endpoint_count:
+            return compatible[:endpoint_count]
+    return ()
 
 
 def _store_candidates(
@@ -871,7 +1228,7 @@ def _tokens(text: str) -> frozenset[str]:
 
 def _score_sort_key(candidate: ScoredCandidate) -> tuple[float, str, float, str]:
     record = candidate.record
-    return (-candidate.score, record.source_store, record.end_time, record.memory_id)
+    return (-candidate.score, record.source_store, -record.end_time, record.memory_id)
 
 
 def _ordered_stores(stores: frozenset[RetrievalStore]) -> tuple[RetrievalStore, ...]:

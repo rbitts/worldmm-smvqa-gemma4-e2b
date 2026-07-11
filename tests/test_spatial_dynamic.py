@@ -105,12 +105,10 @@ def test_object_state_snapshots_are_causal_and_recency_scored() -> None:
     )
     assert tuple(snapshot.object_label for snapshot in snapshots[:2]) == ("mug", "mug")
     assert snapshots[0].snippet == (
-        "as of t=30s, mug last seen in zone_dyn_video_0_0 "
-        "at t=12s near (1.2,0.4)"
+        "as of t=30s, mug last seen in zone_dyn_video_0_0 at t=12s near (1.2,0.4)"
     )
     assert snapshots[2].snippet == (
-        "as of t=90s, key last seen in zone_dyn_video_2_0 "
-        "at t=66s near (4,0)"
+        "as of t=90s, key last seen in zone_dyn_video_2_0 at t=66s near (4,0)"
     )
     assert tuple(snapshot.end_time for snapshot in snapshots) == (
         30.0,
@@ -146,6 +144,25 @@ def test_trajectory_summaries_render_chunk_local_zone_snippets() -> None:
     )
     assert tuple(summary.base_score for summary in summaries) == pytest.approx(
         (1.0 / 3.0, 2.0 / 3.0, 1.0),
+    )
+
+
+def test_trajectory_summaries_only_grow_when_zone_changes() -> None:
+    chunks = _chunks()
+    stable_zone = ZoneRecord(
+        zone_id="zone_dyn_video_0_0",
+        video_id="dyn_video",
+        centroid_x=0.0,
+        centroid_y=0.0,
+        centroid_z=0.0,
+        cell=(0, 0),
+        visit_intervals=((0.0, 90.0),),
+    )
+
+    summaries = build_trajectory_summaries(chunks, (stable_zone,))
+
+    assert tuple(summary.memory_id for summary in summaries) == (
+        "spatial_trajectory:dyn_video:30",
     )
 
 

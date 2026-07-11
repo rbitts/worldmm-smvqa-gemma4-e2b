@@ -68,6 +68,20 @@ def tiny_fixture_examples() -> tuple[
                     end_time=11.0,
                     label="mug",
                     confidence=0.91,
+                    instance_id="mug-1",
+                    x=0.5,
+                    y=1.5,
+                    z=1.0,
+                ),
+                ObjectMetadata(
+                    start_time=6.0,
+                    end_time=11.0,
+                    label="notebook",
+                    confidence=0.9,
+                    instance_id="notebook-1",
+                    x=1.0,
+                    y=1.5,
+                    z=1.0,
                 ),
                 ObjectMetadata(
                     start_time=72.0,
@@ -223,9 +237,9 @@ def tiny_fixture_examples() -> tuple[
         _label(LabelSeed(
             question_id="q_fake_005",
             video_id="fake_video_001",
-            question="Where did the spatial trace focus during the mug placement?",
+            question="How far was the mug from the notebook during placement?",
             question_time=1850.0,
-            answer="A",
+            answer="B",
             evidence="fake_video_001:5:12:spatial",
         )),
         _label(LabelSeed(
@@ -233,7 +247,7 @@ def tiny_fixture_examples() -> tuple[
             video_id="fake_video_002",
             question="What color is the magnet in the fridge zone?",
             question_time=15.0,
-            answer="",
+            answer="D",
             evidence=None,
             is_answerable=False,
         )),
@@ -242,21 +256,59 @@ def tiny_fixture_examples() -> tuple[
 
 
 def _label(seed: LabelSeed) -> QALabelExample:
-    return QALabelExample(
-        question_id=seed.question_id,
-        video_id=seed.video_id,
-        question=seed.question,
-        question_time=seed.question_time,
-        answer_choices=(
+    answer_choices = (
+        (
+            AnswerChoice(choice_id="A", text="2.0 meters", choice_ltype="wrong"),
+            AnswerChoice(choice_id="B", text="0.5 meters", choice_ltype="correct"),
+            AnswerChoice(choice_id="C", text="1.0 meter", choice_ltype="vague"),
+            AnswerChoice(
+                choice_id="D",
+                text="This question cannot be answered.",
+                choice_ltype="unanswerable",
+            ),
+        )
+        if seed.question_id == "q_fake_005"
+        else (
             AnswerChoice(
                 choice_id="A",
                 text="beside the notebook",
                 choice_ltype="place",
             ),
             AnswerChoice(choice_id="B", text="CEREAL-FAKE", choice_ltype="text"),
-            AnswerChoice(choice_id="C", text="lamp", choice_ltype="object"),
-            AnswerChoice(choice_id="D", text="blue", choice_ltype="attribute"),
-        ),
+            AnswerChoice(
+                choice_id="C",
+                text=(
+                    "This question cannot be answered."
+                    if seed.question_id == "q_fake_004"
+                    else "lamp"
+                ),
+                choice_ltype=(
+                    "unanswerable"
+                    if seed.question_id == "q_fake_004"
+                    else "object"
+                ),
+            ),
+            AnswerChoice(
+                choice_id="D",
+                text=(
+                    "blue"
+                    if seed.question_id == "q_fake_004"
+                    else "This question cannot be answered."
+                ),
+                choice_ltype=(
+                    "attribute"
+                    if seed.question_id == "q_fake_004"
+                    else "unanswerable"
+                ),
+            ),
+        )
+    )
+    return QALabelExample(
+        question_id=seed.question_id,
+        video_id=seed.video_id,
+        question=seed.question,
+        question_time=seed.question_time,
+        answer_choices=answer_choices,
         answer=seed.answer,
         is_answerable=seed.is_answerable,
         evidence_list=() if seed.evidence is None else (seed.evidence,),

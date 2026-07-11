@@ -36,9 +36,9 @@ def test_noop_binder_selects_nearest_frame_deterministically() -> None:
     )
     nearest = GeometryPrimitive(
         frame_ref="fake_video_001_frame_0008",
-        x=0.4,
-        y=1.4,
-        z=1.0,
+        x=anchor.x,
+        y=anchor.y,
+        z=anchor.z,
         source="gaze",
     )
     binder = NoopBinder()
@@ -93,7 +93,11 @@ def test_build_geometry_primitives_exports_object_gaze_and_pose_sources() -> Non
     primitives = build_geometry_primitives(sources[0])
 
     # Then: every available geometry source is represented deterministically.
-    assert {primitive.source for primitive in primitives} == {"gaze", "slam_pose"}
+    assert {primitive.source for primitive in primitives} == {
+        "gaze",
+        "object_geometry",
+        "slam_pose",
+    }
     assert all(primitive.frame_ref for primitive in primitives)
 
 

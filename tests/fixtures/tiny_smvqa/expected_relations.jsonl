@@ -1,0 +1,2 @@
+{"video_id":"fake_video_001","subject":"mug","relation":"near","object":"notebook","zone_id":"zone_fake_video_001_0_0","distance_m":0.5}
+{"video_id":"fake_video_001","subject":"mug","relation":"left_of","object":"notebook","zone_id":"zone_fake_video_001_0_0","distance_m":0.5}

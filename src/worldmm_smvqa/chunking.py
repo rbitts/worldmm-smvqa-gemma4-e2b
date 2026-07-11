@@ -52,6 +52,7 @@ class ChunkWindow:
     start_time: float
     end_time: float
     granularity: ChunkGranularity
+    end_inclusive: bool = False
 
 
 def build_chunks(sources: Sequence[SourceStreamExample]) -> tuple[StreamChunk, ...]:
@@ -135,6 +136,7 @@ def _chunk_source(
                     start_time=start_time,
                     end_time=end_time,
                     granularity=granularity,
+                    end_inclusive=end_time == source.end_time,
                 ),
             ),
         )
@@ -200,7 +202,10 @@ def _format_seconds(value: float) -> str:
 
 
 def _inside(timestamp: float, window: ChunkWindow) -> bool:
-    return window.start_time <= timestamp < window.end_time
+    return window.start_time <= timestamp and (
+        timestamp < window.end_time
+        or (window.end_inclusive and timestamp == window.end_time)
+    )
 
 
 def _require_temporal_order(source: SourceStreamExample) -> None:

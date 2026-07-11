@@ -21,6 +21,8 @@ from worldmm_smvqa.worldmm.spatial import (
 )
 from worldmm_smvqa.worldmm.spatial_types import (
     SpatialAnchorRecord,
+    SpatialChangeType,
+    SpatialCoordinateFrame,
     SpatialProvenance,
     SpatialRelationKind,
     SpatialRelationRecord,
@@ -47,12 +49,18 @@ FEATURE_NAMES: Final = (
 )
 DEFAULT_QUANTIZATION_M: Final = 0.25
 DEFAULT_TOKEN_BUDGET: Final = 16
+DEFAULT_BYTE_BUDGET: Final = 4096
 DEFAULT_WINDOW_SECONDS: Final = 30.0
 DEFAULT_MIN_KEEP_SCORE: Final = 0.5
 CONFIDENCE_SCALE: Final = 100
 STATE_CONFIDENCE_SCALE: Final = 10
+LEGACY_OBJECT_TOKEN_FIELDS: Final = 9
+OBJECT_TOKEN_FIELDS: Final = 15
+LEGACY_RELATION_TOKEN_FIELDS: Final = 7
+RELATION_TOKEN_FIELDS: Final = 12
 SPATIAL_SELECTOR_PATH_ENV: Final = "WORLDMM_SPATIAL_SELECTOR_PATH"
 SPATIAL_TOKEN_BUDGET_ENV: Final = "WORLDMM_SPATIAL_TOKEN_BUDGET"  # noqa: S105
+SPATIAL_BYTE_BUDGET_ENV: Final = "WORLDMM_SPATIAL_BYTE_BUDGET"
 SPATIAL_QUANTIZATION_ENV: Final = "WORLDMM_SPATIAL_QUANTIZATION_M"
 SPATIAL_EXPERIMENT_ENV: Final = "WORLDMM_SPATIAL_EXPERIMENT_CONFIG"
 STRUCTURED_ENCODER: Final = "structured-v1"
@@ -101,6 +109,14 @@ _INVERSE_RELATION: Final[dict[SpatialRelationKind, SpatialRelationKind]] = {
     "behind": "in_front_of",
     "below": "above",
 }
+_CHANGE_CODE: Final[dict[SpatialChangeType, str]] = {
+    "appeared": "A",
+    "observed": "O",
+    "moved": "M",
+}
+_CODE_CHANGE: Final[dict[str, SpatialChangeType]] = {
+    value: key for key, value in _CHANGE_CODE.items()
+}
 _TOKEN_PAYLOAD_ADAPTER: Final = TypeAdapter(list[object])
 
 
@@ -117,6 +133,7 @@ class SpatialCompressionError(Exception):
 class SpatialCompressionOptions:
     quantization_m: float = DEFAULT_QUANTIZATION_M
     max_tokens_per_window: int = DEFAULT_TOKEN_BUDGET
+    max_bytes_per_window: int = DEFAULT_BYTE_BUDGET
     window_seconds: float = DEFAULT_WINDOW_SECONDS
     min_keep_score: float = DEFAULT_MIN_KEEP_SCORE
 
@@ -130,6 +147,7 @@ class SpatialExperimentConfig(FrozenModel):
     selector: str = LINEAR_SELECTOR
     selector_path: str | None = None
     token_budget: int = DEFAULT_TOKEN_BUDGET
+    byte_budget: int = DEFAULT_BYTE_BUDGET
     quantization_m: float = DEFAULT_QUANTIZATION_M
     window_seconds: float = DEFAULT_WINDOW_SECONDS
     min_keep_score: float = DEFAULT_MIN_KEEP_SCORE
@@ -282,6 +300,12 @@ class ObjectToken:
     z: float
     confidence: float
     provenance: SpatialProvenance
+    instance_id: str | None = None
+    coordinate_frame: SpatialCoordinateFrame = "source_world"
+    uncertainty_m: float | None = None
+    change_type: SpatialChangeType = "observed"
+    valid_from: float | None = None
+    valid_to: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -292,6 +316,11 @@ class RelationToken:
     object: str
     zone_id: str
     distance_m: float | None
+    subject_instance_id: str | None = None
+    object_instance_id: str | None = None
+    coordinate_frame: SpatialCoordinateFrame = "source_world"
+    valid_from: float | None = None
+    valid_to: float | None = None
 
 
 @runtime_checkable
@@ -392,20 +421,51 @@ class CompactJsonSpatialMemoryCodec:
                     _quantize(token.z, token.scale_m),
                     round(token.confidence * CONFIDENCE_SCALE),
                     _PROVENANCE_CODE[token.provenance],
+                    token.instance_id or "",
+                    token.coordinate_frame,
+                    _CHANGE_CODE[token.change_type],
+                    _time_millis(token.valid_from),
+                    _time_millis(token.valid_to),
+                    (
+                        -1
+                        if token.uncertainty_m is None
+                        else _quantize_uncertainty(
+                            token.uncertainty_m,
+                            token.scale_m,
+                        )
+                    ),
                 )
             case RelationToken():
+                (
+                    subject,
+                    relation,
+                    object_label,
+                    subject_instance_id,
+                    object_instance_id,
+                ) = _canonical_relation_values(
+                    token.subject,
+                    token.relation,
+                    token.object,
+                    token.subject_instance_id,
+                    token.object_instance_id,
+                )
                 return _token_json(
                     "R",
                     scale_cm,
-                    token.subject,
-                    _RELATION_CODE[token.relation],
-                    token.object,
+                    subject,
+                    _RELATION_CODE[relation],
+                    object_label,
                     token.zone_id,
                     (
                         -1
                         if token.distance_m is None
                         else _quantize(token.distance_m, token.scale_m)
                     ),
+                    subject_instance_id or "",
+                    object_instance_id or "",
+                    token.coordinate_frame,
+                    _time_millis(token.valid_from),
+                    _time_millis(token.valid_to),
                 )
 
     def decode(self, record: SpatialTokenRecord) -> DecodedSpatialToken:
@@ -653,6 +713,7 @@ def resolve_spatial_memory_model(
     options = SpatialCompressionOptions(
         quantization_m=selected_config.quantization_m,
         max_tokens_per_window=selected_config.token_budget,
+        max_bytes_per_window=selected_config.byte_budget,
         window_seconds=selected_config.window_seconds,
         min_keep_score=selected_config.min_keep_score,
     )
@@ -696,6 +757,7 @@ def resolve_spatial_experiment_config(
         SpatialCompressionOptions(
             quantization_m=selected_config.quantization_m,
             max_tokens_per_window=selected_config.token_budget,
+            max_bytes_per_window=selected_config.byte_budget,
             window_seconds=selected_config.window_seconds,
             min_keep_score=selected_config.min_keep_score,
         ),
@@ -748,7 +810,11 @@ def build_compressed_spatial_memory(  # noqa: PLR0913
     trajectory_chunks = tuple(
         chunk for chunk in clip_chunks if _has_zone_overlap(chunk, zones)
     )
-    trajectories = build_trajectory_summaries(trajectory_chunks, zones)
+    trajectories = _select_trajectory_summaries(
+        build_trajectory_summaries(trajectory_chunks, zones),
+        static_records,
+        selected_options,
+    )
     compressed_records = (*static_records, *trajectories)
     if measure_legacy:
         raw_anchors = tuple(
@@ -767,6 +833,7 @@ def build_compressed_spatial_memory(  # noqa: PLR0913
         experiment=selected_experiment.config.model_copy(
             update={
                 "token_budget": selected_options.max_tokens_per_window,
+                "byte_budget": selected_options.max_bytes_per_window,
                 "quantization_m": selected_options.quantization_m,
                 "window_seconds": selected_options.window_seconds,
                 "min_keep_score": selected_options.min_keep_score,
@@ -778,6 +845,37 @@ def build_compressed_spatial_memory(  # noqa: PLR0913
         raw_bytes=_jsonl_bytes(raw_records),
         compressed_bytes=_jsonl_bytes(compressed_records),
     )
+
+
+def _select_trajectory_summaries(
+    trajectories: Sequence[WearerTrajectorySummaryRecord],
+    static_records: Sequence[SpatialTokenRecord],
+    options: SpatialCompressionOptions,
+) -> tuple[WearerTrajectorySummaryRecord, ...]:
+    counts: dict[tuple[str, int], int] = {}
+    byte_counts: dict[tuple[str, int], int] = {}
+    for record in static_records:
+        key = (
+            record.video_id,
+            math.floor(record.end_time / options.window_seconds),
+        )
+        counts[key] = counts.get(key, 0) + 1
+        byte_counts[key] = byte_counts.get(key, 0) + _jsonl_bytes((record,))
+    selected: list[WearerTrajectorySummaryRecord] = []
+    for record in trajectories:
+        key = (
+            record.video_id,
+            math.floor(record.end_time / options.window_seconds),
+        )
+        record_bytes = _jsonl_bytes((record,))
+        if counts.get(key, 0) >= options.max_tokens_per_window:
+            continue
+        if byte_counts.get(key, 0) + record_bytes > options.max_bytes_per_window:
+            continue
+        selected.append(record)
+        counts[key] = counts.get(key, 0) + 1
+        byte_counts[key] = byte_counts.get(key, 0) + record_bytes
+    return tuple(selected)
 
 
 def build_spatial_token_candidates(
@@ -833,7 +931,7 @@ def select_spatial_tokens(
     options: SpatialCompressionOptions,
 ) -> tuple[SpatialTokenRecord, ...]:
     _validate_options(options)
-    scored: list[tuple[SpatialTokenCandidate, SpatialTokenRecord]] = []
+    scored: list[tuple[SpatialTokenCandidate, SpatialTokenRecord, int]] = []
     for candidate in sorted(
         candidates,
         key=lambda item: (
@@ -859,15 +957,19 @@ def select_spatial_tokens(
             continue
         importance = round(score, 6)
         record = candidate.record.model_copy(update={"importance": importance})
-        scored.append((candidate, record))
+        scored.append((candidate, record, _jsonl_bytes((record,))))
     selected: list[SpatialTokenRecord] = []
     retained: dict[tuple[str, str], SpatialTokenCandidate] = {}
     window_counts: dict[tuple[str, int], int] = {}
-    for candidate, record in sorted(
+    window_bytes: dict[tuple[str, int], int] = {}
+    for candidate, record, record_bytes in sorted(
         scored,
         key=lambda item: (
             item[1].video_id,
             item[1].end_time,
+            # ponytail: causal admission allows score/byte ranking only among
+            # simultaneously available records; add knapsack only if measured.
+            -(item[1].importance / item[2]),
             -item[1].importance,
             item[1].memory_id,
         ),
@@ -877,17 +979,26 @@ def select_spatial_tokens(
             if candidate.state_key is not None
             else None
         )
-        if state_key is not None and _same_selected_state(
-            retained.get(state_key),
-            candidate,
-        ):
-            continue
+        if state_key is not None:
+            previous = retained.get(state_key)
+            if _same_selected_state(previous, candidate) and not _freshness_due(
+                previous,
+                candidate,
+                options.window_seconds,
+            ):
+                continue
         window = math.floor(record.end_time / options.window_seconds)
         window_key = (record.video_id, window)
         if window_counts.get(window_key, 0) >= options.max_tokens_per_window:
             continue
+        if (
+            window_bytes.get(window_key, 0) + record_bytes
+            > options.max_bytes_per_window
+        ):
+            continue
         selected.append(record)
         window_counts[window_key] = window_counts.get(window_key, 0) + 1
+        window_bytes[window_key] = window_bytes.get(window_key, 0) + record_bytes
         if state_key is not None:
             retained[state_key] = candidate
     return tuple(
@@ -917,6 +1028,23 @@ def _same_selected_state(
         return True
     return math.dist(previous.state_position, current.state_position) <= (
         current.dedup_radius_m
+    )
+
+
+def _freshness_due(
+    previous: SpatialTokenCandidate | None,
+    current: SpatialTokenCandidate,
+    window_seconds: float,
+) -> bool:
+    if (
+        previous is None
+        or current.state_key is None
+        or not current.state_key.startswith("object:")
+    ):
+        return False
+    # ponytail: one unchanged refresh per budget window bounds steady-state growth.
+    return math.floor(previous.record.end_time / window_seconds) != math.floor(
+        current.record.end_time / window_seconds,
     )
 
 
@@ -955,7 +1083,12 @@ def _decode_compact_json(record: SpatialTokenRecord) -> DecodedSpatialToken:
             z=_coordinate(payload, 5, scale_m, record),
         )
     if kind == "O":
-        _require_length(payload, 9, record)
+        _require_length_in(
+            payload,
+            (LEGACY_OBJECT_TOKEN_FIELDS, OBJECT_TOKEN_FIELDS),
+            record,
+        )
+        extended = len(payload) == OBJECT_TOKEN_FIELDS
         scale_m = _scale_m(payload, record)
         confidence_pct = _integer(payload, 7, record)
         provenance_code = _string(payload, 8, record)
@@ -969,6 +1102,11 @@ def _decode_compact_json(record: SpatialTokenRecord) -> DecodedSpatialToken:
             raise SpatialCompressionError(
                 detail=f"{record.memory_id}: invalid provenance code",
             ) from exc
+        instance_id = _string(payload, 9, record) or None if extended else None
+        coordinate_frame = (
+            _coordinate_frame(payload, 10, record) if extended else "source_world"
+        )
+        change_type = _change_type(payload, 11, record) if extended else "observed"
         return ObjectToken(
             scale_m=scale_m,
             object_label=_string(payload, 2, record),
@@ -978,9 +1116,24 @@ def _decode_compact_json(record: SpatialTokenRecord) -> DecodedSpatialToken:
             z=_coordinate(payload, 6, scale_m, record),
             confidence=confidence_pct / CONFIDENCE_SCALE,
             provenance=provenance,
+            instance_id=instance_id,
+            coordinate_frame=coordinate_frame,
+            change_type=change_type,
+            valid_from=(_optional_time(payload, 12, record) if extended else None),
+            valid_to=_optional_time(payload, 13, record) if extended else None,
+            uncertainty_m=(
+                None
+                if not extended or _integer(payload, 14, record) < 0
+                else _integer(payload, 14, record) * scale_m
+            ),
         )
     if kind == "R":
-        _require_length(payload, 7, record)
+        _require_length_in(
+            payload,
+            (LEGACY_RELATION_TOKEN_FIELDS, RELATION_TOKEN_FIELDS),
+            record,
+        )
+        extended = len(payload) == RELATION_TOKEN_FIELDS
         scale_m = _scale_m(payload, record)
         relation_code = _string(payload, 3, record)
         try:
@@ -997,6 +1150,17 @@ def _decode_compact_json(record: SpatialTokenRecord) -> DecodedSpatialToken:
             object=_string(payload, 4, record),
             zone_id=_string(payload, 5, record),
             distance_m=None if distance_bin < 0 else distance_bin * scale_m,
+            subject_instance_id=(
+                (_string(payload, 7, record) or None) if extended else None
+            ),
+            object_instance_id=(
+                (_string(payload, 8, record) or None) if extended else None
+            ),
+            coordinate_frame=(
+                _coordinate_frame(payload, 9, record) if extended else "source_world"
+            ),
+            valid_from=(_optional_time(payload, 10, record) if extended else None),
+            valid_to=_optional_time(payload, 11, record) if extended else None,
         )
     raise SpatialCompressionError(
         detail=f"{record.memory_id}: unknown token kind {kind}",
@@ -1014,9 +1178,12 @@ def spatial_token_snippet(record: SpatialTokenRecord) -> str:
             )
         case ObjectToken():
             return (
-                f"{token.object_label} anchored in {token.zone_id} near "
+                f"{token.object_label} instance={token.instance_id or 'unknown'} "
+                f"anchored in {token.zone_id} near "
                 f"({_format_float(token.x)},{_format_float(token.y)},"
                 f"{_format_float(token.z)}) provenance={token.provenance} "
+                f"frame={token.coordinate_frame} change={token.change_type} "
+                f"last_seen={_format_float(record.end_time)} "
                 "compact_geometry"
             )
         case RelationToken():
@@ -1027,9 +1194,11 @@ def spatial_token_snippet(record: SpatialTokenRecord) -> str:
                 else f" distance_m={_format_float(token.distance_m)}"
             )
             return (
-                f"{token.subject} {token.relation} {token.object}; "
+                f"{token.subject}[{token.subject_instance_id or 'unknown'}] "
+                f"{token.relation} "
+                f"{token.object}[{token.object_instance_id or 'unknown'}]; "
                 f"{token.object} {inverse} {token.subject} in {token.zone_id}"
-                f"{distance} compact_geometry"
+                f"{distance} frame={token.coordinate_frame} compact_geometry"
             )
 
 
@@ -1049,27 +1218,48 @@ def spatial_token_geometry(
                 "z": token.z,
             }
         case ObjectToken():
-            return {
+            object_geometry: dict[str, float | str] = {
                 "codec": record.codec,
                 "encoder": record.encoder,
                 "projection_head": record.projection_head,
                 "token_decoder": record.token_decoder,
+                "entity_id": token.instance_id or record.memory_id,
+                "instance_id": token.instance_id or record.memory_id,
+                "label": token.object_label,
+                "object_label": token.object_label,
                 "x": token.x,
                 "y": token.y,
                 "z": token.z,
                 "provenance": token.provenance,
+                "coordinate_frame": token.coordinate_frame,
+                "change_type": token.change_type,
+                "last_seen_time": record.end_time,
             }
+            if token.uncertainty_m is not None:
+                object_geometry["uncertainty_m"] = token.uncertainty_m
+            if token.valid_from is not None:
+                object_geometry["valid_from"] = token.valid_from
+            if token.valid_to is not None:
+                object_geometry["valid_to"] = token.valid_to
+            return object_geometry
         case RelationToken():
-            geometry: dict[str, float | str] = {
+            relation_geometry: dict[str, float | str] = {
                 "codec": record.codec,
                 "encoder": record.encoder,
                 "projection_head": record.projection_head,
                 "relation": token.relation,
                 "token_decoder": record.token_decoder,
+                "coordinate_frame": token.coordinate_frame,
+                "subject": token.subject,
+                "object": token.object,
             }
+            if token.subject_instance_id is not None:
+                relation_geometry["subject_instance_id"] = token.subject_instance_id
+            if token.object_instance_id is not None:
+                relation_geometry["object_instance_id"] = token.object_instance_id
             if token.distance_m is not None:
-                geometry["distance_m"] = token.distance_m
-            return geometry
+                relation_geometry["distance_m"] = token.distance_m
+            return relation_geometry
 
 
 def spatial_token_relation_record(
@@ -1088,6 +1278,11 @@ def spatial_token_relation_record(
         start_time=record.start_time,
         end_time=record.end_time,
         distance_m=token.distance_m,
+        subject_instance_id=token.subject_instance_id,
+        object_instance_id=token.object_instance_id,
+        coordinate_frame=token.coordinate_frame,
+        valid_from=token.valid_from,
+        valid_to=token.valid_to,
     )
 
 
@@ -1115,14 +1310,19 @@ def _zone_candidates(  # noqa: PLR0913
         if zone.zone_id in seen:
             continue
         seen.add(zone.zone_id)
-        availability_time = max(end for _start, end in zone.visit_intervals)
+        availability_time = zone.visit_intervals[0][0]
+        centroid = (
+            zone.visit_centroids[0]
+            if zone.visit_centroids
+            else (zone.centroid_x, zone.centroid_y, zone.centroid_z)
+        )
         cell_x, cell_y = zone.cell
         token = ZoneToken(
             scale_m=options.quantization_m,
             zone_id=zone.zone_id,
-            x=zone.centroid_x,
-            y=zone.centroid_y,
-            z=zone.centroid_z,
+            x=centroid[0],
+            y=centroid[1],
+            z=centroid[2],
         )
         record = SpatialTokenRecord(
             memory_id=(
@@ -1144,8 +1344,8 @@ def _zone_candidates(  # noqa: PLR0913
                 record=record,
                 features=_features(
                     kind="zone",
-                    confidence=0.5,
-                    reliability=0.5,
+                    confidence=0.8,
+                    reliability=0.8,
                     frame_grounded=False,
                     metric_relation=False,
                     recency=_window_recency(
@@ -1173,6 +1373,7 @@ def _object_candidates(  # noqa: PLR0913
     object_delta_multiplier: float,
 ) -> tuple[SpatialTokenCandidate, ...]:
     candidates: list[SpatialTokenCandidate] = []
+    memory_ids: set[str] = set()
     for anchor in sorted(anchors, key=lambda item: (item.start_time, item.memory_id)):
         token = ObjectToken(
             scale_m=options.quantization_m,
@@ -1183,12 +1384,27 @@ def _object_candidates(  # noqa: PLR0913
             z=anchor.z,
             confidence=anchor.confidence,
             provenance=anchor.provenance,
-        )
-        record = SpatialTokenRecord(
-            memory_id=(
-                f"spatial_token:{source.video_id}:object:{anchor.object_label}:"
-                f"{_format_float(anchor.start_time)}"
+            instance_id=anchor.instance_id,
+            coordinate_frame=anchor.coordinate_frame,
+            uncertainty_m=(
+                None
+                if anchor.uncertainty_m is None
+                else anchor.uncertainty_m
+                + (math.sqrt(3.0) * options.quantization_m / 2.0)
             ),
+            change_type=anchor.change_type,
+            valid_from=anchor.valid_from,
+            valid_to=anchor.valid_to,
+        )
+        identity = anchor.instance_id or anchor.memory_id
+        memory_id = (
+            f"spatial_token:{source.video_id}:object:{anchor.object_label}:"
+            f"{_format_float(anchor.start_time)}"
+        )
+        memory_id = _unique_candidate_memory_id(memory_id, identity, memory_ids)
+        memory_ids.add(memory_id)
+        record = SpatialTokenRecord(
+            memory_id=memory_id,
             video_id=source.video_id,
             encoder=encoder,
             projection_head=projection_head,
@@ -1215,17 +1431,16 @@ def _object_candidates(  # noqa: PLR0913
                     ),
                     extra=extra_features.get(anchor.memory_id, {}),
                 ),
-                state_key=f"object:{anchor.object_label}",
+                state_key=f"object:{anchor.object_label}:{identity}",
                 state_signature=_token_json(
                     anchor.zone_id,
                     round(anchor.confidence * STATE_CONFIDENCE_SCALE),
                     anchor.provenance,
                     bool(anchor.frame_refs),
+                    _time_millis(anchor.valid_from),
                 ),
                 state_position=(anchor.x, anchor.y, anchor.z),
-                dedup_radius_m=(
-                    options.quantization_m * object_delta_multiplier
-                ),
+                dedup_radius_m=(options.quantization_m * object_delta_multiplier),
             ),
         )
     return tuple(candidates)
@@ -1243,40 +1458,42 @@ def _relation_candidates(  # noqa: PLR0913
     codec: SpatialMemoryCodec,
     extra_features: Mapping[str, Mapping[str, float]],
 ) -> tuple[SpatialTokenCandidate, ...]:
-    confidence: dict[str, float] = {}
-    reliability: dict[str, float] = {}
-    sorted_anchors = sorted(anchors, key=lambda item: (item.start_time, item.memory_id))
-    anchor_index = 0
     candidates: list[SpatialTokenCandidate] = []
+    memory_ids: set[str] = set()
     for relation in sorted(
         relations,
         key=lambda item: (item.end_time, item.start_time, item.memory_id),
     ):
-        while (
-            anchor_index < len(sorted_anchors)
-            and sorted_anchors[anchor_index].start_time <= relation.end_time
-        ):
-            anchor = sorted_anchors[anchor_index]
-            confidence[anchor.object_label] = max(
-                anchor.confidence,
-                confidence.get(anchor.object_label, 0.0),
-            )
-            reliability[anchor.object_label] = max(
-                _PROVENANCE_RELIABILITY[anchor.provenance],
-                reliability.get(anchor.object_label, 0.0),
-            )
-            anchor_index += 1
-        subject, relation_kind, object_label = _canonical_relation(relation)
-        if subject == object_label:
+        subject_anchor = _relation_endpoint(
+            anchors,
+            label=relation.subject,
+            instance_id=relation.subject_instance_id,
+            relation=relation,
+        )
+        object_anchor = _relation_endpoint(
+            anchors,
+            label=relation.object,
+            instance_id=relation.object_instance_id,
+            relation=relation,
+        )
+        if subject_anchor is None or object_anchor is None:
             continue
-        first_label, second_label = sorted((subject, object_label))
+        (
+            subject,
+            relation_kind,
+            object_label,
+            subject_instance_id,
+            object_instance_id,
+        ) = _canonical_relation(relation)
+        if subject == object_label and subject_instance_id == object_instance_id:
+            continue
         relation_confidence = min(
-            confidence.get(subject, 0.5),
-            confidence.get(object_label, 0.5),
+            subject_anchor.confidence,
+            object_anchor.confidence,
         )
         relation_reliability = min(
-            reliability.get(subject, 0.5),
-            reliability.get(object_label, 0.5),
+            _PROVENANCE_RELIABILITY[subject_anchor.provenance],
+            _PROVENANCE_RELIABILITY[object_anchor.provenance],
         )
         token = RelationToken(
             scale_m=options.quantization_m,
@@ -1285,13 +1502,27 @@ def _relation_candidates(  # noqa: PLR0913
             object=object_label,
             zone_id=relation.zone_id,
             distance_m=relation.distance_m,
+            subject_instance_id=subject_instance_id,
+            object_instance_id=object_instance_id,
+            coordinate_frame=relation.coordinate_frame,
+            valid_from=relation.valid_from,
+            valid_to=relation.valid_to,
         )
+        subject_identity = subject_instance_id or subject
+        object_identity = object_instance_id or object_label
+        memory_id = (
+            f"spatial_token:{source.video_id}:relation:{subject}:"
+            f"{relation_kind}:{object_label}:"
+            f"{_format_float(relation.start_time)}"
+        )
+        memory_id = _unique_candidate_memory_id(
+            memory_id,
+            f"{subject_identity}:{object_identity}",
+            memory_ids,
+        )
+        memory_ids.add(memory_id)
         record = SpatialTokenRecord(
-            memory_id=(
-                f"spatial_token:{source.video_id}:relation:{subject}:"
-                f"{relation_kind}:{object_label}:"
-                f"{_format_float(relation.start_time)}"
-            ),
+            memory_id=memory_id,
             video_id=source.video_id,
             encoder=encoder,
             projection_head=projection_head,
@@ -1318,8 +1549,7 @@ def _relation_candidates(  # noqa: PLR0913
                     extra=extra_features.get(relation.memory_id, {}),
                 ),
                 state_key=(
-                    f"relation:{first_label}:{second_label}:"
-                    f"{relation_kind}"
+                    f"relation:{subject_identity}:{relation_kind}:{object_identity}"
                 ),
                 state_signature=record.token,
             ),
@@ -1329,19 +1559,114 @@ def _relation_candidates(  # noqa: PLR0913
 
 def _canonical_relation(
     relation: SpatialRelationRecord,
-) -> tuple[str, SpatialRelationKind, str]:
-    match relation.relation:
+) -> tuple[str, SpatialRelationKind, str, str | None, str | None]:
+    return _canonical_relation_values(
+        relation.subject,
+        relation.relation,
+        relation.object,
+        relation.subject_instance_id,
+        relation.object_instance_id,
+    )
+
+
+def _canonical_relation_values(
+    subject: str,
+    relation: SpatialRelationKind,
+    object_label: str,
+    subject_instance_id: str | None,
+    object_instance_id: str | None,
+) -> tuple[str, SpatialRelationKind, str, str | None, str | None]:
+    match relation:
         case "right_of":
-            return relation.object, "left_of", relation.subject
+            return (
+                object_label,
+                "left_of",
+                subject,
+                object_instance_id,
+                subject_instance_id,
+            )
         case "behind":
-            return relation.object, "in_front_of", relation.subject
+            return (
+                object_label,
+                "in_front_of",
+                subject,
+                object_instance_id,
+                subject_instance_id,
+            )
         case "below":
-            return relation.object, "above", relation.subject
+            return (
+                object_label,
+                "above",
+                subject,
+                object_instance_id,
+                subject_instance_id,
+            )
         case "near":
-            subject, object_label = sorted((relation.subject, relation.object))
-            return subject, "near", object_label
+            left = (subject, subject_instance_id or "")
+            right = (object_label, object_instance_id or "")
+            if left <= right:
+                return (
+                    subject,
+                    "near",
+                    object_label,
+                    subject_instance_id,
+                    object_instance_id,
+                )
+            return (
+                object_label,
+                "near",
+                subject,
+                object_instance_id,
+                subject_instance_id,
+            )
         case other:
-            return relation.subject, other, relation.object
+            return (
+                subject,
+                other,
+                object_label,
+                subject_instance_id,
+                object_instance_id,
+            )
+
+
+def _unique_candidate_memory_id(
+    base: str,
+    suffix: str,
+    seen: set[str],
+) -> str:
+    if base not in seen:
+        return base
+    candidate = f"{base}:{suffix}"
+    duplicate_index = 2
+    while candidate in seen:
+        candidate = f"{base}:{suffix}:{duplicate_index}"
+        duplicate_index += 1
+    return candidate
+
+
+def _relation_endpoint(
+    anchors: Sequence[SpatialAnchorRecord],
+    *,
+    label: str,
+    instance_id: str | None,
+    relation: SpatialRelationRecord,
+) -> SpatialAnchorRecord | None:
+    valid_from = (
+        relation.valid_from if relation.valid_from is not None else relation.start_time
+    )
+    valid_to = relation.valid_to if relation.valid_to is not None else relation.end_time
+    matches = tuple(
+        anchor
+        for anchor in anchors
+        if anchor.object_label == label
+        and (instance_id is None or anchor.instance_id == instance_id)
+        and anchor.start_time <= valid_to
+        and anchor.end_time >= valid_from
+        and anchor.end_time <= relation.end_time
+    )
+    if not matches:
+        return None
+    return max(matches, key=lambda anchor: (anchor.end_time, anchor.memory_id))
 
 
 def _features(  # noqa: PLR0913
@@ -1430,6 +1755,10 @@ def _validate_options(options: SpatialCompressionOptions) -> None:
         raise SpatialCompressionError(
             detail="max_tokens_per_window must be positive",
         )
+    if options.max_bytes_per_window <= 0:
+        raise SpatialCompressionError(
+            detail="max_bytes_per_window must be positive",
+        )
     if not math.isfinite(options.window_seconds) or options.window_seconds <= 0.0:
         raise SpatialCompressionError(detail="window_seconds must be positive")
     if not math.isfinite(options.min_keep_score) or not (
@@ -1452,6 +1781,11 @@ def _experiment_config_from_env(
             env,
             SPATIAL_TOKEN_BUDGET_ENV,
             DEFAULT_TOKEN_BUDGET,
+        ),
+        byte_budget=_env_int(
+            env,
+            SPATIAL_BYTE_BUDGET_ENV,
+            DEFAULT_BYTE_BUDGET,
         ),
         quantization_m=_env_float(
             env,
@@ -1527,6 +1861,15 @@ def _quantize(value: float, quantization_m: float) -> int:
     return round(value / quantization_m)
 
 
+def _quantize_uncertainty(value: float, quantization_m: float) -> int:
+    """Round uncertainty upward so the compact token never becomes overconfident."""
+    return math.ceil(value / quantization_m)
+
+
+def _time_millis(value: float | None) -> int:
+    return -1 if value is None else round(value * 1_000)
+
+
 def _token_json(*parts: object) -> str:
     return json.dumps(parts, separators=(",", ":"), ensure_ascii=True)
 
@@ -1566,6 +1909,57 @@ def _require_length(
                 f"received {len(payload)}"
             ),
         )
+
+
+def _require_length_in(
+    payload: list[object],
+    expected: tuple[int, ...],
+    record: SpatialTokenRecord,
+) -> None:
+    if len(payload) not in expected:
+        choices = " or ".join(str(length) for length in expected)
+        raise SpatialCompressionError(
+            detail=(
+                f"{record.memory_id}: expected {choices} token fields, "
+                f"received {len(payload)}"
+            ),
+        )
+
+
+def _coordinate_frame(
+    payload: list[object],
+    index: int,
+    record: SpatialTokenRecord,
+) -> SpatialCoordinateFrame:
+    value = _string(payload, index, record)
+    if value != "source_world":
+        raise SpatialCompressionError(
+            detail=f"{record.memory_id}: invalid coordinate frame {value}",
+        )
+    return "source_world"
+
+
+def _change_type(
+    payload: list[object],
+    index: int,
+    record: SpatialTokenRecord,
+) -> SpatialChangeType:
+    code = _string(payload, index, record)
+    try:
+        return _CODE_CHANGE[code]
+    except KeyError as exc:
+        raise SpatialCompressionError(
+            detail=f"{record.memory_id}: invalid change type",
+        ) from exc
+
+
+def _optional_time(
+    payload: list[object],
+    index: int,
+    record: SpatialTokenRecord,
+) -> float | None:
+    milliseconds = _integer(payload, index, record)
+    return None if milliseconds < 0 else milliseconds / 1_000.0
 
 
 def _scale_m(payload: list[object], record: SpatialTokenRecord) -> float:
