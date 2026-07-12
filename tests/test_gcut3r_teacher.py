@@ -43,7 +43,7 @@ from worldmm_smvqa.worldmm.typed_memory import (
 
 def _uncertainty() -> SpatialUncertainty:
     return SpatialUncertainty(
-        covariance_xyz=((0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1)),
+        covariance_xyz=((0.01, 0.0, 0.0), (0.0, 0.01, 0.0), (0.0, 0.0, 0.01)),
         standard_deviation_m=0.1,
     )
 

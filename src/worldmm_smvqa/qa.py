@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
@@ -38,7 +39,90 @@ if TYPE_CHECKING:
 DEFAULT_MODEL_ID: Final = "google/gemma-4-E2B-it"
 PARSE_ATTEMPT_LIMIT: Final = 2
 MIN_TOKEN_LENGTH: Final = 2
+SECONDS_PER_MINUTE: Final = 60
+SECONDS_PER_HOUR: Final = 3_600
+CLOCK_WITHOUT_HOURS_PARTS: Final = 2
+CLOCK_WITH_HOURS_PARTS: Final = 3
 NUMBER_PATTERN: Final = re.compile(r"[-+]?\d+(?:\.\d+)?")
+WORD_PATTERN: Final = re.compile(r"[a-z]+")
+DISTANCE_CHOICE_PATTERN: Final = re.compile(
+    r"(?<![\w.])(?P<value>[-+]?\d+(?:\.\d+)?)\s*(?P<unit>kilometers?|kilometres?|km|centimeters?|centimetres?|cm|millimeters?|millimetres?|mm|meters?|metres?|m|feet|foot|ft|inches|inch|in)(?!\w)",
+    re.IGNORECASE,
+)
+TIME_CHOICE_PATTERN: Final = re.compile(
+    r"(?<![\d:])\d+:\d{2}(?::\d{2})?(?![\d:])",
+)
+TIME_UNIT_CHOICE_PATTERN: Final = re.compile(
+    r"(?<![\w.])(?P<value>[-+]?\d+(?:\.\d+)?)\s*(?P<unit>seconds?|secs?|s|minutes?|mins?|hours?|hrs?|h)(?!\w)",
+    re.IGNORECASE,
+)
+DISTANCE_TO_METERS: Final = {
+    "km": 1_000.0,
+    "kilometer": 1_000.0,
+    "kilometers": 1_000.0,
+    "kilometre": 1_000.0,
+    "kilometres": 1_000.0,
+    "m": 1.0,
+    "meter": 1.0,
+    "meters": 1.0,
+    "metre": 1.0,
+    "metres": 1.0,
+    "cm": 0.01,
+    "centimeter": 0.01,
+    "centimeters": 0.01,
+    "centimetre": 0.01,
+    "centimetres": 0.01,
+    "mm": 0.001,
+    "millimeter": 0.001,
+    "millimeters": 0.001,
+    "millimetre": 0.001,
+    "millimetres": 0.001,
+    "ft": 0.3048,
+    "foot": 0.3048,
+    "feet": 0.3048,
+    "in": 0.0254,
+    "inch": 0.0254,
+    "inches": 0.0254,
+}
+TIME_TO_SECONDS: Final = {
+    "s": 1.0,
+    "sec": 1.0,
+    "secs": 1.0,
+    "second": 1.0,
+    "seconds": 1.0,
+    "min": 60.0,
+    "mins": 60.0,
+    "minute": 60.0,
+    "minutes": 60.0,
+    "h": 3_600.0,
+    "hr": 3_600.0,
+    "hrs": 3_600.0,
+    "hour": 3_600.0,
+    "hours": 3_600.0,
+}
+SMALL_COUNTS: Final = {
+    "zero": 0,
+    "one": 1,
+    "two": 2,
+    "three": 3,
+    "four": 4,
+    "five": 5,
+    "six": 6,
+    "seven": 7,
+    "eight": 8,
+    "nine": 9,
+    "ten": 10,
+    "eleven": 11,
+    "twelve": 12,
+    "thirteen": 13,
+    "fourteen": 14,
+    "fifteen": 15,
+    "sixteen": 16,
+    "seventeen": 17,
+    "eighteen": 18,
+    "nineteen": 19,
+    "twenty": 20,
+}
 DEFAULT_QA_STORES: Final[frozenset[RetrievalStore]] = frozenset(
     {"episodic", "semantic", "visual", "spatial"},
 )
@@ -118,7 +202,10 @@ class MockQABackend:
             coordinate_frame="source_world",
         )
         ranked_choices = _rank_choices(question, evidence_pack, geometry_proofs)
-        answerable = bool(evidence_pack.evidence)
+        geometry_requires_abstention = bool(geometry_proofs) and not any(
+            proof.answerable for proof in geometry_proofs
+        )
+        answerable = bool(evidence_pack.evidence) and not geometry_requires_abstention
         if not answerable:
             unanswerable = tuple(
                 choice.choice_id
@@ -135,8 +222,10 @@ class MockQABackend:
             ranked_choices=ranked_choices,
             answer=ranked_choices[0] if answerable else None,
             confidence=0.75 if answerable else 0.0,
-            supporting_memory_ids=tuple(
-                item.memory_id for item in evidence_pack.evidence[:3]
+            supporting_memory_ids=(
+                tuple(item.memory_id for item in evidence_pack.evidence[:3])
+                if answerable
+                else ()
             ),
             geometry_proof_ids=tuple(
                 proof.proof_id for proof in geometry_proofs if proof.answerable
@@ -186,6 +275,8 @@ def parse_qa_output(  # noqa: PLR0913
     raw_model_output_path: str | None,
     evidence_pack: EvidencePack | None = None,
     geometry_proofs: Sequence[GeometryProof] = (),
+    input_frame_refs: Sequence[str] = (),
+    prompt_sha256: str | None = None,
 ) -> PredictionRecord:
     if evidence_pack is not None and (
         detail := evidence_pack_validation_error(question, evidence_pack)
@@ -209,6 +300,8 @@ def parse_qa_output(  # noqa: PLR0913
                 raw_model_output_path,
                 evidence_pack,
                 geometry_proofs,
+                input_frame_refs,
+                prompt_sha256,
             )
         except (ValidationError, QAParseError) as exc:
             last_detail = str(exc)
@@ -271,6 +364,10 @@ def run_qa(
                 raw_model_output_path=None,
                 evidence_pack=pack,
                 geometry_proofs=geometry_proofs,
+                input_frame_refs=tuple(
+                    f"{frame.video_id}/{frame.frame_ref}" for frame in video_frames
+                ),
+                prompt_sha256=hashlib.sha256(prompt.encode()).hexdigest(),
             ),
         )
     return tuple(predictions)
@@ -307,6 +404,8 @@ def _prediction_from_model_output(  # noqa: PLR0913
     raw_model_output_path: str | None,
     evidence_pack: EvidencePack | None,
     geometry_proofs: Sequence[GeometryProof],
+    input_frame_refs: Sequence[str],
+    prompt_sha256: str | None,
 ) -> PredictionRecord:
     valid_choice_ids = tuple(choice.choice_id for choice in question.answer_choices)
     if tuple(dict.fromkeys(model_output.ranked_choices)) != model_output.ranked_choices:
@@ -366,6 +465,16 @@ def _prediction_from_model_output(  # noqa: PLR0913
             attempt=1,
             detail="answerable geometry question requires a geometry proof ID",
         )
+    if (
+        geometry_proofs
+        and not any(proof.answerable for proof in geometry_proofs)
+        and (model_output.answerable or model_output.answer is not None)
+    ):
+        raise QAParseError(
+            question_id=question.question_id,
+            attempt=1,
+            detail="unanswerable geometry proof requires model abstention",
+        )
     selected_proofs = tuple(
         proof_by_id[proof_id] for proof_id in model_output.geometry_proof_ids
     )
@@ -389,6 +498,8 @@ def _prediction_from_model_output(  # noqa: PLR0913
         ),
         supporting_evidence=supporting_evidence,
         retrieved_evidence=retrieved_evidence,
+        input_frame_refs=tuple(input_frame_refs),
+        prompt_sha256=prompt_sha256,
         prompt_token_count=prompt_token_count,
         raw_model_output_path=raw_model_output_path,
     )
@@ -401,22 +512,48 @@ def _require_geometry_choice_matches(
 ) -> None:
     if not model_output.answerable or model_output.answer is None or not proofs:
         return
-    choice_text = {
-        choice.choice_id: choice.text for choice in question.answer_choices
-    }
-    chosen = choice_text[model_output.answer]
-    checks = tuple(
-        result
-        for proof in proofs
-        if (result := _proof_supports_choice(proof, chosen, choice_text.values()))
-        is not None
+    answerable_choices = tuple(
+        choice
+        for choice in question.answer_choices
+        if not is_unanswerable_choice(choice)
     )
-    if checks and not any(checks):
+    choice_text = {choice.choice_id: choice.text for choice in answerable_choices}
+    if model_output.answer not in choice_text:
         raise QAParseError(
             question_id=question.question_id,
             attempt=1,
-            detail="selected answer choice contradicts cited geometry proof",
+            detail="answerable geometry proof cannot select an unanswerable choice",
         )
+    chosen = choice_text[model_output.answer]
+    all_choice_texts = tuple(choice_text.values())
+    for proof in proofs:
+        checks = tuple(
+            _proof_supports_choice(proof, text, all_choice_texts)
+            for text in all_choice_texts
+        )
+        if any(check is None for check in checks):
+            raise QAParseError(
+                question_id=question.question_id,
+                attempt=1,
+                detail=(
+                    "cited geometry proof requires explicit, parseable choice units"
+                ),
+            )
+        matches = tuple(
+            text for text, check in zip(all_choice_texts, checks, strict=True) if check
+        )
+        if len(matches) != 1:
+            raise QAParseError(
+                question_id=question.question_id,
+                attempt=1,
+                detail="cited geometry proof must match exactly one answer choice",
+            )
+        if chosen != matches[0]:
+            raise QAParseError(
+                question_id=question.question_id,
+                attempt=1,
+                detail="selected answer choice contradicts cited geometry proof",
+            )
 
 
 def _proof_supports_choice(  # noqa: PLR0911
@@ -428,16 +565,16 @@ def _proof_supports_choice(  # noqa: PLR0911
         proof.value,
         int | float,
     ):
-        values = tuple(
-            value
-            for text in all_choice_texts
-            if (value := _choice_number(text, proof.operation)) is not None
-        )
-        chosen_value = _choice_number(chosen_text, proof.operation)
-        if not values:
+        expected_unit = {
+            "distance": "meters",
+            "count": "count",
+            "last_seen": "seconds",
+        }[proof.operation]
+        if proof.uncertainty_unit != expected_unit:
             return None
+        chosen_value = _choice_number(chosen_text, proof.operation)
         if chosen_value is None:
-            return False
+            return None
         tolerance = max(0.05, proof.uncertainty or 0.0)
         return abs(chosen_value - float(proof.value)) <= tolerance
     normalized = " ".join(chosen_text.casefold().replace("_", " ").split())
@@ -470,19 +607,60 @@ def _proof_supports_choice(  # noqa: PLR0911
     return None
 
 
-def _choice_number(text: str, operation: str) -> float | None:
-    match = NUMBER_PATTERN.search(text.replace(",", ""))
-    if match is None:
+def _choice_number(text: str, operation: str) -> float | None:  # noqa: PLR0911
+    normalized = text.casefold().replace(",", "")
+    if operation == "distance":
+        matches = tuple(DISTANCE_CHOICE_PATTERN.finditer(normalized))
+        if len(matches) != 1 or len(NUMBER_PATTERN.findall(normalized)) != 1:
+            return None
+        match = matches[0]
+        return float(match["value"]) * DISTANCE_TO_METERS[match["unit"]]
+    if operation == "last_seen":
+        return _choice_seconds(normalized)
+    if operation != "count":
         return None
-    value = float(match.group())
-    if operation != "distance":
-        return value
-    normalized = text.casefold()
-    if "mm" in normalized:
-        return value / 1_000.0
-    if "cm" in normalized:
-        return value / 100.0
-    return value
+    number_matches = tuple(
+        match.group() for match in NUMBER_PATTERN.finditer(normalized)
+    )
+    word_matches = tuple(
+        SMALL_COUNTS[match.group()]
+        for match in WORD_PATTERN.finditer(normalized)
+        if match.group() in SMALL_COUNTS
+    )
+    if len(number_matches) == 1 and not word_matches:
+        value = float(number_matches[0])
+        return value if value >= 0.0 and value.is_integer() else None
+    if not number_matches and len(word_matches) == 1:
+        return float(word_matches[0])
+    return None
+
+
+def _choice_seconds(text: str) -> float | None:  # noqa: PLR0911
+    clock_matches = tuple(TIME_CHOICE_PATTERN.finditer(text))
+    unit_matches = tuple(TIME_UNIT_CHOICE_PATTERN.finditer(text))
+    if len(clock_matches) == 1 and not unit_matches:
+        match = clock_matches[0]
+        if NUMBER_PATTERN.search(f"{text[: match.start()]}{text[match.end() :]}"):
+            return None
+        parts = tuple(int(part) for part in match.group().split(":"))
+        if parts[-1] >= SECONDS_PER_MINUTE or (
+            len(parts) == CLOCK_WITH_HOURS_PARTS
+            and parts[-2] >= SECONDS_PER_MINUTE
+        ):
+            return None
+        if len(parts) == CLOCK_WITHOUT_HOURS_PARTS:
+            return float((parts[0] * SECONDS_PER_MINUTE) + parts[1])
+        return float(
+            (parts[0] * SECONDS_PER_HOUR)
+            + (parts[1] * SECONDS_PER_MINUTE)
+            + parts[2],
+        )
+    if clock_matches or len(unit_matches) != 1:
+        return None
+    match = unit_matches[0]
+    if len(NUMBER_PATTERN.findall(text)) != 1:
+        return None
+    return float(match["value"]) * TIME_TO_SECONDS[match["unit"]]
 
 
 def _supporting_evidence(

@@ -91,10 +91,18 @@ def tiny_fixture_examples() -> tuple[
                 ),
             ),
             pose_samples=(
-                PoseSample(timestamp=6.0, x=0.2, y=1.1, z=1.5, yaw=25.0),
-                PoseSample(timestamp=12.0, x=0.3, y=1.2, z=1.5, yaw=27.0),
-                PoseSample(timestamp=1800.0, x=1.0, y=2.0, z=1.5, yaw=90.0),
-                PoseSample(timestamp=1900.0, x=1.1, y=2.1, z=1.5, yaw=91.0),
+                PoseSample(
+                    timestamp=6.0, x=0.2, y=1.1, z=1.5, yaw_degrees=25.0
+                ),
+                PoseSample(
+                    timestamp=12.0, x=0.3, y=1.2, z=1.5, yaw_degrees=27.0
+                ),
+                PoseSample(
+                    timestamp=1800.0, x=1.0, y=2.0, z=1.5, yaw_degrees=90.0
+                ),
+                PoseSample(
+                    timestamp=1900.0, x=1.1, y=2.1, z=1.5, yaw_degrees=91.0
+                ),
             ),
             gaze_samples=(
                 GazeSample(timestamp=7.0, x=0.4, y=1.4, z=1.0),
@@ -177,10 +185,18 @@ def tiny_fixture_examples() -> tuple[
                 ),
             ),
             pose_samples=(
-                PoseSample(timestamp=21.0, x=0.1, y=0.7, z=1.5, yaw=10.0),
-                PoseSample(timestamp=27.0, x=0.2, y=0.8, z=1.5, yaw=12.0),
-                PoseSample(timestamp=132.0, x=2.0, y=1.0, z=1.5, yaw=55.0),
-                PoseSample(timestamp=137.0, x=2.1, y=1.1, z=1.5, yaw=56.0),
+                PoseSample(
+                    timestamp=21.0, x=0.1, y=0.7, z=1.5, yaw_degrees=10.0
+                ),
+                PoseSample(
+                    timestamp=27.0, x=0.2, y=0.8, z=1.5, yaw_degrees=12.0
+                ),
+                PoseSample(
+                    timestamp=132.0, x=2.0, y=1.0, z=1.5, yaw_degrees=55.0
+                ),
+                PoseSample(
+                    timestamp=137.0, x=2.1, y=1.1, z=1.5, yaw_degrees=56.0
+                ),
             ),
             gaze_samples=(
                 GazeSample(timestamp=22.0, x=0.3, y=0.9, z=1.0),
@@ -237,7 +253,7 @@ def tiny_fixture_examples() -> tuple[
         _label(LabelSeed(
             question_id="q_fake_005",
             video_id="fake_video_001",
-            question="How far was the mug from the notebook during placement?",
+            question="How far was mug-1 from notebook-1 during placement?",
             question_time=1850.0,
             answer="B",
             evidence="fake_video_001:5:12:spatial",

@@ -5,7 +5,7 @@
 | Page ID | SM-ADR-0002 |
 | ADR | ADR-0002 |
 | Project claims | C-001, C-006 |
-| Status | Accepted design; implementation blocked |
+| Status | Accepted; partially implemented |
 | Date | 2026-07-11 |
 | Traceability | [Sparse 1 Hz geometry requirement](../traceability.md) |
 | Architecture | [Teacher and student boundary](../architecture.md) |
@@ -58,12 +58,20 @@ ADR-0001의 typed record이며 teacher state snapshot이 아니다.
   하나이며 timestamp는 strictly increasing이어야 한다.
 - Cache는 request, response, provider, causal prefix digest를 보존하고 future
   validity를 거부한다.
+- Production teacher cache/shard는 pose source로 `imu`, `vio`, `slam`만 허용하고
+  `ground_truth`를 거부한다.
+- Approved extractor는 G-CUT3R code/checkpoint loading과 provenance를 소유하는
+  trusted wrapper다. 각 rank는 정확히 하나의 non-empty shard를 만들고 merged
+  request multiset은 sensor observation과 정확히 같아야 한다.
 - Materializer는 cache의 모든 teacher record가 supervision row와 정확히 대응하고
   train/validation group이 교차하지 않는지 검사한다.
 - `src/worldmm_smvqa/spatial_train.py`는 materialized vector를
   입력받는 candidate head와 DDP training/checkpoint 골격을 제공한다.
-- Blocked: 실제 G-CUT3R provider, raw RGB/IMU/VIO feature encoder, teacher
-  pseudo-label 생성, type-specific target encoding, trained checkpoint inference.
+- Precomputed cache mode requires request `(video_id, frame_ref, timestamp)`
+  coverage to equal the selected sensor manifest exactly.
+- External: 실제 G-CUT3R provider, raw RGB/IMU/VIO feature encoder, teacher
+  pseudo-label 생성, type-specific target encoding, production inference
+  executable의 semantic correctness.
 
 ## Verification
 
@@ -83,8 +91,8 @@ ADR-0001의 typed record이며 teacher state snapshot이 아니다.
   수 있다.
 - Provider ID, checkpoint, input manifest, cache digest를 experiment provenance에
   반드시 기록해야 한다.
-- 회사 환경에서 provider 구현과 checkpoint 접근이 준비되지 않으면 learned lane은
-  checkpoint 이전에서 중단된다.
+- 회사 환경에서 provider/cache, supervision, checkpoint, production inference
+  executable 중 하나라도 준비되지 않으면 learned lane은 fail closed한다.
 - Teacher가 출력한 inferred geometry는 observed fact와 동일한 provenance로 승격하지
   않는다.
 

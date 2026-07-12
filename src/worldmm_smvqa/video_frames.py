@@ -21,6 +21,7 @@ CHUNK_ID_PARTS: Final = 4
 
 @dataclass(frozen=True, slots=True)
 class QAVideoFrame:
+    video_id: str
     frame_ref: str
     timestamp: float
     path: Path | None
@@ -72,6 +73,7 @@ def sample_video_frames(
     )
     return tuple(
         QAVideoFrame(
+            video_id=candidate.video_id,
             frame_ref=candidate.frame.frame_ref,
             timestamp=candidate.frame.timestamp,
             path=_frame_path(
@@ -166,11 +168,23 @@ def _uniform(
 def _frame_path(frame_root: Path | None, video_id: str, frame_ref: str) -> Path | None:
     if frame_root is None:
         return None
-    base = frame_root / video_id / frame_ref
+    root = frame_root.resolve()
+    base = (root / video_id / frame_ref).resolve()
+    try:
+        _ = base.relative_to(root)
+    except ValueError:
+        return None
     for suffix in FRAME_EXTENSIONS:
         candidate = base.with_suffix(suffix)
-        if candidate.exists():
-            return candidate
+        if not candidate.exists():
+            continue
+        resolved = candidate.resolve()
+        try:
+            _ = resolved.relative_to(root)
+        except ValueError:
+            return None
+        if resolved.is_file():
+            return resolved
     return base.with_suffix(FRAME_EXTENSIONS[0])
 
 

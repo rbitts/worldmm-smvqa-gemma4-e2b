@@ -4,10 +4,10 @@
 | --- | --- |
 | Page ID | SM-EXP-0002 |
 | Experiment ID | EXP-0002 |
-| Confluence parent | Spatial Memory / Experiments |
-| Status | Planned |
-| Evidence level | Schema, writer, training, retrieval contract checks only |
-| Last reviewed | 2026-07-11 |
+| Confluence parent | SM-EXPERIMENTS |
+| Status | Local contract implemented; run pending |
+| Evidence level | Production bridge and lineage contract checks only |
+| Last reviewed | 2026-07-12 |
 | Depends on | EXP-0004 teacher artifact |
 
 ## Hypothesis
@@ -35,7 +35,7 @@ artifact를 actual-byte writer, retrieval, deterministic geometry executor, QA�
 ## Fixed contract
 
 실행 전 dataset, split, code revision, teacher/checkpoint/config digest를 고정해야 한다.
-현재 고정된 interface는 다음뿐이다.
+현재 production interface는 다음과 같이 고정되어 있다.
 
 | Item | Fixed value |
 | --- | --- |
@@ -44,11 +44,21 @@ artifact를 actual-byte writer, retrieval, deterministic geometry executor, QA�
 | Required record facts | entity and instance IDs, local frame, covariance, validity, first/last seen, confidence, provenance, evidence refs |
 | Training input | materialized teacher rows with explicit train/validation split |
 | Student outputs | record type, typed geometry target, association, uncertainty, rate, distillation |
-| Writer | stable score-per-actual-UTF-8-JSONL-byte ordering |
-| Persistence guard | `no_write` never serialized; duplicate IDs and invalid artifacts fail closed |
-| Byte guard | serialized file size and recounted record bytes must equal summary and stay within budget |
+| Inference executable | contract version plus exact `worldmm-spatial-infer-v1:self-test-ok`; self-test checks CLI/schema/canonical writer, not accuracy |
+| Inference inputs | checkpoint, sanitized `inference_inputs/sources.jsonl`, copied selected `inference_inputs/frames/` root, sensor-frame manifest; no questions or labels |
+| Inference outputs | canonical `typed_memory.jsonl` and `typed_memory.inference.json` |
+| Adapter lineage | adapter receives and manifest echoes sanitized-source, frame-content-manifest, and producer-executable SHA-256; repository recomputes all three |
+| Selection boundary | external executable owns candidate ranking and selection; repository validates only persisted schema, canonical bytes, and budgets |
+| Persistence guard | streaming validation; canonical row at most 1 MiB; `no_write` never serialized; duplicate IDs and invalid artifacts fail closed |
+| Grounding guard | source video and record times match source bounds; grounded provenance requires bare same-video evidence whose min/max equal first/last seen and whose unique count equals `observation_count` |
+| Window contract | `window_seconds=30.0`; key is `(source_video_id, floor(first_seen_time / 30.0))` to prevent validity backdating |
+| Byte guard | default 4,096 bytes per window; every window and total canonical file bytes are recounted and matched to the manifest |
 | Retrieval guard | only causally eligible records from question video scope |
 | Proof guard | answerable geometry choice requires a matching deterministic proof |
+| QA guard | spatial evidence exact-matches canonical typed projection; byte-budgeted records cannot certify count/last-seen completeness or label uniqueness, so production count/last-seen and label-only pair queries abstain; explicit-ID local-frame pair proofs reject cross-video entities; real frame and v4 audit required |
+| Memory lineage | student evidence records memory-manifest plus episodic/semantic/visual SHA-256 values; typed memory remains separately checkpoint/inference-bound; QA recomputes every referenced artifact |
+| Resume guard | QA v4 resume directly binds memory-manifest and evidence-lineage digests; validated lineage transitively binds individual non-spatial store bytes |
+| Result guard | profile-neutral `metrics/metrics.json` and `summary/run_identity.json`; finalization input seal includes QA/lineage, memory manifest, episodic/semantic/visual/typed artifacts, config, sensor, and split inputs; probe is `contract_probe`/`PROBE`, full is `student`/`E1` |
 | Dataset, split, checkpoint, run ID | TBD before execution |
 
 Current learned-lane boundary:
@@ -58,9 +68,11 @@ external teacher cache and supervision
   -> materialized rows
   -> DDP typed candidate head
   -> spatial_student.pt
-  -X-> type-specific decode and association
-  -X-> typed artifact
-  -X-> retrieval evidence and QA
+  -> WORLDMM_SPATIAL_INFER_EXE
+  -> type-specific decode, association, actual-byte selection
+  -> validated canonical typed artifact
+  -> repository-built retrieval evidence and real-frame QA
+  -> profile-bound PROBE or learned E1 remote manifest and final report
 ```
 
 ## Compared variants
@@ -68,11 +80,10 @@ external teacher cache and supervision
 | Variant | Only changed factor | Inputs held constant |
 | --- | --- | --- |
 | A: Source-compact | Heuristic spatial records from EXP-0001 | split, 1 Hz frame manifest, retrieval, QA backend, byte accounting |
-| B: Student typed bridge | Checkpoint-decoded typed records | split, 1 Hz frame manifest, retrieval, QA backend, matched artifact-byte budget |
+| B: Student typed bridge | Contract-v1 checkpoint-decoded typed records | split, 1 Hz frame manifest, retrieval, QA backend, matched per-window byte budget |
 
-External prebuilt `WORLDMM_QA_EVIDENCE_INPUT` cannot count as Variant B unless its
-manifest binds the student checkpoint digest and the repository generated it from that
-checkpoint.
+Prebuilt QA evidence cannot count as Variant B. The production DAG must build
+evidence from the executable's typed JSONL after repository validation.
 
 ## Metrics and go/no-go
 
@@ -81,7 +92,7 @@ checkpoint.
 | Checkpoint traceability | checkpoint, decoder config, typed artifact, evidence, and QA manifest digests form one chain |
 | Decode validity | every selected candidate validates as one typed schema or fails closed |
 | Association validity | persistent IDs are unique and causal validity intervals do not conflict |
-| Actual bytes | artifact file size does not exceed the matched configured budget |
+| Actual bytes | every 30-second window is at most 4,096 bytes by default; canonical file size and manifest total match exactly |
 | Persistence | zero `no_write` records in artifact |
 | QA grounding | every answerable geometry prediction cites a matching proof and evidence ID |
 | Leakage | 0 causal and off-scope evidence violations |
@@ -91,10 +102,12 @@ checkpoint.
 
 Not run.
 
-Local checks currently prove only that typed schemas validate, the writer enforces exact
-JSONL bytes, flat typed records can enter retrieval, teacher rows can be materialized,
-and the DDP head can create a checkpoint. They do not test this hypothesis because no
-checkpoint-to-typed-artifact inference bridge exists.
+Local checks prove that the generated DAG validates the contract version,
+sanitizes inference inputs, checks canonical typed JSONL and per-window bytes,
+builds evidence internally, verifies student lineage and real frames, and emits
+a profile-bound identity plus remote manifest/report. They do not test the hypothesis:
+no production executable, checkpoint, model, frame set, or company benchmark run
+has been exercised.
 
 ## Run provenance
 
@@ -111,11 +124,20 @@ checkpoint-to-typed-artifact inference bridge exists.
 
 ## Conclusion
 
-Pending. 현재 구현은 checkpoint에서 멈추므로 final learned-method reproduction으로
-간주할 수 없다.
+Pending. Repository handoff는 checkpoint 이후 external production inference
+bridge와 E1 reporting까지 연결되었지만 실행되지 않았다. Contract probe 통과 전에는
+learned-method reproduction으로 간주할 수 없고, immutable E2/E3 identity가 없으므로
+official E1/E2/E3 결과로도 간주할 수 없다.
+
+Contract probe가 성공해도 result는 `contract_probe` / `PROBE`다. 별도 승인된
+`full` run만 `student` / `E1`을 생성한다.
 
 ## Decision impact
 
 Go이면 ADR-0001과 ADR-0003을 learned path에 적용 완료로 올리고 EXP-0003 Pareto
 평가를 시작한다. No-go이면 새 abstraction을 추가하기 전에 decoder, association,
 checkpoint-evidence digest chain 중 실패한 최소 경로만 수정한다.
+
+실행, 승인, artifact 경로의 canonical 절차는 repository root의
+`HANDOFF.md`를 따른다. Confluence import 후에는 이 문서가
+`SM-OPERATIONS` 하위의 `SM-OPERATIONS-HANDOFF` 페이지다.

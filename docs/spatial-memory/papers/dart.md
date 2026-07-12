@@ -16,55 +16,41 @@
 
 ## 30-Second Summary
 
-DART argues that redundancy is a better pruning signal than estimated token
-importance for multimodal language models. It keeps tokens with low similarity
-to a small pivot set and requires no additional training. This supports removing
-duplicate candidates before an expensive learned memory writer, but it does not
-identify which spatial facts must survive long-term storage.
+DART는 다중 모드 언어 모델에 대해 추정된 토큰 중요도보다 중복성이 더 나은 정리 신호라고 주장한다. 작은 피벗 세트와 유사성이 낮은 토큰을 유지하며 추가 교육이 필요하지 않는다. 이는 비용이 많이 드는 학습된 메모리 기록기 전에 중복 후보를 제거하는 것을 지원하지만 어떤 공간적 사실이 장기 저장에서 살아남아야 하는지 식별하지 못한다.
 
 ## Problem Addressed
 
-Long visual-token sequences dominate multimodal model inference cost. Existing
-importance-based pruning can underperform random pruning and can interact poorly
-with efficient attention kernels.
+긴 시각적 토큰 시퀀스는 다중 모드 모델 추론 비용을 지배한다. 기존 중요도 기반 가지치기는 무작위 가지치기 성능을 저하할 수 있으며 효율적인 주의 커널과 제대로 상호 작용할 수 없다.
 
 ## Relevant Method
 
-- Select a small subset of pivot tokens.
-- Measure other tokens' duplication relative to the pivots.
-- Retain tokens with low duplication, preserving distinct information.
-- Apply the reduction at inference without retraining the source model.
+- 피벗 토큰의 작은 하위 집합을 선택한다.
+- 피벗을 기준으로 다른 토큰의 중복을 측정한다.
+- 중복이 적은 토큰을 유지하여 고유한 정보를 보존한다.
+- 소스 모델을 재교육하지 않고 추론 시 축소를 적용한다.
 
 ## Paper-Reported Evidence
 
-The authors report pruning 88.9% of visual tokens while maintaining comparable
-performance. They report 1.99 times total-time speedup and 2.99 times prefilling
-speedup, together with compatibility with efficient attention operators.
+저자는 유사한 성능을 유지하면서 시각적 토큰의 88.9%를 정리한다고 보고한다. 효율적인 주의 연산자와의 호환성과 함께 총 시간 속도가 1.99배 향상되고 사전 채우기 속도가 2.99배 향상되었다고 보고한다.
 
-These are paper results, not results reproduced by this repository.
+이는 이 저장소에서 재현한 결과가 아닌 논문 결과이다.
 
 ## What This Supports Here
 
-- Deduplicate identical or near-identical coordinate, instance, relation, and
-  observation candidates before value-per-byte selection.
-- Preserve novel candidates rather than treating high attention as the only
-  measure of value.
-- Measure whether duplicate removal improves the downstream writer's Pareto
-  curve under the same serialized-byte budget.
+- 바이트당 값을 선택하기 전에 동일하거나 거의 동일한 좌표, 인스턴스, 관계 및 관찰 후보를 중복 제거한다.
+- 높은 관심을 가치의 유일한 척도로 여기지 말고 새로운 후보를 보존한다.
+- 중복 제거가 동일한 serialized-byte budget에서 다운스트림 작성자의 파레토 곡선을 향상하는지 여부를 측정한다.
 
 ## What It Does Not Prove
 
-- That low feature duplication implies high future QA value.
-- That generic VLM similarity is safe for metric geometry records.
-- That inference-token savings translate to persistent-memory savings.
-- That DART preserves temporal state changes or object identity.
+- 낮은 기능 중복은 높은 미래 QA 가치를 의미한다.
+- 일반적인 VLM 유사성은 metric geometry 레코드에 안전하다.
+- 추론 토큰 절약은 영구 메모리 절약으로 이어집니다.
+- DART는 임시 상태 변경 또는 object identity를 보존한다.
 
 ## Project Reproduction Status
 
-Not reproduced. The current writer performs deterministic same-key retention
-and actual-byte admission, but it is not DART and has no pivot-token stage.
-Duplicate-first reduction remains a candidate ablation, not a reported project
-result.
+재현되지 않았다. 현재 작성자는 결정론적 동일 키 보존 및 실제 바이트 승인을 수행하지만 DART가 아니며 피벗 토큰 단계가 없다. 중복 우선 감소는 보고된 프로젝트 결과가 아닌 후보 절제로 남아 있다.
 
 ## References
 

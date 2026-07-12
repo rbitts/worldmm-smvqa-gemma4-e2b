@@ -28,7 +28,13 @@ def test_pose_and_gaze_samples_are_sliced_when_chunks_cross_boundary() -> None:
         end_time=60.0,
         pose_samples=(
             PoseSample(timestamp=0.0, x=1.0, y=2.0, z=0.5),
-            PoseSample(timestamp=29.999, x=1.5, y=2.5, z=0.6, yaw=90.0),
+            PoseSample(
+                timestamp=29.999,
+                x=1.5,
+                y=2.5,
+                z=0.6,
+                yaw_degrees=90.0,
+            ),
             PoseSample(timestamp=30.0, x=3.0, y=4.0, z=0.7),
             PoseSample(timestamp=59.999, x=3.5, y=4.5, z=0.8),
         ),
@@ -66,6 +72,85 @@ def test_pose_sample_preserves_coordinate_convention() -> None:
     assert "horizontal" in docstring
     assert "z" in docstring
     assert "vertical" in docstring
+
+
+def test_pose_sample_accepts_legacy_degree_aliases_but_serializes_canonical() -> None:
+    sample = PoseSample.model_validate(
+        {
+            "timestamp": 1.0,
+            "x": 2.0,
+            "y": 3.0,
+            "z": 4.0,
+            "yaw": 90.0,
+            "pose_covariance": (0.0,) * 36,
+            "source": "vio",
+            "processing_mode": "online_causal",
+            "observed_through_time": 1.0,
+        },
+    )
+
+    payload = sample.model_dump()
+
+    assert sample.yaw_degrees == 90.0
+    assert payload["yaw_degrees"] == 90.0
+    assert payload["pose_covariance_xyz_m_rpy_deg"] == (0.0,) * 36
+    assert payload["processing_mode"] == "online_causal"
+    assert payload["observed_through_time"] == 1.0
+    assert "yaw" not in payload
+    assert "pose_covariance" not in payload
+
+
+@pytest.mark.parametrize("field", ["yaw_radians", "pose_covariance_radians"])
+def test_pose_sample_rejects_misnamed_radian_units(field: str) -> None:
+    payload: dict[str, object] = {
+        "timestamp": 1.0,
+        "x": 2.0,
+        "y": 3.0,
+        "z": 4.0,
+        field: 1.0 if field == "yaw_radians" else (0.0,) * 36,
+    }
+
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        _ = PoseSample.model_validate(payload)
+
+
+def test_pose_sample_rejects_mixed_canonical_and_legacy_yaw_names() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs are not permitted"):
+        _ = PoseSample.model_validate(
+            {
+                "timestamp": 1.0,
+                "x": 2.0,
+                "y": 3.0,
+                "z": 4.0,
+                "yaw_degrees": 90.0,
+                "yaw": 1.5708,
+            },
+        )
+
+
+def test_pose_sample_rejects_negative_pose_variance() -> None:
+    covariance = list((0.0,) * 36)
+    covariance[0] = -1.0
+
+    with pytest.raises(ValidationError, match="diagonal variances"):
+        _ = PoseSample(
+            timestamp=1.0,
+            x=2.0,
+            y=3.0,
+            z=4.0,
+            pose_covariance_xyz_m_rpy_deg=tuple(covariance),
+        )
+
+
+def test_pose_sample_rejects_observed_through_before_pose_timestamp() -> None:
+    with pytest.raises(ValidationError, match="must not precede pose timestamp"):
+        _ = PoseSample(
+            timestamp=2.0,
+            x=2.0,
+            y=3.0,
+            z=4.0,
+            observed_through_time=1.0,
+        )
 
 
 def test_object_geometry_requires_complete_xyz() -> None:

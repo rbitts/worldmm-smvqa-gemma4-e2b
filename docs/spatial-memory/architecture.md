@@ -4,8 +4,8 @@
 |---|---|
 | Page ID | SM-ARCHITECTURE |
 | Status | Living specification |
-| Last updated | 2026-07-11 |
-| Current implementation | Source-compact baseline plus typed-training preparation |
+| Last updated | 2026-07-12 |
+| Current implementation | Source-compact baseline plus production typed handoff bridge |
 | Target implementation | Guided transient geometry to learned typed persistent memory |
 
 ## Architecture Principle
@@ -91,9 +91,30 @@ optional calibrated depth ---------+        |
                                   local-frame persistent DB
 ```
 
-The target student must decode its own checkpoint outputs into typed records.
-External precomputed evidence may be used for baselines but cannot be the final
-learned path.
+The trained checkpoint does not expose enough information for this repository's
+generic student head to invent production typed geometry. The current handoff
+therefore delegates type-specific decode and open-world association to an
+approved executable with the exact `worldmm-spatial-infer-v1` contract:
+
+```text
+spatial_student.pt + sanitized sources + frame/sensor inventory
+    -> WORLDMM_SPATIAL_INFER_EXE
+    -> canonical typed_memory.jsonl
+    -> typed_memory.inference.json
+    -> repository schema, byte, digest, retrieval, and QA validation
+```
+
+The executable receives no questions or labels. Its sources input is the
+run-scoped sanitized copy under `inference_inputs/`, not the full fixture.
+Preflight first applies the at-most-1-Hz sensor manifest, clears transcript,
+caption, OCR, and object fields, and erases selected-frame descriptions; it
+retains source identity/time, pose/gaze, selected frame refs, and selected frame
+timestamps. Only those selected frame files are copied to
+`inference_inputs/frames/`, which becomes the frame root for every
+post-preflight adapter and QA stage. This is a production bridge, not evidence
+injection: repository retrieval builds the evidence packs from returned typed
+records and binds their lineage to the checkpoint, inference manifest, memory
+manifest, and exact episodic, semantic, visual, and typed-spatial bytes.
 
 Relevant preparation code:
 
@@ -162,8 +183,24 @@ utility(i)
 Inference uses a hard writer with a real byte budget. Token count or a latent
 regularizer is not accepted as a substitute for serialized size.
 
-Current typed records already support deterministic actual-byte admission. The
-learned value predictor and checkpoint-to-record inference path remain open.
+Production typed artifacts are canonical UTF-8 JSONL. Budget accounting groups
+records by
+`(source_video_id, floor(first_seen_time / window_seconds))`; the current
+contract fixes `window_seconds=30.0` and defaults to 4,096 bytes per window.
+The repository rejects noncanonical rows, duplicate IDs, persisted `no_write`
+records, empty output, manifest mismatches, canonical rows over 1 MiB, and any
+over-budget window. Validation streams the artifact. Learned candidate utility
+inside the external decoder remains an unverified model property until the
+company-side probe runs.
+
+Production validation also joins records to sanitized sources and selected
+sensor frames. Source video and all record times must be in source bounds.
+`observed`, `multi_view_fused`, and `human_confirmed` require evidence; each
+typed `evidence_ref` is a bare same-video selected `frame_ref` whose timestamp
+falls within first/last seen. Its min/max timestamps must equal first/last seen,
+and `observation_count` must equal unique evidence count. This also prevents
+backdating because 30-second accounting keys on first seen. QA prediction audits
+use the separate `<video_id>/<frame_ref>` namespace.
 
 ## Query Path
 
@@ -189,14 +226,46 @@ A proof contains:
 
 Count and last-seen operations require a complete-index certificate. The model
 prompt does not receive raw geometry dictionaries that could bypass the proof.
+The byte-budgeted student artifact cannot provide that certificate because
+selection may omit an object, newer state, or change event. Production student
+count and last-seen therefore abstain. Pair proofs may use all persisted causal
+objects in question-video scope only when the question names explicit entity
+IDs. Label-only selectors also require a completeness certificate proving
+uniqueness. Retrieved spatial evidence must first exact-match the canonical
+typed retrieval projection on ID, video, snippet, frame refs, times, and
+geometry. Pair proofs use record-local frames and reject cross-video pairs.
 
 ## Causal and Trust Boundaries
 
 - Evidence end time cannot exceed question time.
+- External teacher/inference adapters are digest-bound trusted executables. The
+  DAG denylist-scrubs known sensitive variables but is not an OS sandbox or
+  `env -i`; ambient `PATH`, `HOME`, `PYTHONPATH`, and Slurm state remain.
 - Evidence video must belong to the question scope.
 - Evidence IDs must be known, unique, and present exactly once per question.
-- Resume artifacts are bound to question, source, evidence, backend, model,
-  prompt, and schema hashes.
+- Student QA recomputes evidence, checkpoint, typed-memory, inference-manifest,
+  config, sensor, and data hashes before invoking the model. It also parses the
+  supplied memory manifest and requires its SHA-256 plus the referenced
+  episodic, semantic, and visual file SHA-256 values to match student evidence
+  lineage. Typed memory keeps its separate inference-bound digest.
+- Resume artifacts are also bound to question, source, evidence, backend,
+  model, prompt, schema, evidence lane, required-frame policy, the memory
+  manifest, and the evidence-lineage file. The evidence-lineage digest is the
+  transitive resume binding for individual non-spatial store digests, which QA
+  still recomputes before a student QA start or resume.
+- QA prompt/resume contracts are versioned as
+  `qa-prompt-prediction-schema-v4` and `qa-resume-manifest-v5`. Prompt frame
+  rows carry `video_id`, `frame_ref`, and `timestamp`; persisted prediction refs
+  use `<video_id>/<frame_ref>` so equal frame names in different videos cannot
+  collide.
+- `qa/completed.json` seals predictions against the resume manifest. The report
+  stage then writes and rechecks `summary/finalization_inputs.sha256` so QA,
+  evidence lineage, memory manifest, episodic/semantic/visual stores, typed
+  memory, snapshot config, sensor, and split inputs cannot change between
+  evaluation and final identity/report generation. Finalization also rehashes
+  every named path immediately before publication and writes the remote
+  manifest last as the completion marker.
+- Production QA fails when an evidence pack resolves no real input frame.
 - `observed`, `multi_view_fused`, `model_inferred`, and `relation_inferred`
   provenance remain distinguishable.
 
@@ -209,8 +278,17 @@ prompt does not receive raw geometry dictionaries that could bypass the proof.
 
 ## Current Boundary
 
-The learned lane currently ends at `spatial_student.pt`. It does not yet produce
-typed persistent evidence consumed by QA. See [Current Status](status.md) and
-[EXP-0004](experiments/exp-0004-gcut3r-provider.md).
+The repository-owned model still ends at `spatial_student.pt`; the staged
+production lane continues through the external typed inference contract and
+then returns to repository-owned validation, retrieval, QA, metrics,
+profile-bound run identity, and report generation. That lane is implemented but
+has not run on company data. A `probe` run is explicitly `contract_probe` /
+`PROBE`; only the separately approved `full` profile is `student` / `E1`.
+Official E1/E2/E3 remains blocked because matched E2/E3 identities are not
+generated. See
+[Current Status](status.md),
+[EXP-0002](experiments/exp-0002-typed-memory-bridge.md), and the operational
+source of truth is repository `HANDOFF.md`, imported under the
+[Operations](operations/README.md) parent in Confluence and not duplicated here.
 
 [Back to project home](README.md)

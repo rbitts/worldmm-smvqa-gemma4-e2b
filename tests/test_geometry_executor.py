@@ -209,14 +209,20 @@ def test_keyword_planner_requires_unambiguous_mentioned_entities() -> None:
     )
 
     query = plan_geometry_query(
-        "How far is mug:1 from the desk?",
+        "How far is mug:1 from desk:1?",
         records,
         coordinate_frame="room:1",
     )
-    ambiguous = plan_geometry_query(
+    uncertified_labels = plan_geometry_query(
+        "How far is the mug from the desk?",
+        records,
+        coordinate_frame="room:1",
+    )
+    certified_ambiguous = plan_geometry_query(
         "How far is the mug from the desk?",
         (*records, entity("mug:2", "mug", 2, 0)),
         coordinate_frame="room:1",
+        entity_index_complete=True,
     )
 
     assert query == GeometryQuery(
@@ -225,4 +231,5 @@ def test_keyword_planner_requires_unambiguous_mentioned_entities() -> None:
         subject="mug:1",
         object="desk:1",
     )
-    assert ambiguous is None
+    assert uncertified_labels is None
+    assert certified_ambiguous is None

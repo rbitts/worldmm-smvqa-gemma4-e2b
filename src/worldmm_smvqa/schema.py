@@ -4,7 +4,14 @@ from dataclasses import dataclass
 from math import isfinite
 from typing import ClassVar, Final, Literal, Self, override
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    model_validator,
+)
 
 PROHIBITED_MEMORY_FIELDS: Final = (
     "answer",
@@ -86,31 +93,75 @@ class ObjectMetadata(LocalTimedModel):
 
 
 class PoseSample(FrozenModel):
-    """Pose in meters: x/y are horizontal plane coordinates; z is vertical."""
+    """Pose in meters/degrees in the declared coordinate frame.
+
+    x/y are horizontal-plane coordinates and z is vertical.
+
+    Canonical JSON uses ``*_degrees`` and
+    ``pose_covariance_xyz_m_rpy_deg``. The covariance is row-major for
+    ``[x_m, y_m, z_m, roll_deg, pitch_deg, yaw_deg]``; entry 35 is therefore
+    yaw variance in degrees squared. ``processing_mode`` and
+    ``observed_through_time`` certify online causality when a pose is used by a
+    direction proof. Legacy input names remain read-only validation aliases so
+    existing prepared fixtures can be migrated safely.
+    """
 
     timestamp: float = Field(allow_inf_nan=False)
     x: float = Field(allow_inf_nan=False)
     y: float = Field(allow_inf_nan=False)
     z: float = Field(allow_inf_nan=False)
-    roll: float | None = Field(default=None, allow_inf_nan=False)
-    pitch: float | None = Field(default=None, allow_inf_nan=False)
-    yaw: float | None = Field(default=None, allow_inf_nan=False)
+    roll_degrees: float | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("roll_degrees", "roll"),
+    )
+    pitch_degrees: float | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("pitch_degrees", "pitch"),
+    )
+    yaw_degrees: float | None = Field(
+        default=None,
+        allow_inf_nan=False,
+        validation_alias=AliasChoices("yaw_degrees", "yaw"),
+    )
+    source: Literal["imu", "vio", "slam", "ground_truth", "model_only"] | None = None
+    processing_mode: Literal["raw", "online_causal", "offline"] | None = None
+    observed_through_time: float | None = Field(default=None, allow_inf_nan=False)
     coordinate_frame: str | None = None
-    pose_covariance: tuple[float, ...] | None = None
+    pose_covariance_xyz_m_rpy_deg: tuple[float, ...] | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "pose_covariance_xyz_m_rpy_deg",
+            "pose_covariance",
+        ),
+    )
 
     @model_validator(mode="after")
     def _require_valid_optional_pose(self) -> Self:
-        if (self.roll is None) != (self.pitch is None):
-            msg = "roll and pitch must be provided together"
+        if (self.roll_degrees is None) != (self.pitch_degrees is None):
+            msg = "roll_degrees and pitch_degrees must be provided together"
             raise ValueError(msg)
-        if self.roll is not None and self.yaw is None:
-            msg = "full roll/pitch orientation requires yaw"
+        if self.roll_degrees is not None and self.yaw_degrees is None:
+            msg = "full roll/pitch orientation requires yaw_degrees"
             raise ValueError(msg)
-        if self.pose_covariance is not None and (
-            len(self.pose_covariance) != POSE_COVARIANCE_VALUE_COUNT
-            or not all(isfinite(value) for value in self.pose_covariance)
+        covariance = self.pose_covariance_xyz_m_rpy_deg
+        if covariance is not None and (
+            len(covariance) != POSE_COVARIANCE_VALUE_COUNT
+            or not all(isfinite(value) for value in covariance)
         ):
-            msg = "pose_covariance must contain 36 finite values"
+            msg = "pose_covariance_xyz_m_rpy_deg must contain 36 finite values"
+            raise ValueError(msg)
+        if covariance is not None and any(
+            covariance[index] < 0 for index in (0, 7, 14, 21, 28, 35)
+        ):
+            msg = "pose covariance diagonal variances must be non-negative"
+            raise ValueError(msg)
+        if (
+            self.observed_through_time is not None
+            and self.observed_through_time < self.timestamp
+        ):
+            msg = "observed_through_time must not precede pose timestamp"
             raise ValueError(msg)
         return self
 
@@ -222,6 +273,8 @@ class PredictionRecord(FrozenModel):
     geometry_proofs: tuple[dict[str, JsonValue], ...] = ()
     supporting_evidence: tuple[SupportingEvidence, ...] = ()
     retrieved_evidence: tuple[SupportingEvidence, ...] = ()
+    input_frame_refs: tuple[str, ...] = ()
+    prompt_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     prompt_token_count: int
     raw_model_output_path: str | None
 

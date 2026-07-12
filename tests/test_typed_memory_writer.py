@@ -5,6 +5,8 @@ from pathlib import Path
 
 import pytest
 
+from worldmm_smvqa.schema import FrameMetadata, SourceStreamExample
+from worldmm_smvqa.sensor_frames import build_sensor_frame_manifest
 from worldmm_smvqa.worldmm.typed_memory import (
     NoWriteMemoryRecord,
     ObjectGeometry,
@@ -15,6 +17,7 @@ from worldmm_smvqa.worldmm.typed_memory import (
     ValidityInterval,
     canonical_jsonl_bytes,
     serialized_byte_cost,
+    validate_typed_memory_artifact,
     write_typed_memory_artifact,
 )
 
@@ -27,7 +30,11 @@ def _object(memory_id: str, *, label: str = "mug") -> ObjectMemoryRecord:
         instance_id=f"instance-{memory_id}",
         local_frame_id="room-1",
         geometry_uncertainty=SpatialUncertainty(
-            covariance_xyz=((0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.1)),
+            covariance_xyz=(
+                (0.01, 0.0, 0.0),
+                (0.0, 0.01, 0.0),
+                (0.0, 0.0, 0.01),
+            ),
             standard_deviation_m=0.1,
         ),
         validity=ValidityInterval(start_time=1.0, end_time=2.0),
@@ -144,6 +151,185 @@ def test_total_actual_bytes_never_exceed_budget(tmp_path: Path) -> None:
     assert summary.selected_count == 1
 
 
+def test_artifact_validator_recounts_actual_window_bytes(tmp_path: Path) -> None:
+    first = _object("first")
+    second = _object("second").model_copy(
+        update={
+            "validity": ValidityInterval(start_time=31.0, end_time=32.0),
+            "first_seen_time": 31.0,
+            "last_seen_time": 32.0,
+        },
+    )
+    output = tmp_path / "memory.jsonl"
+    payload = canonical_jsonl_bytes(first) + canonical_jsonl_bytes(second)
+    _ = output.write_bytes(payload)
+
+    summary = validate_typed_memory_artifact(
+        output,
+        byte_budget_per_window=max(map(serialized_byte_cost, (first, second))),
+    )
+
+    assert summary.record_count == 2
+    assert summary.actual_bytes == len(payload)
+    assert summary.window_count == 2
+    assert summary.max_window_bytes == max(map(serialized_byte_cost, (first, second)))
+
+
+def test_artifact_validator_rejects_actual_window_budget_overflow(
+    tmp_path: Path,
+) -> None:
+    first = _object("first")
+    second = _object("second")
+    output = tmp_path / "memory.jsonl"
+    _ = output.write_bytes(
+        canonical_jsonl_bytes(first) + canonical_jsonl_bytes(second),
+    )
+
+    with pytest.raises(TypedMemoryWriterError, match="window exceeds byte budget"):
+        _ = validate_typed_memory_artifact(
+            output,
+            byte_budget_per_window=serialized_byte_cost(first),
+        )
+
+
+def test_artifact_validator_rejects_oversized_record_without_loading_file(
+    tmp_path: Path,
+) -> None:
+    output = tmp_path / "oversized.jsonl"
+    _ = output.write_bytes(b"{" + (b"x" * (1024 * 1024)) + b"}\n")
+
+    with pytest.raises(TypedMemoryWriterError, match="row exceeds 1 MiB"):
+        _ = validate_typed_memory_artifact(output)
+
+
+@pytest.mark.parametrize("bad_artifact", ["no_write", "duplicate", "noncanonical"])
+def test_artifact_validator_rejects_non_writer_output(
+    tmp_path: Path,
+    bad_artifact: str,
+) -> None:
+    record = _object("memory")
+    payloads = {
+        "no_write": canonical_jsonl_bytes(_no_write("memory")),
+        "duplicate": canonical_jsonl_bytes(record) * 2,
+        "noncanonical": f"{record.model_dump_json()}\n".encode(),
+    }
+    output = tmp_path / "memory.jsonl"
+    _ = output.write_bytes(payloads[bad_artifact])
+
+    with pytest.raises(TypedMemoryWriterError):
+        _ = validate_typed_memory_artifact(output, byte_budget_per_window=10_000)
+
+
+def test_artifact_validator_accepts_contextually_grounded_record(
+    tmp_path: Path,
+) -> None:
+    sources = _grounding_sources()
+    sensors = build_sensor_frame_manifest(sources)
+    record = _object("grounded").model_copy(
+        update={
+            "last_seen_time": 1.0,
+            "evidence_refs": ("video-1-frame-1",),
+        },
+    )
+    output = tmp_path / "memory.jsonl"
+    _ = output.write_bytes(canonical_jsonl_bytes(record))
+
+    summary = validate_typed_memory_artifact(
+        output,
+        byte_budget_per_window=10_000,
+        sources=sources,
+        sensor_records=sensors,
+    )
+
+    assert summary.record_count == 1
+
+
+@pytest.mark.parametrize(
+    ("record", "error"),
+    [
+        (
+            _object("unknown").model_copy(
+                update={
+                    "source_video_id": "unknown-video",
+                    "evidence_refs": ("video-1-frame-1",),
+                },
+            ),
+            "unknown source_video_id",
+        ),
+        (
+            _object("out-of-bounds").model_copy(
+                update={
+                    "validity": ValidityInterval(start_time=11.0, end_time=12.0),
+                    "first_seen_time": 11.0,
+                    "last_seen_time": 12.0,
+                    "evidence_refs": ("video-1-frame-1",),
+                },
+            ),
+            "outside source bounds",
+        ),
+        (
+            _object("missing-evidence"),
+            "requires evidence_refs",
+        ),
+        (
+            _object("fake-evidence").model_copy(
+                update={"evidence_refs": ("not-a-selected-frame",)},
+            ),
+            "not selected sensor frames",
+        ),
+        (
+            _object("other-video-evidence").model_copy(
+                update={"evidence_refs": ("video-2-frame-1",)},
+            ),
+            "not selected sensor frames",
+        ),
+        (
+            _object("backdated-evidence").model_copy(
+                update={"evidence_refs": ("video-1-frame-before",)},
+            ),
+            "outside record observation interval",
+        ),
+        (
+            _object("future-evidence").model_copy(
+                update={"evidence_refs": ("video-1-frame-after",)},
+            ),
+            "outside record observation interval",
+        ),
+        (
+            _object("unsupported-last-seen").model_copy(
+                update={"evidence_refs": ("video-1-frame-1",)},
+            ),
+            "observation interval/count do not match evidence_refs",
+        ),
+    ],
+    ids=(
+        "unknown-video",
+        "out-of-bounds-time",
+        "missing-evidence",
+        "fake-evidence",
+        "other-video-evidence",
+        "backdated-evidence",
+        "future-evidence",
+        "unsupported-last-seen",
+    ),
+)
+def test_artifact_validator_rejects_contextually_ungrounded_record(
+    tmp_path: Path,
+    record: ObjectMemoryRecord,
+    error: str,
+) -> None:
+    output = tmp_path / "memory.jsonl"
+    _ = output.write_bytes(canonical_jsonl_bytes(record))
+
+    with pytest.raises(TypedMemoryWriterError, match=error):
+        _ = validate_typed_memory_artifact(
+            output,
+            byte_budget_per_window=10_000,
+            sources=_grounding_sources(),
+            sensor_records=build_sensor_frame_manifest(_grounding_sources()),
+        )
+
+
 @pytest.mark.parametrize("byte_budget", [0, -1])
 def test_writer_rejects_nonpositive_budget(
     tmp_path: Path,
@@ -186,3 +372,42 @@ def test_writer_rejects_nonfinite_score_even_if_validation_was_bypassed(
             output=tmp_path / "memory.jsonl",
             byte_budget=10_000,
         )
+
+
+def _grounding_sources() -> tuple[SourceStreamExample, ...]:
+    return (
+        SourceStreamExample(
+            video_id="video-1",
+            start_time=0.0,
+            end_time=10.0,
+            frame_metadata=(
+                FrameMetadata(
+                    frame_ref="video-1-frame-before",
+                    timestamp=0.5,
+                    description="selected before interval",
+                ),
+                FrameMetadata(
+                    frame_ref="video-1-frame-1",
+                    timestamp=1.0,
+                    description="selected",
+                ),
+                FrameMetadata(
+                    frame_ref="video-1-frame-after",
+                    timestamp=3.0,
+                    description="selected after interval",
+                ),
+            ),
+        ),
+        SourceStreamExample(
+            video_id="video-2",
+            start_time=0.0,
+            end_time=10.0,
+            frame_metadata=(
+                FrameMetadata(
+                    frame_ref="video-2-frame-1",
+                    timestamp=1.0,
+                    description="selected",
+                ),
+            ),
+        ),
+    )

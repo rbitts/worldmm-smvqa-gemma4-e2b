@@ -3,6 +3,7 @@
 | Field | Value |
 |---|---|
 | Page ID | SM-PAPER-SLUG |
+| Confluence parent | SM-PAPERS |
 | Status | Needs review / Reviewed / Reproduced / Adopted / Rejected / Watch |
 | Publication | Peer-reviewed venue or preprint status |
 | Primary source | Official DOI, proceedings, or arXiv link |
@@ -12,15 +13,15 @@
 
 ## 30-Second Summary
 
-Five lines or fewer.
+5줄 이하.
 
 ## Problem Addressed
 
-State the paper's problem, input conditions, and intended output.
+논문의 문제점, 입력 조건, 의도한 출력을 기술한다.
 
 ## Relevant Method
 
-Describe only the components relevant to this project.
+이 프로젝트와 관련된 구성 요소만 설명한다.
 
 ## Paper-Reported Evidence
 
@@ -28,28 +29,26 @@ Describe only the components relevant to this project.
 |---|---|---|---|---|
 | Example | Example | Example | Example | Table or figure |
 
-Use only values verified in the primary paper. Remove the table when no precise
-value has been verified.
+1차 논문에서 검증된 값만 사용한다. 정확한 값이 확인되지 않은 경우 테이블을 제거한다.
 
 ## What This Supports Here
 
-- Supported project claim.
-- Linked architecture decision.
-- Direct evidence versus project inference.
+- 지원되는 프로젝트 청구.
+- 연결된 아키텍처 결정.
+- 직접적인 증거와 프로젝트 추론.
 
 ## What It Does Not Prove
 
-- Conditions not evaluated by the paper.
-- Claims that remain project hypotheses.
+- 논문에서 평가하지 않은 조건.
+- 프로젝트 가설로 남아 있는 주장.
 
 ## Project Reproduction Status
 
-State `Not reproduced`, link a completed experiment, or record why a comparison
-is invalid. Never place local mock values in the paper-reported evidence table.
+`Not reproduced`를 명시하고, 완료된 실험을 연결하거나, 비교가 유효하지 않은 이유를 기록한다. 논문에 보고된 증거 테이블에 로컬 모의 값을 배치하지 않는다.
 
 ## References
 
 - [Primary paper](https://example.invalid/)
-- Official project or code, when verified.
+- 확인된 경우 공식 프로젝트 또는 코드.
 
 [Back to paper index](README.md)

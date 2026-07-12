@@ -66,6 +66,8 @@ def test_qa_transformers_mock_cli_writes_predictions_from_evidence(
             "tests/fixtures/tiny_smvqa",
             "--evidence",
             str(smoke_dir / "evidence_packs.jsonl"),
+            "--evidence-lane",
+            "heuristic",
             "--out",
             str(predictions),
             "--backend",
@@ -123,6 +125,8 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
         "tests/fixtures/tiny_smvqa",
         "--evidence",
         str(smoke_dir / "evidence_packs.jsonl"),
+        "--evidence-lane",
+        "heuristic",
         "--out",
         str(predictions),
         "--backend",
@@ -182,69 +186,6 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
     ]
 
 
-def test_remote_plan_script_uses_batch_retrieval_and_memory_manifest(
-    tmp_path: Path,
-) -> None:
-    # Given: a generated remote plan.
-    out_dir = tmp_path / "remote_plan"
-    result = run_cli(
-        "launch-remote",
-        "--dry-run",
-        "--config",
-        "configs/remote.example.yaml",
-        "--out",
-        str(out_dir),
-    )
-    assert result.returncode == 0, result.stderr
-
-    # When: the remote script text is inspected.
-    script_text = (out_dir / "run_worldmm_smvqa.sh").read_text(encoding="utf-8")
-
-    # Then: one command writes all evidence packs without per-question temp files.
-    assert "worldmm-smvqa retrieve-batch" in script_text
-    assert "worldmm-smvqa retrieve --config" not in script_text
-    assert "while IFS= read -r question_id" not in script_text
-    assert 'tmp="$WORLDMM_OUTPUT_ROOT/retrieval/' not in script_text
-    assert "$WORLDMM_OUTPUT_ROOT/memory/memory_manifest.json" in script_text
-    assert "source_memories.jsonl" in script_text
-    assert "worldmm_sv/semantic.jsonl" in script_text
-    assert "worldmm_sv/visual.jsonl" in script_text
-    assert "SMVQA_FRAME_ROOT:=$SMVQA_DATA_ROOT/frames" in script_text
-    assert (
-        'WORLDMM_SENSOR_FRAME_MANIFEST="$WORLDMM_OUTPUT_ROOT/'
-        'manifests/sensor_frames.jsonl"'
-    ) in script_text
-    assert "build-memory --stage sensor-frames" in script_text
-
-
-def test_remote_plan_writes_deterministic_slurm_paths(tmp_path: Path) -> None:
-    # Given: a generated Slurm plan.
-    out_dir = tmp_path / "remote_plan"
-    result = run_cli(
-        "launch-remote",
-        "--dry-run",
-        "--config",
-        "configs/remote.example.yaml",
-        "--out",
-        str(out_dir),
-    )
-    assert result.returncode == 0, result.stderr
-    script_text = (out_dir / "run_worldmm_smvqa.sh").read_text(encoding="utf-8")
-
-    # Then: job identity, logs, and metadata derive only from Slurm job id.
-    assert 'REMOTE_JOB_ID_OR_PROCESS_REF="slurm-${SLURM_JOB_ID}"' in script_text
-    assert (
-        'WORLDMM_SLURM_STDOUT="$WORLDMM_OUTPUT_ROOT/logs/'
-        'slurm-${SLURM_JOB_ID}.out"'
-    ) in script_text
-    assert (
-        'WORLDMM_SLURM_STDERR="$WORLDMM_OUTPUT_ROOT/logs/'
-        'slurm-${SLURM_JOB_ID}.err"'
-    ) in script_text
-    assert "$WORLDMM_OUTPUT_ROOT/summary/job.json" in script_text
-    assert "$WORLDMM_OUTPUT_ROOT/summary/slurm_job_id.txt" in script_text
-
-
 def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
     # Given: an out path with quotes and shell metacharacters.
     out_dir = tmp_path / "remote plan' ; touch bad $(uname)"
@@ -275,15 +216,13 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
     remote_argv = shlex.split(argv[4])
     assert remote_argv == [
         "cd",
-        (
-            "${WORLDMM_REMOTE_REPO:-/repo/VTteam/bongh.park/"
-            "worldmm-smvqa-gemma4-e2b}"
-        ),
+        ("${WORLDMM_REMOTE_REPO:-/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b}"),
         "&&",
         "mkdir",
         "-p",
         "remote-plan/logs",
         "&&",
+        "WORLDMM_DAG_PHASE=preflight",
         "bash",
         "remote-plan/submit_worldmm_smvqa_dag.sh",
     ]

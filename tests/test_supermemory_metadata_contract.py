@@ -108,11 +108,14 @@ def test_optional_spatial_sensor_contract_round_trips() -> None:
                 x=1.0,
                 y=2.0,
                 z=3.0,
-                roll=0.1,
-                pitch=0.2,
-                yaw=0.3,
+                roll_degrees=0.1,
+                pitch_degrees=0.2,
+                yaw_degrees=0.3,
+                source="vio",
+                processing_mode="online_causal",
+                observed_through_time=0.5,
                 coordinate_frame="slam_world",
-                pose_covariance=(0.0,) * 36,
+                pose_covariance_xyz_m_rpy_deg=(0.0,) * 36,
             ),
         ),
     )
@@ -121,7 +124,12 @@ def test_optional_spatial_sensor_contract_round_trips() -> None:
 
     assert restored.object_detections[0].instance_id == "mug-7"
     assert restored.pose_samples[0].coordinate_frame == "slam_world"
-    assert restored.pose_samples[0].pose_covariance == (0.0,) * 36
+    restored_pose = restored.pose_samples[0]
+    assert restored_pose.pose_covariance_xyz_m_rpy_deg == (0.0,) * 36
+    assert restored_pose.processing_mode == "online_causal"
+    assert restored_pose.observed_through_time == 0.5
+    assert "yaw_degrees" in source.model_dump_json()
+    assert "pose_covariance_xyz_m_rpy_deg" in source.model_dump_json()
 
 
 def test_sensor_and_question_numeric_contract_rejects_non_finite_values() -> None:

@@ -64,7 +64,7 @@ def test_generate_multimodal_uses_image_text_pipeline(
     output = generate_transformers_multimodal(
         "prompt",
         "model-ref-test-multimodal",
-        (QAVideoFrame(frame_ref="f", timestamp=1.0, path=frame),),
+        (QAVideoFrame(video_id="v", frame_ref="f", timestamp=1.0, path=frame),),
     )
 
     # Then: image-text-to-text receives the frame path and prompt together.

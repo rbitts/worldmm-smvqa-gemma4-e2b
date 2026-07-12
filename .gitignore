@@ -10,4 +10,6 @@ dist/
 build/
 *.egg-info/
 .omo/
-.env.worldmm
+.env*
+*.pem
+*.key

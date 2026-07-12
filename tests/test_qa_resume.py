@@ -22,6 +22,12 @@ def test_transformers_qa_resumes_partial_rank_checkpoint(tmp_path: Path) -> None
         model="unused-mock-model",
         fixture=FIXTURE,
         evidence=smoke_dir / "evidence_packs.jsonl",
+        evidence_lane="heuristic",
+        evidence_lineage=None,
+        checkpoint=None,
+        typed_memory=None,
+        inference_manifest=None,
+        require_frames=False,
         out=output,
         backend="mock",
     )

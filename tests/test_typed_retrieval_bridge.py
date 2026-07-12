@@ -10,6 +10,7 @@ from worldmm_smvqa.retrieval import (
     RetrievalOptions,
     build_retrieval_records,
     read_retrieval_memory_artifacts,
+    read_typed_spatial_retrieval_records,
     retrieve_evidence,
 )
 from worldmm_smvqa.retrieval_types import RetrievalMemoryRecord
@@ -227,6 +228,44 @@ def test_unknown_typed_record_fails_closed(tmp_path: Path) -> None:
         _ = read_retrieval_memory_artifacts(manifest)
 
 
+def test_typed_retrieval_reader_filters_stream_by_video(tmp_path: Path) -> None:
+    first = _object("first", "mug", (0.0, 0.0, 0.0))
+    second = _object("second", "book", (1.0, 0.0, 0.0)).model_copy(
+        update={"source_video_id": "video-2"},
+    )
+    typed_memory = tmp_path / "typed-memory.jsonl"
+    _ = typed_memory.write_bytes(
+        canonical_jsonl_bytes(first) + canonical_jsonl_bytes(second),
+    )
+
+    selected = read_typed_spatial_retrieval_records(
+        typed_memory,
+        video_ids=("video-2",),
+    )
+
+    assert tuple(record.memory_id for record in selected) == ("memory-second",)
+    assert selected[0].video_id == "video-2"
+
+
+def test_manifest_retrieval_reader_filters_stream_by_video(tmp_path: Path) -> None:
+    first = _object("first", "mug", (0.0, 0.0, 0.0))
+    second = _object("second", "book", (1.0, 0.0, 0.0)).model_copy(
+        update={"source_video_id": "video-2"},
+    )
+    manifest = _manifest(
+        tmp_path,
+        canonical_jsonl_bytes(first) + canonical_jsonl_bytes(second),
+    )
+
+    selected = read_retrieval_memory_artifacts(
+        manifest,
+        video_ids=("video-2",),
+    )
+
+    assert tuple(record.memory_id for record in selected) == ("memory-second",)
+    assert selected[0].video_id == "video-2"
+
+
 def test_two_typed_objects_form_geometry_bundle_without_stored_relation() -> None:
     mug = _object("mug", "mug", (0.0, 0.0, 0.0))
     notebook = _object("notebook", "notebook", (3.0, 4.0, 0.0))
@@ -241,7 +280,7 @@ def test_two_typed_objects_form_geometry_bundle_without_stored_relation() -> Non
     question = QuestionRequest(
         question_id="q-distance",
         video_id="video-1",
-        question="How far was the mug from the notebook?",
+        question="How far was entity-mug from entity-notebook?",
         question_time=2.5,
         answer_choices=(),
     )
@@ -272,6 +311,95 @@ def test_two_typed_objects_form_geometry_bundle_without_stored_relation() -> Non
         "frame-notebook",
         "memory-mug",
         "memory-notebook",
+    )
+
+
+def test_typed_geometry_proof_preserves_multiple_structured_frame_refs() -> None:
+    mug = _object("mug", "mug", (0.0, 0.0, 0.0)).model_copy(
+        update={"evidence_refs": ("frame-mug-a", "frame-mug-b")},
+    )
+    notebook = _object("notebook", "notebook", (1.0, 0.0, 0.0))
+    memories = build_retrieval_records((), (), (), (mug, notebook))
+    question = QuestionRequest(
+        question_id="q-multi-ref-distance",
+        video_id="video-1",
+        question="How far was entity-mug from entity-notebook?",
+        question_time=2.5,
+        answer_choices=(),
+    )
+    pack = retrieve_evidence(
+        question,
+        memories,
+        enabled_stores=frozenset({"spatial"}),
+        options=RetrievalOptions(evidence_budget=2),
+    )
+
+    proof = geometry_proofs_for_question(
+        question,
+        pack,
+        coordinate_frame="room-1",
+    )[0]
+
+    assert proof.answerable
+    assert "frame-mug-a" in proof.evidence_refs
+    assert "frame-mug-b" in proof.evidence_refs
+    assert "frame-mug-a\nframe-mug-b" not in proof.evidence_refs
+
+
+def test_event_projection_preserves_opaque_involved_entity_ids() -> None:
+    mug = _object("mug with space", "mug", (0.0, 0.0, 0.0))
+    event = EventMemoryRecord.model_validate(
+        {
+            **_base("opaque-event", start_time=3.0, end_time=3.0),
+            "geometry": EventGeometry(
+                before_position=(0.0, 0.0, 0.0),
+                after_position=(1.0, 0.0, 0.0),
+            ),
+            "event_kind": "moved",
+            "involved_entity_ids": (
+                "entity-mug with space",
+                "entity/other opaque",
+            ),
+        },
+    )
+    memories = build_retrieval_records((), (), (), (mug, event))
+    event_record = next(
+        record
+        for record in memories
+        if record.geometry is not None
+        and record.geometry.get("record_type") == "event"
+    )
+    question = QuestionRequest(
+        question_id="q-opaque-event-last-seen",
+        video_id="video-1",
+        question="When was the mug last seen?",
+        question_time=4.0,
+        answer_choices=(),
+    )
+    pack = retrieve_evidence(
+        question,
+        memories,
+        enabled_stores=frozenset({"spatial"}),
+        options=RetrievalOptions(evidence_budget=2),
+    )
+
+    proof = geometry_proofs_for_question(
+        question,
+        pack,
+        spatial_records=memories,
+    )[0]
+
+    event_geometry = event_record.geometry
+    assert event_geometry is not None
+    involved_entity_ids = event_geometry["involved_entity_ids"]
+    assert isinstance(involved_entity_ids, str)
+    assert json.loads(involved_entity_ids) == [
+        "entity-mug with space",
+        "entity/other opaque",
+    ]
+    assert not proof.answerable
+    assert proof.reason == (
+        "last-seen state is stale relative to a typed change event"
     )
 
 

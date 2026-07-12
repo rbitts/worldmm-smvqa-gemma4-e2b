@@ -4,7 +4,7 @@
 | --- | --- |
 | Page ID | SM-EXP-0001 |
 | Experiment ID | EXP-0001 |
-| Confluence parent | Spatial Memory / Experiments |
+| Confluence parent | SM-EXPERIMENTS |
 | Status | Local sanity completed |
 | Evidence level | Tiny synthetic fixture and mock QA; not benchmark |
 | Last reviewed | 2026-07-11 |
@@ -101,6 +101,11 @@ Local sanity only; not a SuperMemory-VQA benchmark result.
 모든 local go condition을 통과했다. `legacy diagnostic`은 source-derived record의
 JSONL 비교값이다. Dense G-CUT3R feature, binary device encoding, latency, energy,
 실제 장기 revisit growth를 측정한 값이 아니다.
+
+**C-002 local result:** bounded source-compact memory retained 15 records and
+6,050 JSONL bytes versus 216 records and 96,456 bytes in the legacy diagnostic,
+a 15.94x reduction. This verifies only the heuristic tiny-fixture path; it does
+not verify learned typed memory or lifelong convergence.
 
 ## Run provenance
 

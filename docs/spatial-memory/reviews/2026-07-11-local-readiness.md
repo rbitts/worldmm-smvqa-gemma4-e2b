@@ -24,7 +24,8 @@ and determined where it stops before deployment.
 
 ## Closed Correctness Findings
 
-- count and last-seen no longer treat bounded retrieval as a complete index;
+- count and last-seen treat neither bounded retrieval nor the byte-budgeted
+  typed artifact as a complete index;
 - latest-state selection prefers fresh causal records and rejects conflicts;
 - typed objects enter the geometry executor through an explicit adapter;
 - missing coordinate frames cannot silently match arbitrary frames;

@@ -4,7 +4,7 @@
 |---|---|
 | Page ID | SM-REVIEWS |
 | Status | Index |
-| Parent | [Spatial Memory project](../README.md) |
+| Confluence parent | SM-ROOT |
 
 Dated reviews are immutable audit snapshots. Current implementation status lives
 in [Current Status](../status.md).

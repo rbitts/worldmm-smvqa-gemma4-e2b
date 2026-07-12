@@ -4,7 +4,7 @@
 | --- | --- |
 | Page ID | SM-EXP-0003 |
 | Experiment ID | EXP-0003 |
-| Confluence parent | Spatial Memory / Experiments |
+| Confluence parent | SM-EXPERIMENTS |
 | Status | Planned |
 | Evidence level | Not run |
 | Last reviewed | 2026-07-11 |

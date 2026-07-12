@@ -29,6 +29,7 @@ def build_qa_prompt(
     proofs = [proof.model_dump(mode="json") for proof in geometry_proofs]
     frame_manifest = [
         {
+            "video_id": frame.video_id,
             "frame_ref": frame.frame_ref,
             "timestamp": frame.timestamp,
         }

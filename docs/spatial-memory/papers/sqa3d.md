@@ -13,19 +13,19 @@
 
 ## 30-second summary
 
-SQA3D asks questions from a described agent position and orientation inside a complete 3D scene. Situation input and auxiliary pose supervision improve QA, supporting explicit wearer coordinate frames and pose-aware learning. It evaluates static, fully scanned indoor scenes, not causal sparse-stream memory.
+SQA3D는 완전한 3D 장면 내에서 설명된 에이전트 위치와 방향에서 질문을 한다. 상황 입력 및 보조 포즈 감독은 QA를 개선하여 명시적인 착용자 좌표 프레임 및 포즈 인식 학습을 지원한다. 인과적인 희소 스트림 메모리가 아닌 정적, 전체 스캔된 실내 장면을 평가한다.
 
 ## Problem addressed
 
-Scene-level QA can ignore where an embodied agent stands and faces. SQA3D requires a model to understand a textual situation, ground the implied position and orientation in a 3D scan, and answer spatial, navigation, commonsense, and multi-hop questions from that situated perspective.
+장면 수준 QA는 구현된 에이전트가 서 있고 향하는 위치를 무시할 수 있다. SQA3D는 텍스트 상황을 이해하고, 3D 스캔에서 암시된 위치와 방향을 기반으로 하며, 해당 상황의 관점에서 공간, 탐색, 상식 및 다중 홉 질문에 대답하는 모델이 필요하다.
 
 ## Relevant method
 
-- Collect descriptions and questions around agent situations in 650 ScanNet scenes.
-- Encode situation and question separately.
-- Use VoteNet object tokens, then cross-attend them to the situation and question.
-- Optionally supervise position and rotation heads alongside answer classification.
-- Evaluate exact-match accuracy over 706 answer candidates.
+- 650개의 ScanNet 장면에서 에이전트 상황에 대한 설명과 질문을 수집한다.
+- 상황과 질문을 별도로 인코딩한다.
+- VoteNet 개체 토큰을 사용한 다음 상황과 질문에 교차 참여한다.
+- 선택적으로 답변 분류와 함께 위치 및 회전 헤드를 감독한다.
+- 706개의 답변 후보에 대한 정확한 일치 정확도를 평가한다.
 
 ## Paper-reported evidence
 
@@ -40,25 +40,25 @@ Scene-level QA can ignore where an embodied agent stands and faces. SQA3D requir
 
 ## What this supports here
 
-- Coordinate-frame identity must be explicit for egocentric direction questions.
-- Pose supervision is a useful auxiliary objective for geometry-grounded QA.
-- Situation grounding should be evaluated separately from answer classification.
-- The project infers that explicit frame metadata and wearer pose should survive compression.
+- 자기중심적 방향 질문에 대해서는 좌표계 동일성이 명시적이어야 한다.
+- 포즈 감독은 기하학적 기반 QA에 유용한 보조 목표이다.
+- 상황 접지는 답변 분류와 별도로 평가되어야 한다.
+- 프로젝트는 명시적인 프레임 메타데이터와 착용자 포즈가 압축 후에도 유지되어야 한다고 추론한다.
 
 ## What it does not prove
 
-- Sparse 1 Hz reconstruction from RGB or pose drift handling.
-- Long-term memory, temporal identity, change events, or causal write policies.
-- Typed-record compression, actual-byte budgets, or on-device feasibility.
-- Results on dynamic scenes or SuperMemory-VQA.
+- RGB에서 희박한 1Hz 재구성 또는 포즈 드리프트 처리.
+- Long-term memory, 임시 ID, 변경 이벤트 또는 인과적 쓰기 정책.
+- 형식화된 레코드 압축, 실제 바이트 예산 또는 장치 내 실행 가능성.
+- 동적 장면 또는 SuperMemory-VQA에 대한 결과이다.
 
 ## Project reproduction status
 
-Not reproduced. SQA3D is retained as an external situated-QA reference and a possible auxiliary evaluation, not as evidence that the current memory writer is complete.
+재현되지 않았다. SQA3D는 현재 메모리 기록기가 완전하다는 증거가 아니라 외부 위치 QA 참조 및 가능한 보조 평가로 유지된다.
 
 ## References
 
-- Xiaojian Ma et al. [SQA3D: Situated Question Answering in 3D Scenes](https://openreview.net/forum?id=IDJx97BC38). ICLR 2023.
+- Xiaojian Maet al. [SQA3D: Situated Question Answering in 3D Scenes](https://openreview.net/forum?id=IDJx97BC38). ICLR 2023.
 - [Official project page](https://sqa3d.github.io/).
 - [Official repository](https://github.com/SilongYong/SQA3D).
 - [Official dataset release](https://zenodo.org/records/7792397).

@@ -71,7 +71,12 @@ def qwen_bindings(env: Mapping[str, str]) -> LLMMemoryBindings:
         return generate_transformers_multimodal(prompt, model_ref, ())
 
     def caption(path: Path) -> str:
-        frame = QAVideoFrame(frame_ref=path.stem, timestamp=0.0, path=path)
+        frame = QAVideoFrame(
+            video_id=path.parent.name,
+            frame_ref=path.stem,
+            timestamp=0.0,
+            path=path,
+        )
         return generate_transformers_multimodal(CAPTION_PROMPT, model_ref, (frame,))
 
     return LLMMemoryBindings(generate=generate, caption=caption)

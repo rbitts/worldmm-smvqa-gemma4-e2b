@@ -13,89 +13,46 @@
 
 ## 30-second summary
 
-This work trains an analysis transform, quantizer, entropy model, and synthesis
-transform jointly under a rate-distortion trade-off. Additive uniform noise
-acts as a differentiable training proxy for quantization, while the learned
-probability model estimates expected code length. The result established the
-now-standard principle that compression must optimize task distortion and rate
-together, rather than minimizing reconstruction error first and compressing
-afterward.
+이 작업은 속도-왜곡 절충 하에 분석 변환, 양자화기, 엔트로피 모델 및 합성 변환을 공동으로 훈련한다. 추가 균일 노이즈는 양자화를 위한 미분 가능한 훈련 프록시 역할을 하는 반면, 학습된 확률 모델은 예상 코드 길이를 추정한다. 그 결과, 재구성 오류를 먼저 최소화하고 나중에 압축하는 것이 아니라 압축이 작업 왜곡과 속도를 함께 최적화해야 한다는 현재 표준 원칙이 확립됐다.
 
-For this project, the relevant transfer is the objective, not the image codec:
-charge every candidate its real serialized-byte cost and retain information
-according to downstream geometry-QA distortion.
+이 프로젝트의 경우 이미지 코덱이 아닌 관련 전송이 목표이다. 모든 후보자에게 실제 직렬 바이트 비용을 청구하고 다운스트림 기하학(QA 왜곡)에 따라 정보를 유지한다.
 
 ## Problem addressed
 
-Hand-designed image codecs separately choose transforms, quantization, and
-entropy coding. Direct optimization is difficult because quantization is
-discrete and the true bitstream rate is not differentiable. The paper seeks an
-end-to-end trainable transform codec that operates at chosen points on the
-rate-distortion curve.
+직접 디자인한 이미지 코덱은 변환, 양자화 및 엔트로피 코딩을 별도로 선택한다. 양자화가 불연속적이고 실제 비트스트림 속도를 미분할 수 없기 때문에 직접적인 최적화는 어렵다. 이 논문에서는 속도 왜곡 곡선의 선택된 지점에서 작동하는 훈련 가능한 end-to-end 변환 코덱을 찾는다.
 
 ## Relevant method
 
-**Paper claim.** A nonlinear analysis transform maps an image into latent
-coefficients. Uniform scalar quantization produces discrete codes, and a
-nonlinear synthesis transform reconstructs the image. Training replaces
-quantization with additive uniform noise. A learned density model supplies a
-differentiable estimate of rate. The Lagrangian combines expected rate and
-distortion, with a trade-off parameter selecting the operating point.
+**논문 청구.** 비선형 분석 변환은 이미지를 잠재 계수로 매핑한다. 균일한 scalar quantization는 이산 코드를 생성하고 비선형 합성 변환은 이미지를 재구성한다. 훈련은 양자화를 추가 균일 노이즈로 대체한다. 학습된 밀도 모델은 미분 가능한 속도 추정치를 제공한다. 라그랑지안은 예상 속도와 왜곡을 동작점을 선택하는 절충 매개변수와 결합한다.
 
-The original transforms use convolutional stages and generalized divisive
-normalization. Those image-specific components are less relevant here than the
-joint rate-distortion formulation.
+원래 변환은 컨벌루션 단계와 일반화된 분할 정규화를 사용한다. 이러한 이미지별 구성 요소는 여기서 결합 속도 왜곡 공식보다 관련성이 낮다.
 
 ## Paper-reported evidence
 
-**Paper-reported result.** On held-out natural images, the authors report that
-the optimized codec generally improves rate-distortion performance over JPEG
-and JPEG 2000. They report improved visual quality across tested rates and
-support that observation with MS-SSIM measurements. The released project page
-also states that displayed rates and quality values were computed from learned
-transforms, uniform scalar quantization, and entropy-coded bitstreams. See the
-[official project page](https://www.cns.nyu.edu/~lcv/iclr2017/) and Section 4 of
-the [ICLR paper](https://openreview.net/pdf?id=rJxdQ3jeg).
+**논문 보고 결과.** 보존된 자연 이미지에서 저자는 최적화된 코덱이 일반적으로 JPEG 및 JPEG 2000에 비해 속도 왜곡 성능을 향상시킨다고 보고한다. 그들은 테스트된 속도에서 향상된 시각적 품질을 보고하고 MS-SSIM 측정을 통해 이러한 관찰을 뒷받침한다. 공개된 프로젝트 페이지에는 표시된 속도와 품질 값이 학습된 변환, 균일한 scalar quantization 및 엔트로피 코딩된 비트스트림에서 계산되었다고 명시되어 있다. [official project page](https://www.cns.nyu.edu/~lcv/iclr2017/) 및 [ICLR paper](https://openreview.net/pdf?id=rJxdQ3jeg)의 섹션 4를 참조한다.
 
-These are paper results for image reconstruction, not results for this spatial
-memory.
+이는 이미지 재구성에 대한 논문 결과이며 이 spatial memory에 대한 결과는 아니다.
 
 ## What this supports here
 
-**Project inference.** The project should optimize a rate-task-distortion
-objective in which rate is actual serialized bytes and distortion includes
-future QA, grounding, geometry, association, uncertainty, and causal failures.
-It supports comparing methods on a quality-versus-bytes Pareto curve and
-rejecting token count or nominal bit width as sufficient rate measurements.
+**프로젝트 추론.** 프로젝트는 비율이 실제 직렬화된 바이트이고 왜곡에 향후 QA, 접지, 기하학, 연관, uncertainty 및 인과적 오류가 포함되는 비율-작업-왜곡 목표를 최적화해야 한다. 이는 품질 대 바이트 파레토 곡선에 대한 방법 비교를 지원하고 토큰 수 또는 공칭 비트 폭을 충분한 속도 측정으로 거부한다.
 
-The repository's hard actual-byte writer follows this principle at the record
-selection boundary. That implementation is an application of the idea, not a
-reproduction of the paper's codec.
+저장소의 하드 실제 바이트 기록기는 레코드 선택 경계에서 이 원칙을 따릅니다. 그 구현은 논문의 코덱을 재현한 것이 아니라 아이디어를 적용한 것이다.
 
 ## What it does not prove
 
-- Pixel reconstruction distortion is not geometry-grounded QA distortion.
-- A continuous image entropy model does not define costs for heterogeneous
-  object, plane, portal, landmark, or event records.
-- The paper does not solve unknown future questions, entity association,
-  coordinate frames, provenance, or temporal validity.
-- It does not show that learned entropy estimates match this project's final
-  serialization format.
-- It does not evaluate SuperMemory-VQA, sparse 1 Hz sensing, repeated visits, or
-  AI-glass deployment.
+- 픽셀 재구성 왜곡은 기하학적 기반 QA 왜곡이 아니다.
+- 연속 이미지 엔트로피 모델은 이종 객체, 평면, 포털, 랜드마크 또는 이벤트 기록에 대한 비용을 정의하지 않는다.
+- 이 논문은 알려지지 않은 미래 질문, 개체 연관, 좌표계, provenance 또는 시간적 유효성을 해결하지 않는다.
+- 학습된 엔트로피 추정치가 이 프로젝트의 최종 직렬화 형식과 일치하는지 표시하지 않는다.
+- SuperMemory-VQA, 희박한 1Hz 감지, 반복 방문 또는 AI-glass 배포는 평가하지 않는다.
 
 ## Project reproduction status
 
-**Project result.** The paper's image codec has not been reproduced. The local
-pipeline does enforce actual serialized-byte caps for explicit records, but no
-learned entropy model or end-to-end rate-distortion experiment has run. A valid
-future result must report the exact serialization version, bytes, QA metrics,
-geometry metrics, and Pareto operating points together.
+**프로젝트 결과.** 논문의 이미지 코덱은 재현되지 않았다. 로컬 파이프라인은 명시적 레코드에 대해 실제 직렬화된 바이트 한도를 적용하지만 학습된 엔트로피 모델이나 end-to-end 속도 왜곡 실험은 실행되지 않았다. 유효한 향후 결과는 정확한 직렬화 버전, 바이트, QA 측정항목, 기하학 측정항목 및 Pareto 작동 지점을 함께 보고해야 한다.
 
 ## References
 
-- Ballé, Laparra, and Simoncelli. [End-to-end Optimized Image
-  Compression](https://openreview.net/pdf?id=rJxdQ3jeg). ICLR 2017.
-- Authors' [official project, source, and model page](https://www.cns.nyu.edu/~lcv/iclr2017/).
-- TensorFlow. [TensorFlow Compression](https://github.com/tensorflow/compression),
-  linked by the authors as the maintained Python compression implementation.
+- 발레, 라파라, 시몬첼리. [End-to-end Optimized Image Compression](https://openreview.net/pdf?id=rJxdQ3jeg). ICLR 2017.
+- 저자의 [official project, source, and model page](https://www.cns.nyu.edu/~lcv/iclr2017/).
+- 텐서플로우. [TensorFlow Compression](https://github.com/tensorflow/compression)는 작성자가 유지 관리되는 Python 압축 구현으로 연결했다.

@@ -141,13 +141,17 @@ G-CUT3R is an external teacher contract, not a bundled dependency. An external
 provider receives one causal observation plus only the previous opaque state and
 must emit typed records. The cache records backend/provider identity, request and
 response digests, prefix hash continuity, state references, and observation
-cutoffs. The package never downloads or imports G-CUT3R automatically. Remote
-provider paths use:
+cutoffs. The package never downloads or imports G-CUT3R automatically. The
+staged DAG accepts only:
 
-- `WORLDMM_GCUT3R_CODE_PATH`
-- `WORLDMM_GCUT3R_CHECKPOINT_PATH`
 - `WORLDMM_GCUT3R_EXTRACTOR` for the staged DAG, or
   `WORLDMM_TEACHER_CACHE_INPUT` for a precomputed cache
+
+The approved extractor is a trusted wrapper and owns its G-CUT3R code,
+checkpoint loading, and provenance. Each distributed rank must write exactly
+one non-empty rank shard. After merge, the request multiset must equal selected
+sensor `(video_id, frame_ref, timestamp)` observations exactly, which also
+rejects duplicate requests across ranks.
 
 Validate and materialize an external cache:
 
@@ -164,9 +168,30 @@ python -m worldmm_smvqa.teacher_materializer \
 The materializer performs a complete one-to-one join between digest-validated
 teacher records and supervision, rejects split leakage and target mismatch, and
 uses the typed record's actual serialized byte cost.
+For a precomputed cache, remote preflight and merge additionally require its
+request `(video_id, frame_ref, timestamp)` tuples to equal the selected sensor
+manifest observations exactly, with no missing or extra request.
+Production cache/extractor output rejects
+`pose_guidance.source=ground_truth`; only `imu`, `vio`, or `slam` pose guidance
+is accepted.
 
-Prepare selector rows only from an explicit counterfactual utility cache and
-split manifest:
+`WORLDMM_STUDENT_SUPERVISION_INPUT` is UTF-8 JSONL. Each row has this schema:
+
+```json
+{"observation_id":"obs-0001","memory_id":"mem-0001","group_id":"participant-001/session-001","split":"train","features":[0.1,0.2],"teacher_embedding":[0.3,0.4],"geometry_target":[1.0,2.0,3.0],"association_target":0}
+```
+
+There must be exactly one row for every teacher
+`(observation_id, memory_id)` key. Vectors must be non-empty finite arrays with
+consistent dimensions per field across the file. Both `train` and `validation`
+must exist; a `group_id` cannot cross splits; training association IDs must be
+contiguous from zero; validation may use only association IDs seen in training.
+The repository validates and joins these supplied targets but does not derive
+their geometry or embedding values.
+
+The following selector preparation is a separate P2 research scaffold, not an
+input to the staged typed DAG. Use it only with an explicit counterfactual
+utility cache and split manifest:
 
 ```bash
 python -m worldmm_smvqa.spatial_selector_train prepare \
@@ -216,14 +241,30 @@ unanswerable proof. Count requires an explicit complete-index certificate. Model
 output may persist only known answerable proof IDs. Current memory IDs can still
 encode entity labels; an opaque-ID layer remains future work.
 
+Relative-direction proofs accept only raw IMU or explicitly online-causal VIO
+pose samples. Each sample must carry `observed_through_time` between its pose
+timestamp and question time; offline SLAM, ground-truth/model pose, and missing
+or future certificates abstain.
+
+Student QA independently converts canonical `typed_memory.jsonl` back through
+the retrieval projection and requires every spatial evidence item to exact-match
+its memory ID, video, snippet, frame refs, time range, and geometry. The
+byte-budgeted typed artifact is not a complete entity index. Count and last-seen
+abstain. Pair proofs also require explicit entity IDs in the question unless an
+end-to-end completeness certificate establishes label uniqueness; the generated
+production DAG does not issue one. Pair proofs use the records' actual local
+frame and reject cross-video pairs.
+
 ## Learned-Path Boundary
 
-Local preparation does not yet close the learned end-to-end path. Missing pieces
-are checkpoint inference, type-specific geometry decoding, open-world
-association, and generation of student-backed spatial evidence. The staged DAG
-therefore fails closed on externally supplied teacher, supervision, utility,
-split, and student-evidence artifacts. The source-compact path is a tested
-heuristic baseline, not evidence that the learned G-CUT3R student is reproduced.
+Local preparation does not contain the production encoder, type-specific
+geometry decoder, or open-world association implementation. The staged DAG
+therefore requires an approved external teacher extractor or causal cache,
+explicit student supervision, and `WORLDMM_SPATIAL_INFER_EXE`. It builds
+student-backed evidence itself from returned typed records; prebuilt student
+evidence, counterfactual utility, and selector split files are not staged-DAG
+inputs or substitutes. The source-compact path remains a tested heuristic
+baseline, not evidence that the learned G-CUT3R student is reproduced.
 
 ## 1 Hz Sensor Input Contract
 
@@ -274,8 +315,11 @@ frame questions route `visual` first. Disabled stores are never selected.
 Every evidence pack includes `retrieval_trace` with eligible shard ids, selected
 clip ids, policy route, store order, candidate counts, causal-filter count, and
 frame-ref count. The QA prompt includes both `sampled_video_frames_json` and
-`retrieved_evidence_json`; real Gemma runs use the sampled frame files as
-multimodal image inputs.
+`retrieved_evidence_json`; every sampled-frame row carries `video_id`,
+`frame_ref`, and `timestamp`. Prediction audit refs use the unambiguous
+`<video_id>/<frame_ref>` form. Real Gemma runs use the sampled frame files as
+multimodal image inputs. Prompt and resume contracts are
+`qa-prompt-prediction-schema-v4` and `qa-resume-manifest-v5`.
 
 ## Spatial Diagnostics And Ablations
 
@@ -302,8 +346,12 @@ uv run worldmm-smvqa smoke \
 
 ## Remote Launch
 
-Generate a launch plan locally. Do not submit or start remote work without
-explicit approval.
+`HANDOFF.md` is the operational source of truth for company execution. Read
+[WorldMM-SMVQA Experiment Handoff](HANDOFF.md) before generating or approving a
+plan. This section only summarizes the production typed DAG.
+
+Generate a plan locally. Plan generation performs no SSH, download, model run,
+or Slurm submission:
 
 ```bash
 uv run worldmm-smvqa launch-remote \
@@ -312,115 +360,110 @@ uv run worldmm-smvqa launch-remote \
   --out .omo/evidence/worldmm-smvqa/remote-plan
 ```
 
-Core environment variables used by remote config and scripts:
-
-- `WORLDMM_SMVQA_ALLOW_REMOTE_ON_THIS_HOST=1`
-- `WORLDMM_SMVQA_REMOTE_APPROVED=1`
-- `BASTION_HOST`
-- `HEAD_NODE`
-- `REMOTE_JOB_LAUNCHER`
-- `SMVQA_DATA_ROOT`
-- `SMVQA_FRAME_ROOT` (optional, default `$SMVQA_DATA_ROOT/frames`)
-- `GEMMA_MODEL_PATH`
-- `WORLDMM_OUTPUT_ROOT`
-- `WORLDMM_REMOTE_NODES`
-- `WORLDMM_GPUS_PER_NODE`
-- `WORLDMM_DDP_LAUNCHER`
-- `WORLDMM_TRITON_CACHE_ROOT` (optional node-local root; QA appends global rank)
-- `WORLDMM_SENSOR_FRAME_MANIFEST` (generated run-scoped 1 Hz RGB inventory)
-- `REMOTE_JOB_ID_OR_PROCESS_REF`
-- `WORLDMM_RUN_ID`
-- `WORLDMM_REMOTE_REPO`
-- `WORLDMM_SPATIAL_BYTE_BUDGET` (optional, default `4096` per 30s complete-token window)
-- `WORLDMM_TRAIN_EPOCHS`, `WORLDMM_TRAIN_BATCH_SIZE`,
-  `WORLDMM_TRAIN_HIDDEN_DIM`, `WORLDMM_TRAIN_LEARNING_RATE`
-- `WORLDMM_TRAIN_RESUME` (optional existing checkpoint path; missing/empty files fail)
-- `WORLDMM_MODEL_ID` (optional, default `google/gemma-4-E2B-it`)
-- `HF_TOKEN` (remote only, required for the gated Gemma download)
-
-The staged DAG intentionally fails closed unless externally produced inputs are
-provided:
-
-- `WORLDMM_GCUT3R_EXTRACTOR` **or** `WORLDMM_TEACHER_CACHE_INPUT`
-- `WORLDMM_STUDENT_SUPERVISION_INPUT`
-- `WORLDMM_UTILITY_CACHE_INPUT`
-- `WORLDMM_SPLIT_MANIFEST_INPUT`
-- `WORLDMM_QA_EVIDENCE_INPUT` (evidence generated from the trained student path)
-
-CPU/GPU resource controls include `WORLDMM_CPU_PARTITION`,
-`WORLDMM_GPU_PARTITION`, and the `WORLDMM_{PREFLIGHT,TEACHER,UTILITY,TRAIN,REPORT}_*`
-node/CPU/GPU/memory/time variables. GPU stages inherit the project contract of
-10 nodes and 8 GPUs per node; set
-`WORLDMM_TEACHER_NODES`, `WORLDMM_TRAIN_NODES`, and their GPU counts explicitly
-lower for an approved bounded probe.
-
-Remote-only commands also require `runtime.location=remote` in the selected
-config.
-
-## Remote Setup
-
-On the remote host (via bastion/head node), install the inference stack once:
-
-```bash
-uv sync --extra remote
-```
-
-The generated plan writes a legacy single-job script plus the preferred staged
-DAG:
+Default `WORLDMM_DAG_PHASE=preflight` submits one CPU preflight job. An operator
+then reviews `diagnostics/preflight_inputs.sha256`,
+`diagnostics/env_contract.json`, the frame/model fingerprints, and warnings;
+creates the run-scoped approval JSON; and invokes `WORLDMM_DAG_PHASE=run`. The
+approved run submits exactly seven `afterok` stages:
 
 ```text
-preflight_ingest (CPU)
-  -> teacher_extract (GPU)
-  -> merge_utility (CPU)
-  -> train_qa (GPU, torch.distributed/DDP)
-  -> metrics_report (CPU)
+preflight_ingest
+  -> operator approval
+  -> teacher_extract
+  -> merge_materialize
+  -> train
+  -> build_memory
+  -> student_infer_retrieve
+  -> qa
+  -> metrics_report
 ```
 
-Each dependency uses Slurm `afterok`; any failed or missing prerequisite blocks
-all downstream work. Submission is guarded by a run-scoped lock, validates
-numeric `sbatch --parsable` IDs, writes every job ID to
-`summary/dag_jobs.env`, and keeps outputs under a unique
-`$WORLDMM_OUTPUT_ROOT`. The submitter independently requires and exports
-`WORLDMM_SMVQA_REMOTE_APPROVED=1`; `WORLDMM_OUTPUT_ROOT` must end exactly in
-`/$WORLDMM_RUN_ID`.
+`probe` is the default profile and requires a reduced
+`WORLDMM_PROBE_FIXTURE`; it rejects the full prepared-data root and allocations
+above 1 node x 1 GPU. Full scale needs a new run ID, preflight inventory,
+environment contract, and explicit approval.
 
-External teacher extraction runs one worker per allocated GPU. Each invocation
-receives `--rank`, `--world-size`, the generated 1 Hz
-`--sensor-frame-manifest`, and a unique `rank-NNNNN.jsonl` output path. Empty,
-missing, stale, or incomplete shard sets stop the DAG.
+Probe additionally caps each fixture JSONL and supervision at 64 MiB,
+supervision/materialized rows at 10,000, teacher cache at 256 MiB, source rows at
+4, raw frame metadata at 600, and typed output at 10,000 records/16 MiB. These
+are fail-closed probe guards; they do not alter the separately approved full
+profile.
 
-The generated plan prints three copy/paste commands, in order:
+Learned inference requires executable `WORLDMM_SPATIAL_INFER_EXE`. Preflight
+must receive exactly `worldmm-spatial-infer-v1` from `--contract-version` and
+`worldmm-spatial-infer-v1:self-test-ok` from `--self-test`. The latter checks
+lightweight CLI/schema/canonical-writer conformance, not model accuracy.
+Inference receives the checkpoint, frame root, sensor-frame manifest, and a
+sanitized copy at `inference_inputs/sources.jsonl`; questions, labels, training
+supervision, model paths, and approval data are not passed to it.
+It also receives SHA-256 values for sanitized sources, the selected-frame
+content manifest, and the producer executable. Its manifest must echo
+`sources_sha256`, `frame_assets_sha256`, and `producer_sha256`; the repository
+recomputes them independently.
+Student QA repeats those exact comparisons using
+`--inference-sources`, `--frame-assets-manifest`, and
+`--inference-producer`; its resume manifest binds the sanitized source and
+producer bytes.
 
-1. `rsync` the repo to `$WORLDMM_REMOTE_REPO` on company storage.
-2. `rsync` the generated plan directory to `$WORLDMM_REMOTE_REPO/remote-plan/`.
-3. `ssh` through `$BASTION_HOST` and `$HEAD_NODE` to run
-   `remote-plan/submit_worldmm_smvqa_dag.sh`.
+Preflight first applies the run's at-most-1-Hz sensor manifest, then clears
+transcript, transcript spans, captions, OCR, object labels, and object
+detections. It retains source identity/time, pose/gaze, selected `frame_refs`,
+and selected frame metadata with descriptions erased. Only selected frame files
+are copied under `inference_inputs/frames/`; all post-preflight adapters and QA
+receive that run-scoped copied root, never the full original frame root.
+External adapters are approved trusted executables with a known-variable
+denylist, not sandboxed `env -i` processes. Ambient `PATH`, `HOME`, `PYTHONPATH`,
+and Slurm state remain; use a separate hardened runtime for untrusted code.
 
-Both `rsync` commands use the same default remote repository as the SSH command
-and exclude `.env*`. `expected_outputs.json` lists only outputs produced by the
-preferred DAG; its job reference points to `summary/dag_jobs.env`.
+The executable must write canonical typed JSONL plus a production manifest.
+Records are validated with `window_seconds=30.0`, grouped by
+`(source_video_id, floor(first_seen_time / 30.0))`, and limited by
+`WORLDMM_SPATIAL_BYTE_BUDGET_PER_WINDOW=4096` by default. The repository
+recounts canonical UTF-8 JSONL bytes and revalidates checkpoint, sensor, record,
+record-count, window-count, maximum-window-byte, and total-byte fields before
+retrieval.
+Validation streams JSONL and rejects any canonical record row above 1 MiB.
 
-Plan generation never opens SSH, runs a remote shell, downloads an artifact, or
-submits a job. The DAG also does not fabricate teacher caches, supervision,
-counterfactual utility, split assignments, or student-backed evidence; missing
-inputs stop their stage with a clear shell error.
+QA then requires real frames and
+`retrieval/evidence_packs.jsonl.lineage.json`, bound to evidence, checkpoint,
+typed memory, inference manifest, spatial config,
+`manifests/sensor_frames.jsonl`, and run data. Preflight also writes
+`diagnostics/gemma_model.sha256` and `diagnostics/frame_assets.sha256` alongside
+the deployed-code/input inventory. `metrics_report` writes
+`metrics/metrics.json`, `summary/run_identity.json`,
+`summary/remote_manifest.json`, and
+`summary/final_report.md` from the recomputed digests and metrics.
 
-Frame assets for real QA must be readable as
-`$SMVQA_FRAME_ROOT/<video_id>/<frame_ref>.jpg` by default. Existing `.jpeg`,
-`.png`, or `.webp` files with the same stem are also accepted.
+Preflight also emits filename-inventory digests for selected frames and both
+model trees (`frame_assets.files.sha256`, `gemma_model.files.sha256`, and
+`memory_model.files.sha256`) plus the memory-model content fingerprint.
+Both model trees must be self-contained and symlink-free; local-only
+`AutoConfig`/`AutoProcessor` loading and every shard referenced by a weight index
+are checked before execution.
+Successful QA writes `qa/completed.json`, binding prediction and QA-resume
+manifest digests before `metrics_report` may consume them.
+Before evaluation, finalization writes `summary/finalization_inputs.sha256` over
+QA outputs, evidence lineage, config, sensor manifest, split files, and other
+run-critical inputs; it rechecks the seal after evaluation and includes it in
+the run identity.
 
-Remote reruns that should match the spatial retrieval contract must pass:
-
-```bash
---retrieval-protocol worldmm-smvqa --max-frame-refs 32
-```
+Profile determines the claim: `probe` emits `result_class=contract_probe` with
+experiment label `PROBE`; `full` emits `result_class=student` with label `E1`.
+Artifact filenames are profile-neutral; embedded profile/result class remains
+authoritative. Neither output is official E1/E2/E3.
+Official reporting remains blocked until three immutable, matched E1/E2/E3
+ablation identities are generated and validated. Missing production inputs,
+frames, lineage, or approval stops the DAG; no heuristic or prebuilt QA evidence
+substitutes for learned inference.
 
 ## No Local Downloads
 
 Do not download production models or full SuperMemory-VQA data locally. Do not
 run real training, real evaluation, Gemma inference, large preprocessing, or
 checkpoint creation on this host. Local outputs should be tiny fixtures, dry-run
-plans, reports, logs, summaries, and small sample artifacts only.
+plans, reports, logs, summaries, and small sample artifacts only. Remote
+copyback is limited to metrics, reviewed non-sensitive diagnostics, redacted
+lightweight logs/plots, summaries, and explicitly approved small samples.
 
 ## Metrics
 

@@ -15,58 +15,42 @@
 
 ## 30-Second Summary
 
-Good Token Hunting reduces global-attention cost in visual geometry
-transformers by selecting key/value tokens in two stages: diverse frames first,
-then redundant tokens within retained frames. It is direct evidence that scene
-coverage and layer-aware selection matter for multi-view geometry compute. It
-is not evidence that the selected tokens form a durable or QA-sufficient memory.
+Good Token Hunting는 두 단계(다양한 프레임을 먼저 선택한 다음 보유된 프레임 내의 중복 토큰)에서 키/값 토큰을 선택하여 시각적 기하학 변환기에서 전역 주의 비용을 줄이다. 이는 multi-view 지오메트리 계산에 장면 적용 범위와 레이어 인식 선택이 중요하다는 직접적인 증거이다. 선택한 토큰이 내구성이 있거나 QA-충분한 메모리를 형성한다는 증거는 아니다.
 
 ## Problem Addressed
 
-Global attention over long multi-view sequences grows quadratically with input
-length. Uniform pruning can discard distinct viewpoints or geometry needed by
-later layers.
+긴 multi-view 시퀀스에 대한 글로벌 관심은 입력 길이에 따라 2차적으로 증가한다. 균일한 가지치기를 수행하면 이후 레이어에 필요한 개별 관측점이나 형상을 삭제할 수 있다.
 
 ## Relevant Method
 
-- Inter-frame selection preserves a diverse set of views to cover the scene.
-- Intra-frame selection removes further redundancy from retained views.
-- The intra-frame policy is layer-aware and uses global-attention entropy.
-- Selection restricts which key/value tokens each query attends to; it does not
-  serialize a persistent world model.
+- 프레임 간 선택을 통해 장면을 포괄하는 다양한 보기 세트가 유지된다.
+- 프레임 내 선택은 유지된 뷰에서 추가 중복성을 제거한다.
+- 프레임 내 정책은 레이어를 인식하며 글로벌 어텐션 엔트로피를 사용한다.
+- 선택은 각 쿼리가 처리하는 키/값 토큰을 제한한다. 지속적인 세계 모델을 직렬화하지 않는다.
 
 ## Paper-Reported Evidence
 
-The authors report more than 85% acceleration on scenes with 500 images while
-maintaining or sometimes improving the base model's geometry performance. The
-official project page also reports camera-pose experiments on 7-Scenes, Neural
-RGB-D, and TUM-Dynamics and reconstruction examples with each query attending
-to tokens from 25 of up to 500 frames.
+저자는 기본 모델의 형상 성능을 유지하거나 때로는 향상시키면서 500개의 이미지가 있는 장면에서 85% 이상의 가속을 보고한다. 공식 프로젝트 페이지에는 7-Scenes, Neural RGB-D 및 TUM-Dynamics에 대한 카메라 포즈 실험과 최대 500개 프레임 중 25개 프레임의 토큰에 참여하는 각 쿼리가 포함된 재구성 예제도 보고되어 있다.
 
-These are paper results, not results reproduced by this repository.
+이는 이 저장소에서 재현한 결과가 아닌 논문 결과이다.
 
 ## What This Supports Here
 
-- Separate view-level diversity from within-view token reduction.
-- Include spatial coverage and novelty in a candidate's utility rather than
-  relying only on a local confidence or attention score.
-- Evaluate selection against geometry and pose metrics, not only throughput.
-- Treat layer or representation stage as relevant when pruning transient
-  geometry features.
+- 뷰 내 토큰 감소와 뷰 수준 다양성을 분리한다.
+- 지역적 신뢰도나 주목도 점수에만 의존하기보다는 후보자의 유용성에 공간적 적용 범위와 참신성을 포함시키십시오.
+- 처리량뿐만 아니라 형상 및 포즈 측정 기준을 기준으로 선택을 평가한다.
+- 임시 기하학 특징을 잘라낼 때 레이어 또는 표현 단계를 관련성 있게 처리한다.
 
 ## What It Does Not Prove
 
-- That retained attention tokens preserve future geometry-grounded QA.
-- That the method works with approximately 1 Hz monocular AI-glass input.
-- That attention-compute reduction reduces persistent serialized bytes.
-- That the reported server-side speedup transfers to an on-device student.
+- 유지된 주의 토큰은 미래의 기하학적 기반 QA를 보존한다.
+- 이 방법은 약 1Hz 단안 AI-유리 입력에서 작동한다.
+- 이러한 주의 계산 감소는 지속적으로 직렬화된 바이트를 줄이다.
+- 보고된 서버 측 속도 향상이 기기 내 학생에게 전송된다.
 
 ## Project Reproduction Status
 
-Not reproduced. The repository has an independent causal, actual-byte writer
-and linear selector baseline, but no GoToHunt implementation or benchmark run.
-Any transfer from transient attention selection to persistent memory remains a
-project hypothesis.
+재현되지 않았다. 저장소에는 독립적인 인과, 실제 바이트 작성자 및 선형 선택기 기준이 있지만 GoToHunt 구현이나 벤치마크 실행은 없다. 일시적 주의 선택에서 persistent memory로의 전환은 프로젝트 가설로 남아 있다.
 
 ## References
 

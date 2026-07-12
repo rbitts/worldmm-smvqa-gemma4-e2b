@@ -45,7 +45,10 @@ external teacher cache + external supervision
 - Flat typed object, plane, portal, free-space, landmark, and event artifacts
   can enter retrieval. `no_write` records cannot enter persistent memory.
 - Geometry execution supports distance, near, relative direction, last-seen,
-  and count. Count and last-seen abstain without a complete-index certificate.
+  and count. Count and last-seen abstain without a complete-index certificate;
+  the byte-budgeted production typed artifact does not provide one. Pair proofs
+  require explicit entity IDs unless the same certificate proves label
+  uniqueness.
 - Proofs retain subject/object roles, frame, uncertainty, provenance, evidence,
   and all query parameters in a stable proof hash.
 - QA rejects unknown, missing, duplicate, off-scope, or future evidence packs.
@@ -92,8 +95,10 @@ external teacher cache + external supervision
   several disjoint moments require configurable diverse clip selection.
 - Query-time intervals such as "during placement" are not parsed into validity
   constraints.
-- Allocentric and egocentric direction need separate operators and wearer-pose
-  binding; missing yaw correctly causes abstention today.
+- Allocentric and egocentric direction need separate operators. Egocentric
+  direction now requires raw IMU or online-causal VIO wearer yaw with an
+  `observed_through_time` certificate; missing/offline/future pose evidence
+  correctly causes abstention.
 - Submap graph optimization, loop closure, ray-aware landmark replacement, and
   surprise evidence reservoir are schemas/design targets, not runtime systems.
 - External geometry and association supervision remain trusted inputs; teacher

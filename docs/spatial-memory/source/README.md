@@ -4,7 +4,7 @@
 |---|---|
 | Page ID | SM-SOURCE |
 | Status | Immutable source index |
-| Parent | [Spatial Memory project](../README.md) |
+| Confluence parent | SM-ROOT |
 
 Source pages preserve the origin of a research task. They are not architecture,
 paper evidence, or experiment results.

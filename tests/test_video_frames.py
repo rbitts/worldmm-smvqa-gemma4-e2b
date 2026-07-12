@@ -243,6 +243,51 @@ def test_samples_frames_across_selected_videos() -> None:
     assert support.path == Path("/frames/support/support-0.jpg")
 
 
+def test_frame_ref_cannot_escape_frame_root() -> None:
+    source = SourceStreamExample(
+        video_id="video",
+        start_time=0.0,
+        end_time=30.0,
+        frame_metadata=(
+            FrameMetadata(
+                frame_ref="../../outside",
+                timestamp=1.0,
+                description="unsafe",
+            ),
+        ),
+    )
+    question = _question("video", question_time=31.0)
+    pack = EvidencePack(
+        question_id=question.question_id,
+        video_id=question.video_id,
+        requested_stores=("visual",),
+        selected_stores=("visual",),
+        evidence_budget=0,
+        evidence=(),
+        causal_filtered_count=0,
+        retrieval_trace=RetrievalTrace(
+            protocols=("smvqa-video-rag",),
+            eligible_shard_ids=("video:0:30:shard_30m",),
+            selected_clip_ids=(),
+            policy_route="visual",
+            store_order=("visual",),
+            candidate_counts=(),
+            causal_filtered_count=0,
+            frame_ref_count=0,
+        ),
+    )
+
+    sampled = sample_video_frames(
+        (source,),
+        question,
+        pack,
+        frame_root=Path("/frames"),
+    )
+
+    assert len(sampled) == 1
+    assert sampled[0].path is None
+
+
 def _question(video_id: str, *, question_time: float) -> QuestionRequest:
     return QuestionRequest(
         question_id="q",

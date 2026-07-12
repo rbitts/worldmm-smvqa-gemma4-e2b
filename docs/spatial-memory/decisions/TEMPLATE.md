@@ -3,6 +3,7 @@
 | Metadata | Value |
 |---|---|
 | Page ID | SM-ADR-NNNN |
+| Confluence parent | SM-DECISIONS |
 | ADR | ADR-NNNN |
 | Status | Proposed |
 | Date | YYYY-MM-DD |

@@ -5,7 +5,7 @@
 | Page ID | SM-DECISIONS |
 | Status | Active decision index |
 | Last updated | 2026-07-11 |
-| Parent | [Spatial Memory project](../README.md) |
+| Confluence parent | SM-ROOT |
 
 이 디렉터리는 spatial-memory 설계 결정을 기록한다. 각 ADR은 한 가지 결정을
 문제, 근거, 구현, 검증 결과와 연결한다. Confluence로 옮길 때 이 페이지를
@@ -14,7 +14,7 @@
 | ID | 결정 | 상태 |
 |---|---|---|
 | [ADR-0001](adr-0001-explicit-typed-memory.md) | 영구 메모리를 explicit typed record로 저장 | Accepted; partially implemented |
-| [ADR-0002](adr-0002-gcut3r-as-teacher.md) | G-CUT3R를 외부 teacher로 사용 | Accepted design; implementation blocked |
+| [ADR-0002](adr-0002-gcut3r-as-teacher.md) | G-CUT3R를 외부 teacher로 사용 | Accepted; partially implemented |
 | [ADR-0003](adr-0003-value-per-byte-writer.md) | actual-byte 기준 value-per-byte writer 사용 | Accepted; partially implemented |
 | [ADR-0004](adr-0004-deterministic-geometry-proof.md) | geometry 답변을 deterministic proof로 제한 | Accepted; locally verified |
 
@@ -41,5 +41,5 @@ ADR의 Supersession에 링크한다. 실제 benchmark 결과는 ADR이 아니라
 
 ## 새 ADR 작성
 
-[ADR 템플릿](TEMPLATE.md)을 복사한다. 논문이 보고한 결과, 프로젝트의 설계
+Repository `docs/spatial-memory/decisions/TEMPLATE.md`를 복사한다. 논문이 보고한 결과, 프로젝트의 설계
 추론, 프로젝트에서 측정한 결과를 서로 다른 문장과 링크로 구분한다.
