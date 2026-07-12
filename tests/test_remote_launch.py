@@ -47,9 +47,10 @@ def test_launch_remote_dry_run_prints_bastion_ssh(tmp_path: Path) -> None:
     # Then: CLI prints the staged DAG command and opens no connection.
     assert result.returncode == 0
     assert 'ssh -J "$BASTION_HOST" "$HEAD_NODE"' in result.stdout
+    assert "WORLDMM_DAG_PHASE=preflight" in result.stdout
     assert "bash remote-plan/submit_worldmm_smvqa_dag.sh" in result.stdout
     assert "WORLDMM_SMVQA_REMOTE_APPROVED=1" not in result.stdout
-    assert "legacy single-job compatibility" in result.stdout
+    assert "legacy single-job compatibility" not in result.stdout
     assert "dry-run" in result.stdout
     default_repo = "/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b"
     assert (
@@ -61,7 +62,16 @@ def test_launch_remote_dry_run_prints_bastion_ssh(tmp_path: Path) -> None:
         in result.stdout
     )
     assert result.stdout.count("--exclude '.env*'") == 2
-    assert (out_dir / "run_worldmm_smvqa.sh").is_file()
+    assert '"${WORLDMM_CODE_SHA:?set the approved git SHA}"' in result.stdout
+    assert 'local_repo="$(git rev-parse --show-toplevel)"' in result.stdout
+    assert 'test -z "$(git -C "$local_repo" status --porcelain)"' in result.stdout
+    assert (
+        'test "$(git -C "$local_repo" rev-parse HEAD)" = "$WORLDMM_CODE_SHA"'
+        in result.stdout
+    )
+    assert '"$local_repo/"' in result.stdout
+    assert (out_dir / "submit_worldmm_smvqa_dag.sh").is_file()
+    assert not (out_dir / "run_worldmm_smvqa.sh").exists()
 
 
 def test_launch_remote_dry_run_requires_worldmm_output_root_config(

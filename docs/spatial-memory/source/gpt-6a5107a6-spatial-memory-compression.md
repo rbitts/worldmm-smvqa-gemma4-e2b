@@ -7,7 +7,7 @@
 | Conversation ID | `6a5107a6-2808-83e8-8e93-e63a1ca64ed4` |
 | Original title | Spatial Memory 압축 방법 |
 | Imported | 2026-07-11 |
-| Parent | [Source and provenance](README.md) |
+| Confluence parent | SM-SOURCE |
 | Canonical interpretation | [Spatial Memory project](../README.md) |
 
 ## Verbatim User Request

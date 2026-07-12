@@ -188,6 +188,7 @@ def test_qa_prompt_includes_sampled_video_frame_manifest() -> None:
     )
     frames = (
         QAVideoFrame(
+            video_id="fake_video_001",
             frame_ref="fake_video_001_frame_0008",
             timestamp=8.0,
             path=Path("/frames/fake_video_001/fake_video_001_frame_0008.jpg"),
@@ -200,6 +201,7 @@ def test_qa_prompt_includes_sampled_video_frame_manifest() -> None:
     # Then: memory text and sampled frame refs are both part of the model input.
     assert "<sampled_video_frames_json>" in prompt
     assert "fake_video_001_frame_0008" in prompt
+    assert '"video_id":"fake_video_001"' in prompt
     assert "<retrieved_evidence_json>" in prompt
 
 
@@ -239,7 +241,7 @@ def test_parse_qa_output_rejects_duplicate_or_missing_ranked_choices() -> None:
 
 
 def test_parse_qa_output_persists_only_trusted_answerable_geometry_proofs() -> None:
-    question = read_fixture_questions(FIXTURE)[0]
+    question = read_fixture_questions(FIXTURE)[4]
     proof = execute_geometry(
         (
             {
@@ -273,8 +275,8 @@ def test_parse_qa_output_persists_only_trusted_answerable_geometry_proofs() -> N
         ),
     )
     raw = (
-        '{"answerable":true,"ranked_choices":["A","B","C","D"],'
-        '"answer":"A","confidence":0.8,"supporting_memory_ids":[],'
+        '{"answerable":true,"ranked_choices":["C","A","B","D"],'
+        '"answer":"C","confidence":0.8,"supporting_memory_ids":[],'
         f'"geometry_proof_ids":["{proof.proof_id}"]'
         "}"
     )

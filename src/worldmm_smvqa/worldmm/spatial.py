@@ -790,7 +790,11 @@ def _interpolated_pose(
                 x=left.x + (right.x - left.x) * ratio,
                 y=left.y + (right.y - left.y) * ratio,
                 z=left.z + (right.z - left.z) * ratio,
-                yaw=_interpolate_optional(left.yaw, right.yaw, ratio),
+                yaw_degrees=_interpolate_optional(
+                    left.yaw_degrees,
+                    right.yaw_degrees,
+                    ratio,
+                ),
                 coordinate_frame=left_frame,
             )
     raise InvalidSpatialInputError(

@@ -43,7 +43,9 @@ typed student의 deployed write gate에 end-to-end 연결되지는 않았다.
 - `src/worldmm_smvqa/spatial_selector_train.py`는
   explicit utility와 split manifest를 요구하는 별도 selector-training 경로다.
 - [local readiness review](../reviews/2026-07-11-local-readiness.md)는 selector와 typed student의
-  candidate space가 분리된 상태를 P0 blocker로 기록한다.
+  candidate space가 분리된 상태를 당시 P0 blocker로 기록했다. 현재
+  [status](../status.md)와 roadmap은 production bridge 실행과 분리해 P2 research
+  gap으로 분류한다.
 
 ## Alternatives considered
 

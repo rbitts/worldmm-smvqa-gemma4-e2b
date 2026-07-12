@@ -13,19 +13,19 @@
 
 ## 30-second summary
 
-MV-ScanQA composes questions so their relevant objects cannot usually be covered by one view. Its analysis and LEGO baseline show measurable gains from retaining complementary viewpoints and aligning groups of visible objects. It is a static ScanNet multi-view benchmark, not a temporal or lifelong memory benchmark.
+MV-ScanQA는 일반적으로 하나의 보기에서 관련 개체를 다룰 수 없도록 질문을 작성한다. 분석 및 LEGO 기준선은 보완적인 관점을 유지하고 눈에 보이는 개체 그룹을 정렬함으로써 측정 가능한 이득을 보여준다. 이는 임시 또는 평생 메모리 벤치마크가 아닌 정적 ScanNet multi-view 벤치마크이다.
 
 ## Problem addressed
 
-Most 3D vision-language benchmarks can be solved from a single favorable view, so they do not test integration across viewpoints. MV-ScanQA creates compositional questions whose relevant objects require multiple views and supplies TripAlign for view-dependent multi-object alignment.
+대부분의 3D 비전 언어 벤치마크는 하나의 유리한 관점에서 해결될 수 있으므로 여러 관점에서 통합을 테스트하지 않는다. MV-ScanQA는 관련 개체에 여러 보기가 필요한 구성 질문을 생성하고 보기 종속 다중 개체 정렬을 위해 TripAlign을 제공한다.
 
 ## Relevant method
 
-- Define an object as witnessed when its projected image overlap satisfies IoSA greater than 0.5.
-- Pair source questions that share an object anchor while each contributes non-subset object information.
-- Use an LLM to compose a verifiable question from the pair.
-- Build TripAlign with one million `<2D view, visible 3D-object set, text>` triplets.
-- Build LEGO on a 2D vision-language model plus a 3D detector and discard object proposals not visible in each selected view.
+- 투영된 이미지 중첩이 0.5보다 큰 IoSA를 충족할 때 객체를 목격된 것으로 정의한다.
+- 객체 앵커를 공유하는 쌍 소스 질문은 각각 비하위 객체 정보를 제공한다.
+- LLM를 사용하여 쌍에서 검증 가능한 질문을 작성한다.
+- 백만 개의 `<2D view, visible 3D-object set, text>` 세 쌍으로 TripAlign을 구축한다.
+- 2D vision-language model과 3D 감지기에 LEGO를 빌드하고 선택한 각 뷰에 표시되지 않는 개체 제안을 삭제한다.
 
 ## Paper-reported evidence
 
@@ -37,29 +37,29 @@ Most 3D vision-language benchmarks can be solved from a single favorable view, s
 | MV-ScanQA | LEGO single-view → four-view input, N≥4 | Exact match | 23.3 → 30.2 | Table 2 |
 | ScanQA | From scratch → egocentric extension → TripAlign | Exact match | 25.13 → 27.22 → 28.43 | Table 6 |
 
-The accepted paper reports 34.1 exact match for multi-view LEGO. The current official repository separately reports 33.7 from a cleaned evaluation script. These are distinct provenance records and must not be merged.
+승인된 논문에서는 multi-view LEGO에 대해 34.1개의 정확한 일치가 보고됐다. 현재 공식 저장소는 정리된 평가 스크립트에서 33.7을 별도로 보고한다. 이는 별개의 provenance 레코드이므로 병합하면 안 된다.
 
 ## What this supports here
 
-- View coverage and ray diversity belong in evidence selection.
-- Complementary views should not be discarded as spatial duplicates.
-- Entity-group alignment is a relevant training target for multi-object questions.
-- The project infers that ray-aware landmarks and provenance should retain which views support each entity.
+- 시야 범위와 광선 다양성은 증거 선택에 속한다.
+- 보완 뷰는 공간 복제로 폐기되어서는 안 된다.
+- 개체 그룹 정렬은 다중 개체 질문에 대한 관련 교육 목표이다.
+- 프로젝트는 광선 인식 랜드마크와 provenance가 각 엔터티를 지원하는 뷰를 유지해야 한다고 추론한다.
 
 ## What it does not prove
 
-- Temporal ordering, object persistence, or causal stream processing.
-- 1 Hz monocular geometry, IMU/VIO guidance, or lifelong revisit behavior.
-- Actual-byte compression or fixed-capacity persistent memory.
-- SuperMemory-VQA transfer.
+- 시간 순서, 개체 지속성 또는 인과 스트림 처리.
+- 1Hz 단안 기하학, IMU/VIO 안내 또는 평생 재방문 동작.
+- 실제 바이트 압축 또는 고정 용량 persistent memory.
+- SuperMemory-VQA 전송.
 
 ## Project reproduction status
 
-Not reproduced. A future comparison must pin both the paper metric and the official repository evaluation script because their reported exact-match values differ.
+재현되지 않았다. 보고된 정확한 일치 값이 다르기 때문에 향후 비교에서는 종이 지표와 공식 저장소 평가 스크립트를 모두 고정해야 한다.
 
 ## References
 
-- Wentao Mo et al. [Advancing 3D Scene Understanding with MV-ScanQA Multi-View Reasoning Evaluation and TripAlign Pre-training Dataset](https://doi.org/10.1145/3746027.3758244). ACM Multimedia 2025.
+- Wentao Moet al. [Advancing 3D Scene Understanding with MV-ScanQA Multi-View Reasoning Evaluation and TripAlign Pre-training Dataset](https://doi.org/10.1145/3746027.3758244). ACM 멀티미디어 2025.
 - [Official arXiv record](https://arxiv.org/abs/2508.11058).
 - [Official project and datasets](https://matthewdm0816.github.io/tripalign-mvscanqa/).
 - [Official repository](https://github.com/matthewdm0816/MVScanQA).

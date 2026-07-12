@@ -61,8 +61,18 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
   uncertainty limit를 요구한다.
 - `near` threshold와 direction boundary가 uncertainty interval과 겹치면 abstain한다.
 - `count`와 `last_seen`은 complete entity index certificate가 없으면 abstain한다.
-- Direction은 wearer yaw가 없으면 abstain하며, 현재 yaw convention을 executor에
-  명시한다.
+- 같은 certificate가 label uniqueness를 보장하지 않으면 pair operation도
+  question에 explicit entity ID가 있어야 한다. Retrieved top-k의 유일 label은
+  uniqueness 근거가 아니다.
+- Direction은 동일 spatial frame의 trusted causal wearer pose가 없으면 abstain한다.
+  Source JSON은 `yaw_degrees`와
+  `pose_covariance_xyz_m_rpy_deg=[x_m,y_m,z_m,roll_deg,pitch_deg,yaw_deg]`
+  row-major 6x6를 사용하며 covariance index 35는 degree²다. Yaw 0°는 +Y,
+  positive yaw는 +X 방향이고 yaw 0°에서 +X가 wearer-right다. Production
+  proof는 `(source=imu, processing_mode=raw)` 또는 `(source=vio,
+  processing_mode=online_causal)`인 pose와 `timestamp <= observed_through_time <=
+  question_time` certificate를 요구한다. Offline SLAM, ground-truth/model pose,
+  누락·미래 certificate는 거부한다.
 - Proof hash는 query parameters와 result, entity role, provenance, evidence를 포함한
   canonical payload에서 생성한다.
 - QA trust boundary는 unknown, duplicate, unanswerable proof ID와 choice contradiction을

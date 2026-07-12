@@ -35,12 +35,25 @@ def test_qa_resume_manifest_binds_inputs_backend_model_and_schema(
 
     assert manifest == {
         "backend": "mock",
+        "checkpoint_sha256": "",
+        "evidence_lane": "heuristic",
+        "evidence_lineage_sha256": "",
         "evidence_sha256": _sha256(args.evidence),
+        "frame_assets_sha256": "",
+        "inference_manifest_sha256": "",
+        "inference_producer_sha256": "",
+        "inference_sources_sha256": "",
+        "lineage_config_sha256": "",
         "manifest_version": QA_RESUME_MANIFEST_VERSION,
+        "memory_manifest_sha256": "",
         "model": "mock-model-v1",
+        "model_fingerprint_sha256": "",
         "prompt_schema_version": QA_PROMPT_SCHEMA_VERSION,
         "questions_sha256": _sha256(FIXTURE / "questions.jsonl"),
+        "require_frames": "false",
+        "sensor_frame_manifest_sha256": "",
         "sources_sha256": _sha256(FIXTURE / "sources.jsonl"),
+        "typed_memory_sha256": "",
     }
 
 
@@ -59,6 +72,12 @@ def test_qa_resume_rejects_changed_model(tmp_path: Path) -> None:
         model="mock-model-v2",
         fixture=args.fixture,
         evidence=args.evidence,
+        evidence_lane=args.evidence_lane,
+        evidence_lineage=args.evidence_lineage,
+        checkpoint=args.checkpoint,
+        typed_memory=args.typed_memory,
+        inference_manifest=args.inference_manifest,
+        require_frames=args.require_frames,
         out=args.out,
         backend=args.backend,
     )
@@ -82,6 +101,12 @@ def _completed_mock_run(tmp_path: Path) -> TransformersCliArgs:
         model="mock-model-v1",
         fixture=FIXTURE,
         evidence=smoke_dir / "evidence_packs.jsonl",
+        evidence_lane="heuristic",
+        evidence_lineage=None,
+        checkpoint=None,
+        typed_memory=None,
+        inference_manifest=None,
+        require_frames=False,
         out=tmp_path / "qa/predictions.jsonl",
         backend="mock",
     )

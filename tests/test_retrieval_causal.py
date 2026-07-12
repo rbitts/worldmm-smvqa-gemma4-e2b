@@ -20,6 +20,7 @@ from worldmm_smvqa.retrieval_types import (
     RetrievalMemoryRecord,
 )
 from worldmm_smvqa.schema import QuestionRequest, StreamChunk
+from worldmm_smvqa.worldmm.episodic_types import EpisodicNodeRecord
 from worldmm_smvqa.worldmm.semantic import SemanticTripleRecord
 from worldmm_smvqa.worldmm.spatial_compression import SpatialExperimentConfig
 from worldmm_smvqa.worldmm.spatial_types import SpatialTokenRecord
@@ -541,6 +542,115 @@ def test_retrieve_cli_uses_manifest_memory_artifacts(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     pack = EvidencePack.model_validate_json(output.read_text(encoding="utf-8"))
     assert tuple(item.memory_id for item in pack.evidence) == (artifact_memory_id,)
+
+
+def test_artifact_reader_streams_nonspatial_stores_by_video(tmp_path: Path) -> None:
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
+    videos = ("video-1", "video-2")
+    episodic = tuple(
+        EpisodicNodeRecord(
+            node_id=f"episodic:{video_id}",
+            video_id=video_id,
+            granularity="clip_30s",
+            start_time=0.0,
+            end_time=1.0,
+            source_chunk_id=f"chunk:{video_id}",
+            source_memory_ids=(),
+            source_modality_refs=(),
+            source_modalities=("rgb",),
+            frame_refs=(f"frame:{video_id}",),
+            confidence=1.0,
+            text_embedding_id=f"embedding:{video_id}",
+            summary=f"event in {video_id}",
+        )
+        for video_id in videos
+    )
+    semantic = tuple(
+        SemanticTripleRecord(
+            memory_id=f"semantic:{video_id}",
+            video_id=video_id,
+            subject="mug",
+            predicate="in",
+            object=video_id,
+            text=f"mug in {video_id}",
+            support_memory_ids=(f"episodic:{video_id}",),
+            support_event_count=1,
+            start_time=0.0,
+            end_time=1.0,
+            confidence=1.0,
+            text_embedding_id=f"embedding:semantic:{video_id}",
+        )
+        for video_id in videos
+    )
+    visual = tuple(
+        VisualMemoryRecord(
+            memory_id=f"visual:{video_id}",
+            video_id=video_id,
+            frame_ref=f"frame:{video_id}",
+            timestamp=0.5,
+            start_time=0.0,
+            end_time=1.0,
+            embedding_ref=f"embedding:visual:{video_id}",
+            ocr_refs=(),
+            object_refs=("mug",),
+            timestamp_grounding=f"{video_id}@0.5",
+            source_frame_description=f"frame in {video_id}",
+        )
+        for video_id in videos
+    )
+    paths = {
+        "episodic_memory": memory_dir / "episodic.jsonl",
+        "semantic_memory": memory_dir / "semantic.jsonl",
+        "visual_memory": memory_dir / "visual.jsonl",
+    }
+    for key, records in (
+        ("episodic_memory", episodic),
+        ("semantic_memory", semantic),
+        ("visual_memory", visual),
+    ):
+        _ = paths[key].write_text(
+            "".join(f"{record.model_dump_json()}\n" for record in records),
+            encoding="utf-8",
+        )
+    spatial = memory_dir / "spatial.jsonl"
+    _ = spatial.write_text("", encoding="utf-8")
+    manifest = memory_dir / "memory_manifest.json"
+    _ = manifest.write_text(
+        json.dumps(
+            {
+                **{key: str(path) for key, path in paths.items()},
+                "spatial_memory": {"path": str(spatial)},
+            },
+        ),
+        encoding="utf-8",
+    )
+
+    selected = read_retrieval_memory_artifacts(
+        manifest,
+        video_ids=("video-2",),
+    )
+
+    assert {(record.source_store, record.video_id) for record in selected} == {
+        ("episodic", "video-2"),
+        ("semantic", "video-2"),
+        ("visual", "video-2"),
+    }
+
+    evidence_scoped = read_retrieval_memory_artifacts(
+        manifest,
+        video_ids=("video-2",),
+        memory_ids_by_store={
+            "episodic": ("episodic:video-2",),
+            "semantic": (),
+            "visual": ("visual:video-2",),
+            "spatial": (),
+        },
+    )
+    assert {record.source_store for record in evidence_scoped} == {
+        "episodic",
+        "visual",
+    }
 
 
 def test_artifact_reader_restores_custom_spatial_codec(tmp_path: Path) -> None:

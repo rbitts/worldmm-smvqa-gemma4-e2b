@@ -33,7 +33,7 @@ def _common() -> dict[str, object]:
         "instance_id": "instance-1",
         "local_frame_id": "room-1",
         "geometry_uncertainty": SpatialUncertainty(
-            covariance_xyz=((0.1, 0.0, 0.0), (0.0, 0.1, 0.0), (0.0, 0.0, 0.2)),
+            covariance_xyz=((0.04, 0.0, 0.0), (0.0, 0.04, 0.0), (0.0, 0.0, 0.04)),
             standard_deviation_m=0.2,
         ),
         "validity": ValidityInterval(start_time=1.0, end_time=2.0),
@@ -233,6 +233,31 @@ def test_covariance_accepts_numerical_roundoff_at_psd_boundary() -> None:
     )
 
     assert uncertainty.covariance_xyz[0][1] == pytest.approx(1.0)
+
+
+def test_uncertainty_rejects_scalar_smaller_than_covariance_diagonal() -> None:
+    with pytest.raises(ValidationError, match="must cover covariance diagonal"):
+        _ = SpatialUncertainty(
+            covariance_xyz=(
+                (1_000_000.0, 0.0, 0.0),
+                (0.0, 1_000_000.0, 0.0),
+                (0.0, 0.0, 1_000_000.0),
+            ),
+            standard_deviation_m=0.0,
+        )
+
+
+def test_huge_finite_covariance_validates_without_numeric_overflow() -> None:
+    uncertainty = SpatialUncertainty(
+        covariance_xyz=(
+            (1e308, 0.0, 0.0),
+            (0.0, 1e308, 0.0),
+            (0.0, 0.0, 1e308),
+        ),
+        standard_deviation_m=1e154,
+    )
+
+    assert uncertainty.standard_deviation_m == 1e154
 
 
 @pytest.mark.parametrize(

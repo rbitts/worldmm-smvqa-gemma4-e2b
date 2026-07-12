@@ -4,7 +4,7 @@
 | --- | --- |
 | Page ID | SM-EXP-XXXX |
 | Experiment ID | EXP-XXXX |
-| Confluence parent | Spatial Memory / Experiments |
+| Confluence parent | SM-EXPERIMENTS |
 | Status | Planned |
 | Evidence level | Not run |
 | Last reviewed | YYYY-MM-DD |

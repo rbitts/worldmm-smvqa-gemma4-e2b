@@ -4,7 +4,7 @@
 | --- | --- |
 | Page ID | SM-EXP-0004 |
 | Experiment ID | EXP-0004 |
-| Confluence parent | Spatial Memory / Experiments |
+| Confluence parent | SM-EXPERIMENTS |
 | Status | Planned |
 | Evidence level | External-provider and cache contract checks only |
 | Last reviewed | 2026-07-11 |
@@ -35,8 +35,12 @@ supervision으로 materialize될 수 있다.
 | --- | --- |
 | Execution location | Company GPU resources only after explicit approval |
 | Repository behavior | G-CUT3R code, weights, model download을 번들하거나 자동 수행하지 않음 |
+| Extractor ownership | approved trusted wrapper owns G-CUT3R code/checkpoint loading and provenance |
+| Distributed output | every rank emits exactly one non-empty rank shard; no extra JSONL; merged requests contain no cross-rank duplicate |
 | Frame source | One run-scoped 1 Hz sensor-frame manifest shared by all variants |
+| Cache coverage | Request `(video_id, frame_ref, timestamp)` set must exactly equal selected sensor observations; no missing or extra request |
 | Causality | provider request cutoff and returned observation times must not exceed question/source cutoff |
+| Pose provenance | production cache/shards allow `imu`, `vio`, or `slam`; `ground_truth` is rejected |
 | Provider provenance | provider ID, code revision, checkpoint digest, config digest, guidance modalities required |
 | Cache provenance | request digest, response digest, manifest digest, source/split digest required |
 | Teacher variants | `gcut3r_external` and a declared fallback/cache variant under identical frames |
@@ -57,7 +61,7 @@ supports them without changing frames, checkpoint family, or evaluation data.
 
 | Metric or invariant | Go condition |
 | --- | --- |
-| Provider/cache validation | 100% of accepted rows match request, manifest, cutoff, and provenance digests |
+| Provider/cache validation | 100% of accepted rows match request, manifest, cutoff, and provenance digests; rank shards are one-per-rank and merged request multiset exactly matches selected frame/timestamp inventory |
 | Causal violations | 0 |
 | Geometry | ATE/RPE and type-specific geometry errors reported only where ground truth exists |
 | Materialization | train/validation groups remain disjoint; no missing required targets |

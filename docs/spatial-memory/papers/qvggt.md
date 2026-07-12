@@ -13,87 +13,51 @@
 
 ## 30-second summary
 
-QVGGT applies post-training quantization to the 1.2-billion-parameter VGGT
-geometry model. It combines block-sensitivity-based mixed precision, filtering
-of high-variance camera and register tokens during activation calibration, a
-PCA-derived camera-information compensation token, and task-aware quantization
-scale search across camera, depth, and point-map heads.
+QVGGT는 12억 매개변수 VGGT 기하학 모델에 사후 훈련 양자화를 적용한다. 이는 블록 감도 기반 혼합 정밀도, 활성화 교정 중 변동이 큰 카메라 및 레지스터 토큰 필터링, PCA- 파생 카메라 정보 보상 토큰, 카메라, 깊이 및 포인트 맵 헤드 전반에 걸친 작업 인식 양자화 스케일 검색을 결합한다.
 
-For this project, QVGGT is evidence that geometry models need geometry-aware
-quantization calibration. It is not evidence that quantizing a geometry model
-compresses the persistent spatial memory produced by that model.
+이 프로젝트에서 QVGGT는 기하학 모델에 기하학 인식 양자화 교정이 필요하다는 증거이다. 기하학 모델을 양자화하면 해당 모델에 의해 생성된 영구 spatial memory가 압축된다는 증거는 아니다.
 
 ## Problem addressed
 
-Generic post-training quantization treats transformer blocks and calibration
-tokens too uniformly. VGGT has heterogeneous block sensitivity and special
-camera and register tokens with high-variance activations. Their outliers can
-distort calibration and propagate error across camera pose, depth, and point-map
-predictions.
+일반적인 사후 훈련 양자화는 transformer 블록과 교정 토큰을 너무 균일하게 처리한다. VGGT는 이종 블록 감도와 특수 카메라 및 고분산 활성화 기능을 갖춘 레지스터 토큰을 갖추고 있다. 이상값은 보정을 왜곡하고 camera pose, 깊이 및 포인트 맵 예측 전반에 걸쳐 오류를 전파할 수 있다.
 
 ## Relevant method
 
-**Paper claim.** QVGGT uses three components:
+**서류 청구.** QVGGT는 세 가지 구성 요소를 사용한다.
 
-1. Per-block sensitivity analysis assigns higher precision to fragile
-   frame-wise or global transformer blocks.
-2. Camera and register tokens are omitted while collecting activation
-   statistics. A global compensation token derived by top-K PCA is injected
-   into the camera head to restore camera information.
-3. Quantization scales are selected with an objective combining layer
-   reconstruction, multi-head supervision, and cross-head geometric
-   consistency among pose, depth, and point maps.
+1. 블록별 민감도 분석은 취약한 부분에 더 높은 정밀도를 할당한다.
+2. 활성화를 수집하는 동안 카메라 및 등록 토큰이 생략된다.
+3. 양자화 스케일은 객관적인 결합 레이어로 선택된다.
 
-This is post-training model quantization: it changes weights and activation
-precision without defining a new long-term scene-memory schema.
+이는 훈련 후 모델 양자화이다. 새로운 장기 장면 메모리 스키마를 정의하지 않고 가중치와 활성화 정밀도를 변경한다.
 
 ## Paper-reported evidence
 
-**Paper-reported result.** The authors report near-lossless W4A16 results across
-camera-pose and reconstruction benchmarks. Relative to FP32, the abstract
-reports 3 to 4.9 times memory reduction and up to 2.8 times real-hardware
-speedup while preserving the accuracy of all three geometry heads. Evaluations
-cover camera pose on CO3Dv2 and RealEstate10K and reconstruction on 7-Scenes and
-Neural RGB-D. See the [CVPR paper](https://openaccess.thecvf.com/content/CVPR2026/papers/Pan_QVGGT_Post-Training_Quantized_Visual_Geometry_Grounded_Transformer_CVPR_2026_paper.pdf)
-and its supplementary material.
+**논문 보고 결과.** 저자는 카메라 포즈 및 재구성 벤치마크 전반에 걸쳐 거의 무손실 W4A16 결과를 보고한다. FP32와 비교하여 초록에서는 세 가지 지오메트리 헤드 모두의 정확성을 유지하면서 메모리가 3~4.9배 감소하고 실제 하드웨어 속도가 최대 2.8배 향상되었다고 보고한다. 평가에는 CO3Dv2 및 RealEstate10K의 camera pose와 7-Scenes 및 Neural RGB-D의 재구성이 포함된다. [CVPR paper](https://openaccess.thecvf.com/content/CVPR2026/papers/Pan_QVGGT_Post-Training_Quantized_Visual_Geometry_Grounded_Transformer_CVPR_2026_paper.pdf) 및 해당 보충 자료를 참조한다.
 
-These numbers are author-reported. No QVGGT result in this repository exists.
+이 숫자는 저자가 보고한 것이다. 이 저장소에는 QVGGT 결과가 없다.
 
 ## What this supports here
 
-**Project inference.** If a large visual-geometry teacher or compact student is
-quantized for deployment, calibration should preserve geometry-head outputs and
-cross-head consistency, not only transformer-layer reconstruction. Mixed
-precision should follow measured block sensitivity, and special pose-related
-tokens should receive explicit treatment.
+**프로젝트 추론.** 대규모 시각적 geometry teacher 또는 소형 학생이 배포를 위해 양자화되는 경우 보정은 transformer 레이어 재구성뿐만 아니라 형상 헤드 출력과 크로스 헤드 일관성을 보존해야 한다. 혼합 정밀도는 측정된 블록 감도를 따라야 하며 특수 포즈 관련 토큰은 명시적인 처리를 받아야 한다.
 
-QVGGT is therefore relevant to a later model-deployment phase. It does not
-replace the current priority: produce explicit typed records, validate their
-causal geometry proofs, and measure their serialized bytes.
+따라서 QVGGT는 이후 모델 배포 단계와 관련이 있다. 이는 현재 우선순위를 대체하지 않는다. 명시적인 유형의 레코드를 생성하고, 인과 기하학 증명을 검증하고, 직렬화된 바이트를 측정한다.
 
 ## What it does not prove
 
-- Model-weight and activation compression is not persistent-memory compression.
-- The paper does not select or serialize objects, planes, portals, landmarks,
-  free space, relations, or events.
-- It does not optimize future QA utility or repeated-visit memory growth.
-- It does not establish G-CUT3R, CUT3R, or project-student compatibility.
-- It does not evaluate 1 Hz lifelong streams, SuperMemory-VQA, or the target
-  AI-glass hardware.
-- The official project page does not currently provide code, so independent
-  reproduction details remain incomplete.
+- 모델 가중치 및 활성화 압축은 지속적이지 않는다.-memory compression.
+- 이 논문은 사물, 평면, 포털, 랜드마크, 여유 공간, 관계 또는 이벤트를 선택하거나 직렬화하지 않는다.
+- 향후 QA 유틸리티 또는 반복 방문 메모리 증가를 최적화하지 않는다.
+- G-CUT3R, CUT3R 또는 프로젝트-학생 호환성을 설정하지 않는다.
+- 1Hz 평생 스트림, SuperMemory-VQA 또는 대상 AI-glass 하드웨어는 평가하지 않는다.
+- 공식 프로젝트 페이지는 현재 코드를 제공하지 않으므로 독립적인 재생산 세부 사항은 불완전한 상태로 남아 있다.
 
 ## Project reproduction status
 
-**Project result.** Not reproduced. No QVGGT code, calibration data, quantized
-checkpoint, hardware profile, or benchmark artifact is present locally. The
-paper can currently justify a future geometry-aware PTQ ablation only; it
-cannot justify a claimed deployment result.
+**프로젝트 결과.** 재현되지 않는다. QVGGT 코드, 교정 데이터, 양자화된 체크포인트, 하드웨어 프로필 또는 벤치마크 아티팩트가 로컬에 존재하지 않는다. 이 논문은 현재 미래의 형상 인식 PTQ 절제만을 정당화할 수 있다. 주장된 배포 결과를 정당화할 수는 없다.
 
 ## References
 
-- Pan, Wang, and Wang. [QVGGT: Post-Training Quantized Visual Geometry Grounded
-  Transformer](https://openaccess.thecvf.com/content/CVPR2026/html/Pan_QVGGT_Post-Training_Quantized_Visual_Geometry_Grounded_Transformer_CVPR_2026_paper.html).
-  CVPR 2026.
-- Authors' [official QVGGT project page](https://ddsacu.github.io/QVGGT/).
-- Authors' [arXiv record, version 1](https://arxiv.org/abs/2605.31124).
+- 판, 왕, 왕. [QVGGT: Post-Training Quantized Visual Geometry Grounded Transformer](https://openaccess.thecvf.com/content/CVPR2026/html/Pan_QVGGT_Post-Training_Quantized_Visual_Geometry_Grounded_Transformer_CVPR_2026_paper.html). CVPR 2026.
+- 저자의 [official QVGGT project page](https://ddsacu.github.io/QVGGT/).
+- 저자의 [arXiv record, version 1](https://arxiv.org/abs/2605.31124).

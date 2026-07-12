@@ -13,19 +13,19 @@
 
 ## 30-second summary
 
-ScanQA couples free-form 3D question answering with localization of referenced objects. Its ablations show that object localization and semantic classification both improve answers. This supports explicit entity geometry and grounding losses, but the input is an already complete RGB-D scan rather than a compressed causal stream.
+ScanQA는 자유 형식 3D question answering와 참조 객체의 지역화를 결합한다. 절제는 객체 위치 파악과 의미 분류가 모두 답변을 향상시킨다는 것을 보여준다. 이는 명시적인 엔터티 형상 및 접지 손실을 지원하지만 입력은 압축된 인과 스트림이 아닌 이미 완전한 RGB-D 스캔이다.
 
 ## Problem addressed
 
-Image QA does not directly model 3D alignment, direction, or object grounding. ScanQA asks a model to answer questions about an entire indoor 3D scan and identify the 3D bounding boxes of the objects referred to by the question.
+이미지 QA는 3D 정렬, 방향 또는 객체 접지를 직접 모델링하지 않는다. ScanQA는 모델에게 전체 실내 3D 스캔에 대한 질문에 답하고 질문에서 참조되는 객체의 3D 경계 상자를 식별하도록 요청한다.
 
 ## Relevant method
 
-- Extract object proposals from colored point clouds with VoteNet and PointNet++.
-- Encode the question with a bidirectional LSTM.
-- Fuse object proposals and question features with transformer layers.
-- Jointly train answer classification, object localization, object classification, and detector losses.
-- Associate free-form answers with one or more referenced object IDs.
+- VoteNet 및 PointNet++를 사용하여 컬러 포인트 클라우드에서 개체 제안을 추출한다.
+- 양방향 LSTM로 질문을 인코딩한다.
+- 객체 제안과 질문 기능을 transformer 레이어와 융합한다.
+- 답변 분류, 객체 위치 파악, 객체 분류 및 검출기 손실을 공동으로 훈련한다.
+- 자유 형식 답변을 하나 이상의 참조 개체 ID와 연결한다.
 
 ## Paper-reported evidence
 
@@ -40,25 +40,25 @@ Image QA does not directly model 3D alignment, direction, or object grounding. S
 
 ## What this supports here
 
-- Answers should be grounded to persistent entity IDs and geometry.
-- Entity localization and semantic classification deserve explicit training losses.
-- Multiple referenced objects must be supported for relation questions.
-- The project infers that small entity-level geometry records can preserve this utility more directly than generic per-point features.
+- 답변은 지속적인 엔터티 ID 및 형상을 기반으로 해야 한다.
+- 엔터티 현지화 및 의미 분류에는 명시적인 훈련 손실이 필요하다.
+- 관계 질문에 대해 여러 참조 개체가 지원되어야 한다.
+- 프로젝트는 작은 엔터티 수준의 기하학 기록이 일반적인 포인트별 기능보다 이 유틸리티를 더 직접적으로 보존할 수 있다고 추론한다.
 
 ## What it does not prove
 
-- That dense point clouds should be retained as long-term memory.
-- Temporal identity, last-seen queries, movement events, or causal validity.
-- 1 Hz sparse RGB sensing, pose uncertainty, actual-byte budgets, or lifelong growth.
-- On-device or SuperMemory-VQA performance.
+- 밀도가 높은 포인트 클라우드는 long-term memory로 유지되어야 한다.
+- 시간적 정체성, 마지막으로 본 쿼리, 이동 이벤트 또는 인과 타당성.
+- 1Hz 희소 RGB 감지, 포즈 uncertainty, 실제 바이트 예산 또는 평생 성장.
+- 온디바이스 또는 SuperMemory-VQA 성능.
 
 ## Project reproduction status
 
-Not reproduced. ScanQA is a grounding-loss and external-evaluation reference. No ScanQA data or model artifacts were downloaded locally.
+재현되지 않았다. ScanQA는 접지 손실 및 외부 평가 기준이다. ScanQA 데이터 또는 모델 아티팩트가 로컬로 다운로드되지 않았다.
 
 ## References
 
-- Daichi Azuma et al. [ScanQA: 3D Question Answering for Spatial Scene Understanding](https://openaccess.thecvf.com/content/CVPR2022/html/Azuma_ScanQA_3D_Question_Answering_for_Spatial_Scene_Understanding_CVPR_2022_paper.html). CVPR 2022.
+- Daichi Azumaet al. [ScanQA: 3D Question Answering for Spatial Scene Understanding](https://openaccess.thecvf.com/content/CVPR2022/html/Azuma_ScanQA_3D_Question_Answering_for_Spatial_Scene_Understanding_CVPR_2022_paper.html). CVPR 2022.
 - [Official arXiv record](https://arxiv.org/abs/2112.10482).
 - [Official project, repository, and dataset instructions](https://github.com/ATR-DBI/ScanQA).
 - [Back to paper index](README.md).

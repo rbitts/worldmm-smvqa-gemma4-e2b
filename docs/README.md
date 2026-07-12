@@ -1,7 +1,19 @@
 # Documentation
 
+| Field | Value |
+|---|---|
+| Page ID | SM-DOCS |
+| Confluence parent | SPACE-HOME |
+| Page role | Repository documentation index |
+| Status | Active |
+
 This directory contains the repository's canonical design and research pages.
-Each Markdown file is intended to map to one Confluence page later.
+Canonical import scope is defined by the Spatial Memory import manifest; legacy
+sources and authoring templates are excluded.
+
+`SPACE-HOME` is the only external parent sentinel. Resolve it to the selected
+Confluence space landing page at import time; every other parent is a stable
+`SM-*` Page ID defined inside the canonical import set.
 
 ## Projects
 
@@ -9,7 +21,7 @@ Each Markdown file is intended to map to one Confluence page later.
 
 ## Operational Documents
 
-- [Repository quick start](../README.md)
+- Repository-only quick start: `README.md` at repository root (not imported)
 - [Company-compute handoff](../HANDOFF.md)
 
 ## Legacy Documents
@@ -17,13 +29,13 @@ Each Markdown file is intended to map to one Confluence page later.
 The following pages are retained as migration sources. New research and design
 updates belong under `docs/spatial-memory/`.
 
-- [Legacy spatial-token architecture](spatial-token-compression.md)
-- [Legacy research roadmap](spatial-token-research-roadmap.md)
-- [2026-07-11 implementation review](implementation-review.md)
+- `docs/spatial-token-compression.md`
+- `docs/spatial-token-research-roadmap.md`
+- `docs/implementation-review.md` (2026-07-11 snapshot)
 
 ## Markdown Contract
 
-- One file maps to one Confluence page.
+- Every file in the canonical import manifest maps to one Confluence page.
 - Every file has exactly one level-one heading.
 - Metadata uses ordinary Markdown tables, not YAML front matter.
 - Repository links are relative.

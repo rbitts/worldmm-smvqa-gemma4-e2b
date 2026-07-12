@@ -6,11 +6,9 @@
 | Status | Active evidence catalog |
 | Last checked | 2026-07-11 |
 | Paper pages | 42 |
-| Parent | [Spatial Memory project](../README.md) |
+| Confluence parent | SM-ROOT |
 
-Each paper has one page so it can become one Confluence child page. The page
-separates author-reported evidence, project inference, and project reproduction
-status. Publication or code availability is pinned to the `Last checked` date.
+각 논문에는 하나의 페이지가 있으므로 하나의 Confluence 하위 페이지가 될 수 있다. 이 페이지는 작성자가 보고한 증거, 프로젝트 추론 및 프로젝트 재현 상태를 구분한다. 출판 또는 코드 가용성은 `Last checked` 날짜로 고정된다.
 
 ## Target Benchmark and QA Evaluation
 
@@ -74,8 +72,7 @@ status. Publication or code availability is pinned to the `Last checked` date.
 | [FEATHER](feather.md) | Localization-aware pruning failure analysis | Coverage protection evidence |
 | [Geometry-Aware Token Pruning](geometry-aware-token-pruning.md) | Voxel-overlap pruning before 3D QA | Geometry-novelty baseline |
 
-These papers mainly reduce transient inference tokens. They do not establish a
-persistent typed spatial-memory byte budget.
+이 논문은 주로 일시적 추론 토큰을 줄이다. 영구 유형의 공간 메모리 byte budget를 설정하지 않는다.
 
 ## Discrete and Model Compression
 
@@ -105,14 +102,26 @@ persistent typed spatial-memory byte budget.
 
 ## Adding a Paper
 
-1. Copy [the paper template](TEMPLATE.md).
-2. Verify the primary paper, publication status, version, and official code.
-3. Add author-reported results with dataset, metric, and table or figure location.
-4. State what the paper does not prove for this project.
-5. Link supported claims, ADRs, and experiments.
-6. Add one row to this index.
+1. Repository `docs/spatial-memory/papers/TEMPLATE.md`를 복사한다.
+2. 주요 논문, 출판 현황, 버전, 공식 코드를 확인한다.
+3. 데이터세트, 측정항목, 테이블 또는 그림 위치와 함께 작성자가 보고한 결과를 추가한다.
+4. 이 프로젝트에 대해 논문이 증명하지 못한 점을 기술한다.
+5. 지원되는 주장, ADR 및 실험을 연결한다.
+6. 이 인덱스에 행을 하나 추가한다.
 
-Do not commit PDFs or copy long abstracts. Store primary links and concise
-project-relevant evidence.
+PDF를 커밋하거나 긴 초록을 복사하지 않는다. 기본 링크와 간결한 프로젝트 관련 증거를 저장한다.
+
+## Secondary Bibliography Policy
+
+- A primary source used to support, reject, or scope a project claim requires
+  its own paper page, index row, and reverse `C-*` mapping.
+- A secondary source used only for terminology, discovery, or background may
+  remain an external link inside the relevant paper page. Label it
+  `Secondary context`; do not use it as traceability evidence or reproduce its
+  numerical claim.
+- Promote a secondary source to a paper page before citing it in an ADR,
+  experiment hypothesis, result interpretation, or traceability row.
+- Survey and benchmark bibliographies are not recursively imported. The paper
+  index is a claim-evidence catalog, not an exhaustive bibliography.
 
 [Back to project home](../README.md)

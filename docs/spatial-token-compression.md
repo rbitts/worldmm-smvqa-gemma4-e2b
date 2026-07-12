@@ -168,6 +168,24 @@ manifest를 적용한다. 따라서 chunking, E/S/V/S memory 생성, retrieval, 
 sampling이 동일한 RGB inventory를 소비한다. Manifest와 원본 inventory가 달라지면
 실행을 중단한다.
 
+`PoseSample`의 canonical JSON은 단위를 이름에 고정한다.
+
+- `x`, `y`, `z`: meter
+- `roll_degrees`, `pitch_degrees`, `yaw_degrees`: degree
+- `pose_covariance_xyz_m_rpy_deg`: `[x_m, y_m, z_m, roll_deg, pitch_deg,
+  yaw_deg]` 순서의 row-major 6x6 covariance. index 35는 degree² 단위 yaw
+  variance다.
+
+Yaw 0°는 +Y, positive yaw는 +X 방향 회전이며 yaw 0°에서 +X가 wearer-right다.
+QA direction proof는 같은 `coordinate_frame`의 최신 pose 중 `(source=imu,
+processing_mode=raw)` 또는 `(source=vio, processing_mode=online_causal)`인 경우만
+사용한다. 또한 36-value covariance와 `timestamp <= observed_through_time <=
+question_time` certificate가 필요하다. Offline SLAM, ground-truth/model pose,
+누락·미래 certificate는 abstain한다. Legacy
+`yaw`/`pose_covariance` 입력 alias는 기존 준비 데이터 migration용으로만 읽고,
+새 ingest와 adapter 출력은 canonical field를 써야 한다. Radian field 이름은
+schema에서 거부한다.
+
 적용 시 선택되지 않은 frame과 frame-grounded OCR을 제거하고, 선택 timestamp와
 겹치지 않는 object detection도 제거한다. 기존 flat caption은 frame/timestamp
 provenance가 없으므로 sensed view에서 제외한다. 향후 caption provider는 manifest

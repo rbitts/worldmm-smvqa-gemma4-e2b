@@ -59,7 +59,13 @@ heuristic source-compact baseline까지다.
 ## Implementation
 
 - `src/worldmm_smvqa/worldmm/typed_memory.py`는 typed schema,
-  validity 검사, covariance 검사, canonical JSONL 직렬화를 제공한다.
+  validity 검사, covariance 검사, canonical JSONL 직렬화와 production
+  source/sensor grounding 검사를 제공한다. Observed/fused/human-confirmed
+  record의 bare `frame_ref` evidence는 같은 source video의 선택 frame이며
+  min/max timestamp가 first/last seen과 같고 unique ref 수가
+  `observation_count`와 같아야 한다. Window budget은 backdating을 막기 위해
+  `first_seen_time`을 사용한다. Production reader는 streaming하며 canonical
+  row 하나를 1 MiB로 제한한다.
 - `src/worldmm_smvqa/worldmm/spatial_compression.py`는
   현재 source metadata에서 object, relation, zone, trajectory record를 만드는
   heuristic baseline이다.

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 # allow: SIZE_OK - retrieval policy module predates this change; split loaders,
 # protocol selection, and scoring when retrieval behavior changes next.
-from collections.abc import Callable, Mapping, Sequence
+import json
+from collections.abc import Callable, Collection, Mapping, Sequence
 from dataclasses import dataclass
 from math import floor
 from pathlib import Path
@@ -149,6 +150,13 @@ class _RecordHeader(BaseModel):
     record_type: str
 
 
+class _RecordVideoScope(BaseModel):
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="ignore", frozen=True)
+
+    video_id: str | None = None
+    source_video_id: str | None = None
+
+
 @dataclass(frozen=True, slots=True)
 class InvalidRetrievalStoreError(Exception):
     store: str
@@ -273,7 +281,16 @@ def build_fixture_retrieval_stores(
 
 def read_retrieval_memory_artifacts(
     manifest_path: Path,
+    *,
+    video_ids: Collection[str] | None = None,
+    memory_ids_by_store: Mapping[RetrievalStore, Collection[str]] | None = None,
 ) -> tuple[RetrievalMemoryRecord, ...]:
+    """Stream canonical stores into retrieval projections.
+
+    ``video_ids`` keeps distributed QA ranks from parsing unrelated videos.
+    Per-store IDs further avoid materializing unused records from long videos.
+    Omitted stores remain unfiltered. The manifest remains the source of paths.
+    """
     manifest = _MemoryManifest.model_validate_json(
         manifest_path.read_text(encoding="utf-8"),
     )
@@ -282,15 +299,67 @@ def read_retrieval_memory_artifacts(
             Path(manifest.spatial_experiment),
         )
         load_spatial_plugins(spatial_config)
-    return build_retrieval_records(
-        _read_episodic_artifact(Path(manifest.episodic_memory)),
-        _read_jsonl_records(Path(manifest.semantic_memory), _semantic_artifact_record),
-        _read_jsonl_records(Path(manifest.visual_memory), _visual_artifact_record),
-        _read_jsonl_records(
+    selected_video_ids = None if video_ids is None else frozenset(video_ids)
+    return (
+        *_read_projected_jsonl_records(
+            Path(manifest.episodic_memory),
+            _episodic_artifact_record,
+            _episodic_retrieval_candidate,
+            selected_video_ids,
+            _selected_memory_ids(memory_ids_by_store, "episodic"),
+        ),
+        *_read_projected_jsonl_records(
+            Path(manifest.semantic_memory),
+            _semantic_artifact_record,
+            _semantic_candidate,
+            selected_video_ids,
+            _selected_memory_ids(memory_ids_by_store, "semantic"),
+        ),
+        *_read_projected_jsonl_records(
+            Path(manifest.visual_memory),
+            _visual_artifact_record,
+            _visual_candidate,
+            selected_video_ids,
+            _selected_memory_ids(memory_ids_by_store, "visual"),
+        ),
+        *_read_projected_jsonl_records(
             Path(manifest.spatial_memory.path),
             _spatial_artifact_record,
+            _spatial_candidate,
+            selected_video_ids,
+            _selected_memory_ids(memory_ids_by_store, "spatial"),
         ),
     )
+
+
+def _selected_memory_ids(
+    selected: Mapping[RetrievalStore, Collection[str]] | None,
+    store: RetrievalStore,
+) -> frozenset[str] | None:
+    if selected is None or store not in selected:
+        return None
+    return frozenset(selected[store])
+
+
+def read_typed_spatial_retrieval_records(
+    path: Path,
+    *,
+    video_ids: Collection[str] | None = None,
+) -> tuple[RetrievalMemoryRecord, ...]:
+    """Stream typed memory into exact spatial records, optionally video-scoped."""
+    selected_video_ids = None if video_ids is None else frozenset(video_ids)
+    candidates: list[RetrievalMemoryRecord] = []
+    with path.open(encoding="utf-8") as rows:
+        for line in rows:
+            if not line.strip():
+                continue
+            candidate = _spatial_candidate(_spatial_artifact_record(line))
+            if candidate is not None and (
+                selected_video_ids is None
+                or candidate.video_id in selected_video_ids
+            ):
+                candidates.append(candidate)
+    return tuple(candidates)
 
 
 def build_retrieval_records(
@@ -314,18 +383,38 @@ def build_retrieval_records(
     return tuple(records)
 
 
-def _read_episodic_artifact(path: Path) -> tuple[EpisodicRecord, ...]:
-    return _read_jsonl_records(path, _episodic_artifact_record)
-
-
-def _read_jsonl_records[RecordT](
+def _read_projected_jsonl_records[RecordT](
     path: Path,
     parse: Callable[[str], RecordT],
-) -> tuple[RecordT, ...]:
-    return tuple(
-        parse(line)
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+    project: Callable[[RecordT], RetrievalMemoryRecord | None],
+    video_ids: frozenset[str] | None,
+    memory_ids: frozenset[str] | None,
+) -> tuple[RetrievalMemoryRecord, ...]:
+    records: list[RetrievalMemoryRecord] = []
+    with path.open(encoding="utf-8") as rows:
+        for line in rows:
+            if not line.strip():
+                continue
+            if video_ids is not None:
+                line_video_id = _raw_record_video_id(line)
+                if line_video_id is not None and line_video_id not in video_ids:
+                    continue
+            candidate = project(parse(line))
+            if candidate is not None and (
+                video_ids is None or candidate.video_id in video_ids
+            ) and (
+                memory_ids is None or candidate.memory_id in memory_ids
+            ):
+                records.append(candidate)
+    return tuple(records)
+
+
+def _raw_record_video_id(line: str) -> str | None:
+    scope = _RecordVideoScope.model_validate_json(line)
+    return (
+        scope.source_video_id
+        if scope.source_video_id is not None
+        else scope.video_id
     )
 
 
@@ -338,6 +427,14 @@ def _episodic_artifact_record(line: str) -> EpisodicRecord:
             return EpisodicEdgeRecord.model_validate_json(line)
         case other:
             raise InvalidRetrievalStoreError(store=other)
+
+
+def _episodic_retrieval_candidate(
+    record: EpisodicRecord,
+) -> RetrievalMemoryRecord | None:
+    if not isinstance(record, EpisodicNodeRecord):
+        return None
+    return _episodic_candidate(record)
 
 
 def _semantic_artifact_record(line: str) -> SemanticTripleRecord:
@@ -650,9 +747,12 @@ def _spatial_candidate(  # noqa: PLR0911, PLR0912
         case EventMemoryRecord():
             geometry = _typed_geometry(record, "event")
             geometry["event_kind"] = record.event_kind
-            geometry["involved_entity_ids"] = " ".join(
+            involved_entity_ids = json.dumps(
                 record.involved_entity_ids,
+                ensure_ascii=False,
+                separators=(",", ":"),
             )
+            geometry["involved_entity_ids"] = involved_entity_ids
             if record.geometry.before_position is not None:
                 before_x, before_y, before_z = record.geometry.before_position
                 geometry.update(
@@ -675,7 +775,7 @@ def _spatial_candidate(  # noqa: PLR0911, PLR0912
                 record,
                 snippet=(
                     f"{record.event_kind} event {record.instance_id} involves "
-                    f"{' '.join(record.involved_entity_ids)} in "
+                    f"{involved_entity_ids} in "
                     f"{record.local_frame_id}"
                 ),
                 geometry=geometry,

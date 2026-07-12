@@ -13,35 +13,21 @@
 
 ## 30-second summary
 
-CUT3R is an online recurrent 3D perception model. Each incoming RGB image reads
-from and updates a persistent latent state, then predicts camera pose and dense
-point maps in both camera and shared world coordinates. A virtual ray-map query
-can read the state to predict an unobserved view. The model handles ordered video,
-unordered photographs, and static or dynamic scenes without supplied camera
-intrinsics or poses.
+CUT3R는 온라인 반복 3D 인식 모델이다. 들어오는 각 RGB 이미지는 영구 latent state에서 읽고 업데이트한 다음 카메라와 공유 세계 좌표 모두에서 camera pose 및 밀집 지점 맵을 예측한다. 가상 광선 맵 쿼리는 상태를 읽어 관찰되지 않은 뷰를 예측할 수 있다. 이 모델은 제공된 camera intrinsics 또는 포즈 없이 정렬된 비디오, 정렬되지 않은 사진, 정적 또는 동적 장면을 처리한다.
 
 ## Problem addressed
 
-Pairwise reconstruction models require global alignment to combine many views,
-while classical SfM and SLAM can fail under sparse overlap, dynamic content, or
-degenerate motion. CUT3R targets continuous online reconstruction with a learned
-scene prior and a fixed-shape recurrent state.
+쌍별 재구성 모델은 많은 뷰를 결합하기 위해 전역 정렬이 필요한 반면, 기존 SfM 및 SLAM는 희박한 중첩, 동적 콘텐츠 또는 퇴화 동작으로 인해 실패할 수 있다. CUT3R는 사전에 학습된 장면과 고정 모양 recurrent state를 사용하여 지속적인 온라인 재구성을 목표로 한다.
 
 ## Relevant method
 
-An image encoder produces tokens for the current frame. Two interconnected
-transformer decoders implement state update and state readout through cross
-attention. Output heads predict camera-frame point maps, world-frame point maps,
-confidence, and pose. A separate ray-map encoder queries the state without
-updating it for virtual-view prediction.
+image encoder는 현재 프레임에 대한 토큰을 생성한다. 상호 연결된 두 개의 transformer 디코더는 교차 주의를 통해 state update 및 상태 판독을 구현한다. 출력 헤드는 카메라 프레임 포인트 맵, 월드 프레임 포인트 맵, 신뢰도 및 포즈를 예측한다. 별도의 광선 맵 encoder는 가상 뷰 예측을 위해 업데이트하지 않고 상태를 쿼리한다.
 
-The published implementation uses a ViT-L image encoder, ViT-B decoders, 16 by 16
-patches, and 768 state tokens of dimension 768. Training progresses from four-view
-sequences to sequences as long as 64 views across 32 datasets.
+게시된 구현에서는 ViT-L image encoder, ViT-B 디코더, 16 x 16 패치 및 차원 768의 768개 상태 토큰을 사용한다. 교육은 32개 데이터세트에 걸쳐 4개 뷰 시퀀스에서 64개 뷰까지 시퀀스로 진행된다.
 
 ## Paper-reported evidence
 
-These are paper results, not results from this repository.
+이는 이 저장소의 결과가 아닌 논문 결과이다.
 
 | Dataset or condition | Metric | Reported result | Source location |
 |---|---|---:|---|
@@ -51,41 +37,27 @@ These are paper results, not results from this repository.
 | NRGBD, sparse 2–4 frames | Mean accuracy / completeness / normal consistency | 0.099 / 0.076 / 0.837 | Table 4, paper p. 7 |
 | 7-Scenes, online then frozen-state revisit | Mean accuracy, before versus after revisit | 0.126 versus 0.113 | Table 5, paper p. 8 |
 
-The revisit experiment also reports 7-Scenes mean completeness improving from
-0.154 to 0.107. This supports the paper's narrower claim that the recurrent state
-can refine predictions after additional observations.
+재방문 실험에서는 7-Scenes의 평균 완성도가 0.154에서 0.107로 향상되었다고 보고했다. 이는 recurrent state가 추가 관찰 후 예측을 개선할 수 있다는 논문의 더 좁은 주장을 뒷받침한다.
 
 ## What this supports here
 
-**Paper claim:** recurrent image-state interaction can provide online camera and
-dense geometry estimates in a common frame, including sparse-view conditions.
+**논문 주장:** 반복적인 이미지-상태 상호 작용은 희소 보기 조건을 포함하여 공통 프레임에서 온라인 카메라 및 dense geometry 추정치를 제공할 수 있다.
 
-**Project inference:** CUT3R is a suitable transient geometry teacher or front-end
-for converting sparse observations into typed object, structure, landmark, and
-event candidates. Its state should be consumed during construction, not serialized
-at every timestamp as long-term memory.
+**프로젝트 추론:** CUT3R는 희박한 관찰을 유형이 지정된 개체, 구조, 랜드마크 및 이벤트 후보로 변환하는 데 적합한 임시 geometry teacher 또는 프런트 엔드이다. 해당 상태는 생성 중에 소비되어야 하며 모든 타임스탬프에서 long-term memory로 직렬화되지 않아야 한다.
 
-The common-frame point maps, pose estimates, and confidence outputs are useful
-teacher signals for the planned typed decoder and association model.
+공통 프레임 포인트 맵, 포즈 추정 및 신뢰도 출력은 계획된 유형의 decoder 및 연관 모델에 유용한 교사 신호이다.
 
 ## What it does not prove
 
-- The latent state is not an explicit database of entities, relationships, or
-  temporal validity intervals.
-- Virtual-view output is model inference, not direct observation, and must carry
-  different provenance.
-- Fixed state shape does not prove stable lifelong retention or bounded semantic
-  forgetting.
-- Published GPU throughput does not establish AI-glasses deployment feasibility.
-- The paper does not evaluate SuperMemory-VQA, 1 Hz year-long memory, actual-byte
-  storage, or geometry-grounded QA.
+- latent state는 엔터티, 관계 또는 시간적 유효성 간격에 대한 명시적인 데이터베이스가 아니다.
+- 가상 뷰 출력은 직접 관찰이 아닌 모델 추론이므로 다른 provenance를 전달해야 한다.
+- 고정 상태 형태는 안정적인 평생 유지나 제한된 의미 망각을 증명하지 못한다.
+- 게시된 GPU 처리량은 AI-glasses 배포 가능성을 설정하지 않는다.
+- 이 논문는 SuperMemory-VQA, 1Hz 연간 메모리, 실제 바이트 저장소 또는 기하학적 기반 QA를 평가하지 않는다.
 
 ## Project reproduction status
 
-The project defines a provider/cache boundary for a CUT3R-derived external teacher
-but does not vendor, download, or execute CUT3R locally. There is no project
-checkpoint, official-dataset reconstruction result, or CUT3R-to-typed-record
-reproduction yet.
+프로젝트는 CUT3R 파생 외부 교사에 대한 공급자/캐시 경계를 정의하지만 CUT3R를 로컬로 공급, 다운로드 또는 실행하지 않는다. 아직 프로젝트 체크포인트, 공식 데이터세트 재구성 결과 또는 CUT3R에서 입력된 레코드로의 재생산은 없다.
 
 ## References
 

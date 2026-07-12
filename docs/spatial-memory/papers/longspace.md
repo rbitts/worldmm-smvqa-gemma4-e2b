@@ -13,20 +13,20 @@
 
 ## 30-second summary
 
-LongSpace introduces a long room-tour benchmark and a model that injects 3D structure into early decoder layers while maintaining hierarchical KV memory across video chunks. Its long-memory and layer-aware ablations show that organized cross-chunk evidence matters more than recent-frame sampling. Its memory remains latent KV state rather than an auditable typed geometry database.
+LongSpace는 긴 룸 투어 벤치마크와 3D 구조를 초기 decoder 레이어에 주입하는 동시에 비디오 청크 전체에서 계층적 KV 메모리를 유지하는 모델을 도입한다. 장기 메모리 및 레이어 인식 절제는 조직화된 크로스 청크 증거가 최근 프레임 샘플링보다 더 중요하다는 것을 보여준다. 해당 메모리는 감사 가능한 유형의 지오메트리 데이터베이스가 아닌 잠재 KV 상태로 유지된다.
 
 ## Problem addressed
 
-Long-video models must retain layouts, routes, viewpoint changes, and object states across observations separated by many minutes. Uniform frame sampling and recent windows lose distant spatial evidence or dilute it with redundant tokens.
+장편 비디오 모델은 몇 분 단위로 구분된 관찰에서 레이아웃, 경로, 시점 변경 및 객체 상태를 유지해야 한다. 균일한 프레임 샘플링과 최근 창은 먼 공간 증거를 잃거나 중복 토큰으로 희석한다.
 
 ## Relevant method
 
-- Build LongSpace-Bench from continuous real-world room-tour videos.
-- Process video at 1 fps in 32-frame chunks with four-frame overlap.
-- Align 3D geometry features and inject a structural residual into the first eight decoder layers.
-- Divide hierarchical KV memory into sensory, working, and long-memory roles.
-- Select and compress memory using salience, state change, recency, temporal coverage, and role-specific budgets.
-- Retrieve segment-level and then token-level evidence for each question.
+- 연속되는 실제 룸 투어 동영상을 통해 LongSpace-Bench를 구축한다.
+- 4프레임이 겹치는 32프레임 청크에서 1fps로 비디오를 처리한다.
+- 3D 형상 특징을 정렬하고 처음 8개 decoder 레이어에 구조적 잔차를 주입한다.
+- 계층적 KV 기억을 감각 기억, 작업 기억, 장기 기억 역할로 나눕니다.
+- 현저성, 상태 변경, 최신성, 임시 적용 범위 및 역할별 예산을 사용하여 메모리를 선택하고 압축한다.
+- 각 질문에 대해 세그먼트 수준 증거를 검색한 다음 토큰 수준 증거를 검색한다.
 
 ## Paper-reported evidence
 
@@ -40,24 +40,24 @@ Long-video models must retain layouts, routes, viewpoint changes, and object sta
 
 ## What this supports here
 
-- At 1 fps, cross-chunk evidence is more useful than retaining only recent frames.
-- Memory organization and retrieval deserve separate ablation from raw capacity.
-- Geometry can be injected selectively into early model layers.
-- State change and temporal coverage are useful candidate-writer signals.
+- 1fps에서는 최근 프레임만 유지하는 것보다 청크 간 증거가 더 유용하다.
+- 메모리 구성 및 검색은 원시 용량과 별도로 제거할 가치가 있다.
+- 형상은 초기 모델 레이어에 선택적으로 주입될 수 있다.
+- 상태 변화와 시간적 적용 범위는 유용한 후보 작성자 신호이다.
 
 ## What it does not prove
 
-- Explicit object identities, coordinate frames, uncertainty, provenance, or geometry proof.
-- Actual serialized-byte optimization; KV capacity is not persistent database size.
-- Active exploration, wearable IMU/VIO, multi-day revisits, or on-device execution.
-- SuperMemory-VQA performance.
+- 명시적인 객체 ID, 좌표계, uncertainty, provenance 또는 기하학 증명.
+- 실제 직렬화된 바이트 최적화; KV 용량은 영구 데이터베이스 크기가 아니다.
+- 활성 탐색, 웨어러블 IMU/VIO, 며칠 간의 재방문 또는 기기 내 실행.
+- SuperMemory-VQA 성능.
 
 ## Project reproduction status
 
-Not reproduced. The paper-linked repository returned 404 when checked, so implementation claims remain paper-only until an official release is available.
+재현되지 않았다. 종이 링크 저장소는 확인 시 404를 반환하므로 구현 주장은 공식 릴리스가 제공될 때까지 종이로만 유지된다.
 
 ## References
 
-- Shiqiang Lang et al. [LongSpace: Exploring Long-Horizon Spatial Memory from Perception to Recall in Video](https://arxiv.org/abs/2606.05677). arXiv:2606.05677 v1.
-- [Paper-announced repository](https://github.com/ShiqiangLang/LongSpace), unavailable on 2026-07-11.
+- Shiqiang Langet al. [LongSpace: Exploring Long-Horizon Spatial Memory from Perception to Recall in Video](https://arxiv.org/abs/2606.05677). arXiv:2606.05677 v1.
+- [Paper-announced repository](https://github.com/ShiqiangLang/LongSpace), 2026년 7월 11일에는 사용할 수 없다.
 - [Back to paper index](README.md).

@@ -8,8 +8,74 @@ from worldmm_smvqa.schema import FrozenModel
 
 type RetrievalStore = Literal["episodic", "semantic", "visual", "spatial"]
 type RetrievalProtocol = Literal["smvqa-video-rag", "egobutler", "worldmm"]
+type EvidenceLane = Literal["heuristic", "student"]
+type EvidenceProducer = Literal["heuristic-retrieval", "spatial-student"]
 
 RETRIEVAL_FRAME_REF_CAP: Final = 32
+
+
+class EvidenceLineage(FrozenModel):
+    lane: EvidenceLane
+    producer: EvidenceProducer
+    evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    checkpoint_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    typed_memory_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    inference_manifest_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    config_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    sensor_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    data_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    memory_manifest_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    episodic_memory_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    semantic_memory_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    visual_memory_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+
+    @model_validator(mode="after")
+    def _require_student_inputs(self) -> Self:
+        expected_producer: EvidenceProducer = (
+            "spatial-student" if self.lane == "student" else "heuristic-retrieval"
+        )
+        if self.producer != expected_producer:
+            msg = f"{self.lane} evidence requires producer {expected_producer}"
+            raise ValueError(msg)
+        if self.lane != "student":
+            return self
+        required = (
+            "checkpoint_sha256",
+            "typed_memory_sha256",
+            "inference_manifest_sha256",
+            "config_sha256",
+            "sensor_sha256",
+            "data_sha256",
+            "memory_manifest_sha256",
+            "episodic_memory_sha256",
+            "semantic_memory_sha256",
+            "visual_memory_sha256",
+        )
+        if missing := tuple(name for name in required if getattr(self, name) is None):
+            msg = f"student evidence lineage missing: {', '.join(missing)}"
+            raise ValueError(msg)
+        return self
 
 
 class RetrievalMemoryRecord(FrozenModel):
