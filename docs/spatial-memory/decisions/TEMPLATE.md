@@ -1,53 +1,55 @@
-# ADR-NNNN: Decision title
+# ADR-NNNN: 결정 제목
 
-| Metadata | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-ADR-NNNN |
 | Confluence parent | SM-DECISIONS |
 | ADR | ADR-NNNN |
-| Status | Proposed |
-| Date | YYYY-MM-DD |
-| Traceability | [Claim or requirement](../traceability.md) |
-| Architecture | [Spatial-memory architecture](../architecture.md) |
+| 상태 | 제안 |
+| 결정일 | YYYY-MM-DD |
+| 추적성 | [Claim 또는 요구사항](../traceability.md) |
+| 아키텍처 | [Spatial-memory 아키텍처](../architecture.md) |
 
-## Context and problem
+## 핵심 결론
 
-결정이 필요한 문제, 제약, 실패 조건을 적는다.
+- **결정:** 채택 또는 제안한 결정을 한 문장으로 적는다.
+- **범위:** 포함·제외 범위를 적는다.
+- **다음 gate:** 구현 또는 검증에서 다음으로 통과해야 할 조건을 적는다.
 
-## Decision
-
-채택한 결정을 한 문단으로 적는다. 범위 밖 항목도 명시한다.
-
-## Evidence
+## 근거와 판단 이유
 
 - 논문이 직접 보고한 근거와 정확한 [paper page](../papers/README.md)를 링크한다.
 - 프로젝트 코드나 로컬 검증이 제공하는 근거를 별도로 링크한다.
 - 아직 검증되지 않은 가설을 결과처럼 쓰지 않는다.
 
-## Alternatives considered
-
-| Alternative | Why not selected |
-|---|---|
-| Alternative A | 현재 제약에서 선택하지 않은 이유 |
-
-## Implementation
+## 구현 방향
 
 - 구현 파일 또는 모듈 링크
 - 구현 완료 범위
 - 아직 연결되지 않은 범위
 
-## Verification
+## 검증 결과와 남은 과제
 
 - 실행 가능한 검사 또는 experiment 링크
 - 검증 환경과 데이터 범위
 - 실제 benchmark에서 미검증된 항목
 
-## Consequences
+## 배경
+
+결정이 필요한 문제, 제약, 실패 조건을 적는다.
+
+## 대안
+
+| 대안 | 미선택 이유 |
+|---|---|
+| 대안 A | 현재 제약에서 선택하지 않은 이유 |
+
+## Trade-off 검토
 
 - 얻는 이점
 - 새 제약 또는 운영 비용
 - 실패 시 abstention 또는 fallback 정책
 
-## Supersession
+## 대체 이력
 
-None. 대체되면 새 ADR 링크와 대체 날짜를 기록한다.
+없음. 대체되면 새 ADR link와 대체 날짜를 기록한다.

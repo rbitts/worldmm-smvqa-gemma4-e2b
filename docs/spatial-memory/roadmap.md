@@ -1,128 +1,70 @@
-# Research Roadmap
+# 연구 로드맵
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-ROADMAP |
-| Status | Active |
-| Last updated | 2026-07-12 |
-| Ordering principle | Close end-to-end correctness gaps before adding codecs |
+| 상태 | 활성 |
+| 최종 갱신 | 2026-07-13 |
+| 우선순위 원칙 | 최적화 전에 end-to-end correctness 완결 |
 
-## P0: Close the Learned End-to-End Path
+## 실행 방향
 
-Exercise the implemented production bridge as one causal path:
+Codec, 더 큰 architecture, device claim을 추가하기 전에 learned
+checkpoint-to-QA path를 완성하고 검증한다. 현재 우선순위는 승인된 contract
+probe 하나이며 공식 benchmark 보고는 차단 상태다.
+
+## 우선순위와 의사결정 gate
+
+| 우선순위 | 목표 결과 | 다음 단계 gate |
+|---|---|---|
+| P0 | Learned checkpoint가 canonical typed evidence와 proof-grounded QA 생성 | 승인된 1×1 probe의 lineage·byte·grounding·causality 검사 통과 |
+| P1 | Learned E1 baseline과 QA-versus-bytes curve | Full E1과 immutable matched E2/E3 identity |
+| P2 | QA utility가 deployed write gate를 supervise | Equal-byte geometry-novelty baseline 대비 개선 |
+| P3 | Revisit 간 stable identity와 relocalization | False merge, duplicate ID, loop-closure 목표 통과 |
+| P4 | 미지 질문 coverage | Held-out operator/category coverage와 calibrated abstention 유지 |
+| P5 | On-device student 가능성 | 측정 latency, energy, memory, hardware calibration 통과 |
+
+## P0 실행
 
 ```text
-teacher extraction
-    -> record-derived supervision
-    -> DDP student training
-    -> WORLDMM_SPATIAL_INFER_EXE (worldmm-spatial-infer-v1)
-    -> typed decode, open-world association, actual-byte writer
-    -> repository artifact and lineage validation
-    -> retrieval
-    -> real-frame proof-grounded QA
-    -> immutable profile-bound PROBE or learned-E1 identity and report
+teacher extraction -> record-derived supervision -> DDP training
+    -> WORLDMM_SPATIAL_INFER_EXE -> typed records + hard byte writer
+    -> repository validation -> retrieval -> proof -> real-frame QA
+    -> sealed PROBE identity and report
 ```
 
-Required outcomes:
+Scale-up 전 필수 조건:
 
-- install or provide a pinned G-CUT3R-compatible extractor;
-- derive geometry targets from teacher records rather than trusting arbitrary
-  external vectors;
-- provide a pinned production inference executable that decodes every supported
-  type, including variable polygons, and supports existing-pointer or `NEW`
-  association in unseen scenes;
-- emit canonical typed JSONL grouped into 30-second windows under the approved
-  per-window byte budget;
-- prove checkpoint, typed-memory, inference-manifest, evidence, config, data,
-  sensor, model, frame, prompt, prediction, and metric lineage;
-- pass the approved 1-node x 1-GPU probe before requesting full scale.
+- pinned G-CUT3R-compatible teacher와 production inference executable;
+- variable geometry를 포함한 type-specific decode와 existing-pointer 또는 `NEW`
+  association;
+- source별 30초 window당 4,096 byte 이하 canonical typed JSONL;
+- 완결된 checkpoint, executable, data, frame, sensor, evidence, QA, report lineage;
+- causal/off-scope violation 0;
+- 회사 GPU submission 전 명시적 승인.
 
-The probe's valid claim is `contract_probe` / `PROBE`; it is not renamed to E1
-after success. A new approved `full` run is required for `student` / `E1`.
+핵심 experiment: [EXP-0004](experiments/exp-0004-gcut3r-provider.md),
+[EXP-0002](experiments/exp-0002-typed-memory-bridge.md).
 
-Primary experiments: [EXP-0002](experiments/exp-0002-typed-memory-bridge.md) and
-[EXP-0004](experiments/exp-0004-gcut3r-provider.md).
+## 후속 작업
 
-## P1: Measure the Explicit Baseline
+- **P1:** QA-Acc, QA-MRR, Ans-F1, geometry grounding, actual byte, revisit
+  growth, latency, resource use를 보고하고 matched E2/E3 run을 만든다.
+- **P2:** 별도 selector abstraction을 추가하지 않고 기존 typed write logit을
+  counterfactual deletion utility로 supervise한다.
+- **P3:** Causal pointer association, viewing-ray compatibility, submap loop
+  correction, retain-or-replace landmark를 추가한다.
+- **P4:** Structural fact를 보호하고 text, appearance, surprise, uncertainty용
+  small bounded evidence reservoir를 추가한다.
+- **P5:** P0–P4에서 record contract가 안정화된 뒤 distill·profile한다.
 
-After P0, run learned E1 with a fixed causal frame inventory and report:
+## 보류
 
-- QA-Acc, QA-MRR, and answerability F1;
-- geometry proof and grounding accuracy;
-- bytes per hour, area, object, and event;
-- repeated-visit memory growth;
-- peak memory, latency, and energy where available;
-- actual-byte Pareto curves.
+VQ/FSQ codec, dense neural-scene storage, custom ANN infrastructure,
+end-to-end QA-model training, photorealistic reconstruction은 보류한다. Explicit
+baseline이 측정된 bottleneck일 때만 추가한다.
 
-Primary experiment: [EXP-0003](experiments/exp-0003-byte-pareto.md).
+운영 세부 절차는 repository `HANDOFF.md`이며 Confluence에서는
+[운영](operations/README.md) 아래에 둔다.
 
-Do not label E1 official yet. Add immutable E2 spatial-ablation and E3 retrieval-
-protocol-ablation identities, then validate that every non-ablated split, model,
-frame, prompt, and checkpoint-derived input digest matches. Official E1/E2/E3
-completion remains blocked until this exists.
-
-## P2: Connect QA Utility to the Deployed Writer
-
-- Generate counterfactual deletion utility from a detailed offline reference
-  memory.
-- Protect a query-agnostic geometry core.
-- Train the same candidate gate that is used during typed inference.
-- Compare geometry novelty, QA utility, uncertainty, pose information, and event
-  surprise under equal byte budgets.
-
-Do not build a new selector abstraction if the existing typed write logit can be
-supervised directly.
-
-## P3: Long-Term Identity and Relocalization
-
-- replace closed-set association with a causal pointer or metric key;
-- add position and viewing-ray compatibility;
-- measure identity across days, lighting changes, and moved objects;
-- add submap loop correction and landmark retain-or-replace policy;
-- measure false merge, duplicate identity, and loop-closure precision/recall.
-
-## P4: Unknown-Question Safety
-
-- keep structural topology, object extent, validity, uncertainty, and provenance
-  independent of training question templates;
-- add a small bounded evidence reservoir for text, appearance, surprise, and
-  detector uncertainty;
-- hold out operators and object categories during writer training;
-- evaluate abstention on unavailable or inferred-only evidence.
-
-## P5: On-Device Student
-
-Only after P0-P4 produce a stable record contract:
-
-- distill the geometry candidate encoder;
-- benchmark one-node server inference before multi-node training;
-- profile realistic device latency and energy;
-- calibrate pose, camera, depth, and uncertainty on hardware;
-- retain an offline consolidation path for expensive corrections.
-
-## Deferred Until Evidence Exists
-
-- VQ or FSQ codec for generic latent memory;
-- dense neural scene storage;
-- custom ANN infrastructure;
-- end-to-end joint training with the QA language model;
-- photorealistic reconstruction optimization.
-
-These additions become justified only when the explicit baseline is the measured
-bottleneck under equal actual-byte budgets.
-
-## Go/No-Go Order
-
-1. P0 produces checkpoint-backed typed evidence, loads real frames, and closes
-   the generated profile-bound run lineage.
-2. P1 establishes a reproducible learned-E1 baseline and byte curve, then adds
-   matched E2/E3 identities before any official claim.
-3. P2 demonstrates utility beyond geometry novelty.
-4. P3 maintains identity and localization across repeated visits.
-5. P4 preserves unknown-question coverage.
-6. P5 measures device feasibility.
-
-[Back to project home](README.md)
-
-Operational execution and approval details live in repository `HANDOFF.md`,
-imported under the [Operations](operations/README.md) parent in Confluence.
+[프로젝트 홈으로 돌아가기](README.md)

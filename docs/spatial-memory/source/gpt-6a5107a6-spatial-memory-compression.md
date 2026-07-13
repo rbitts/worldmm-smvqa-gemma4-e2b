@@ -1,16 +1,38 @@
-# GPT Source: Spatial Memory Compression Method
+# GPT 출처: Spatial Memory 압축 방법
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-SOURCE-GPT-6A5107A6 |
-| Source type | Verbatim user request plus conversation-derived research summary |
+| Source 유형 | 원문 요청과 도출된 연구 방향 |
 | Conversation ID | `6a5107a6-2808-83e8-8e93-e63a1ca64ed4` |
-| Original title | Spatial Memory 압축 방법 |
-| Imported | 2026-07-11 |
+| 원제 | Spatial Memory 압축 방법 |
+| Import 일자 | 2026-07-11 |
 | Confluence parent | SM-SOURCE |
-| Canonical interpretation | [Spatial Memory project](../README.md) |
+| Canonical 해석 | [Spatial Memory 프로젝트](../README.md) |
 
-## Verbatim User Request
+## 핵심 해석
+
+원문은 sparse 1 Hz sensing, 제한된 long-term storage, spatial-memory model 개발의
+세 가지 제약 아래 explicit geometry-grounded QA를 요구한다. 도출된 방향은 generic
+feature를 사후 quantization하는 것이 아니라 저장 전에 무엇을 쓸지 결정하는 것이다.
+
+## 도출된 방향
+
+```text
+transient dense geometry
+    -> typed candidates
+    -> future-QA and geometry value per actual byte
+    -> explicit persistent spatial database
+```
+
+- G-CUT3R-like geometry를 transient teacher/front-end로 사용한다.
+- Object, structure, free space, landmark, change event, uncertainty, validity,
+  provenance, bounded exceptional evidence를 persist한다.
+- Derivable relation은 query time에 계산한다.
+- Geometry answer에는 deterministic proof를 요구한다.
+- Future question을 모르므로 query-agnostic core를 유지한다.
+
+## 원문
 
 > AI 글래스는 Spatial memory 를 적용하는데 explicit한 geometry grounded QA가
 > 가능해야 한다. 하지만 다음 몇가지 제약을 가진다.
@@ -26,63 +48,10 @@
 > 상세하게 가능성을 찾아보고 spatial 정보를 잘 표현하는 g cut3r같은 기술에
 > 메모리를 압축할 수 있는 상세 조사 수행
 
-## Source Problem Summary
+## Provenance 범위
 
-AI glasses need explicit geometry-grounded QA but have three constraints:
+이 page는 원 요청과 도출된 thesis를 보존한다. Implementation specification이나
+experiment result가 아니다. 채택한 선택은 [아키텍처 결정](../decisions/README.md),
+측정 근거는 [실험](../experiments/README.md)을 사용한다.
 
-1. Sparse sensing at approximately 1 Hz RGB capture.
-2. Limited device capacity for long-term spatial memory.
-3. A spatial-memory encoder or encoder-decoder must be developed.
-
-The proposed research direction is not post-hoc feature quantization. It is to
-compress at memory creation time by producing only features and records that
-matter for future geometry-grounded QA, with particular attention to
-G-CUT3R-like geometry representations.
-
-## Imported Research Thesis
-
-The source conversation concluded that the target should be a learned spatial
-compiler:
-
-```text
-transient dense world reasoning
-    -> explicit typed candidates
-    -> future-QA and geometry value per actual byte
-    -> persistent spatial database
-```
-
-The proposed persistent core includes:
-
-- local-frame place and submap records;
-- structural planes, portals, and coarse free space;
-- object identity, centroid, extent, support, containment, and validity;
-- ray-aware relocalization landmarks;
-- meaningful change events;
-- uncertainty and observation provenance;
-- a small surprise and uncertainty evidence reservoir.
-
-G-CUT3R is treated as a transient teacher or front-end, not as the long-term
-memory itself.
-
-## Imported Design Principles
-
-1. Do not persist CUT3R recurrent states or dense point maps as lifelong memory.
-2. Generate object, plane, portal, free-space, landmark, and event records
-   directly.
-3. Learn write decisions from future QA loss, geometry information gain,
-   uncertainty reduction, event surprise, redundancy, and serialized byte cost.
-4. Compute spatial relations at query time when coordinates and base facts are
-   sufficient.
-5. Use pose guidance and ray-aware association to compensate for sparse RGB.
-6. Preserve a query-agnostic geometry core because future questions are unknown.
-7. Require answer proofs with entity IDs, coordinate frame, uncertainty,
-   provenance, and evidence references.
-
-## Provenance Boundary
-
-This page preserves the originating task and its research thesis. It is not the
-current implementation specification and must not be cited as experimental
-evidence. Current decisions live in [Architecture Decisions](../decisions/README.md),
-and measured project results live in [Experiments](../experiments/README.md).
-
-[Back to source index](README.md)
+[출처 목록으로 돌아가기](README.md)

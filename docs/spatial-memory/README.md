@@ -1,139 +1,95 @@
-# Spatial Memory for SuperMemory-VQA
+# SuperMemory-VQA Spatial Memory
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-ROOT |
 | Confluence parent | SM-DOCS |
-| Status | Active local preparation |
-| Last updated | 2026-07-12 |
-| Target | Explicit compressed spatial memory for geometry-grounded QA |
-| Current verdict | Heuristic baseline works locally; learned G-CUT3R path is not end-to-end |
+| 상태 | 로컬 준비 진행 |
+| 최종 갱신 | 2026-07-13 |
+| 목표 | Geometry-grounded QA용 explicit compressed spatial memory |
 
-## Five-Minute Summary
+## 핵심 결론
 
-AI glasses observe sparse RGB frames, approximately 1 Hz, but must answer later
-questions about metric position, direction, distance, containment, reachability,
-and object history. Keeping frames, dense point maps, or recurrent states for
-months exceeds the device budget and does not provide directly auditable QA
-evidence.
+| 항목 | 결정 |
+|---|---|
+| 기술 방향 | Explicit typed spatial record를 유지하고 dense geometry는 transient하게 사용 |
+| 현재 준비도 | 로컬 contract와 heuristic baseline 준비 완료 |
+| 공식 보고 | **No-Go**: learned path end-to-end 미실행 |
+| 다음 승인 대상 | 명시적 승인 후 1-node × 1-GPU contract probe |
+| Scale-up 조건 | Probe가 checkpoint-to-evidence lineage를 닫고 budget 내 valid typed record 생성 |
 
-The project hypothesis is:
+지금은 latent codec이나 더 큰 model architecture를 추가하지 않는다. 먼저 하나의
+학습 checkpoint가 감사 가능하고 byte-bounded인 spatial evidence를 생성하며,
+그 결과가 downstream QA에 반영되는지 입증한다.
 
-> Use dense geometry only as transient reasoning, then persist the smallest
-> typed records sufficient for future geometry-grounded QA.
+## 근거
 
-The intended memory contains explicit objects, planes, portals, coarse free
-space, relocalization landmarks, meaningful change events, uncertainty, and
-provenance. A deterministic geometry executor computes spatial answers; the
-language model explains or selects the result rather than inventing geometry.
+- Tiny-fixture source-compact memory는 diagnostic source representation의 216개
+  record·96,456 JSONL byte 대신 15개 record·6,050 byte를 유지했다(15.94× 축소).
+  이는 pipeline sanity이며 benchmark 근거가 아니다.
+- Causal retrieval, actual-byte limit, typed schema, deterministic proof,
+  four-choice QA, DDP training contract, production artifact lineage가 구현돼 있다.
+- Production G-CUT3R extractor, raw RGB/IMU/VIO student encoder,
+  repository-owned type-specific decoder, learned open-world association은 없다.
+- 이 개발 host에서 실제 dataset, model download, training, evaluation, SSH,
+  Slurm job을 실행하지 않았다.
 
-## System Shape
+## 즉시 실행 방향
+
+1. 회사 compute에 pinned external teacher와 inference executable을 준비한다.
+2. 고정 causal frame inventory로 승인된 contract probe를 실행한다.
+3. Probe 통과 후 별도 full learned-E1 run 승인을 요청한다.
+4. 공식 비교 전 matched E2/E3 identity를 추가한다.
+5. Learned bridge가 valid해진 뒤 QA-versus-bytes를 측정한다.
+
+## 시스템 범위
 
 ```text
 1 Hz RGB + native-rate IMU/VIO + optional depth
-    -> guided transient geometry state
+    -> transient guided geometry
     -> typed record candidates
-    -> QA utility / geometry novelty / uncertainty / actual-byte writer
-    -> explicit persistent spatial memory
+    -> value / actual-byte writer
+    -> explicit persistent memory
     -> causal retrieval
     -> deterministic geometry proof
-    -> four-choice QA
+    -> four-choice QA or abstention
 ```
 
-## Current State
+Persistent memory는 object, plane, portal, free space, landmark, event,
+uncertainty, validity, provenance, evidence reference를 저장한다. Language model은
+질문 해석과 답변 표현만 담당하며 metric fact를 생성하지 않는다.
 
-- Source-compact explicit memory, causal retrieval, actual-byte limits, and
-  deterministic geometry proofs run on the tiny local fixture.
-- Typed record schemas, teacher-cache contracts, DDP candidate-head training,
-  and a hard typed-record writer exist.
-- No repository-owned G-CUT3R extractor, raw RGB/IMU student encoder,
-  checkpoint-to-record inference decoder, or open-world learned association
-  exists yet.
-- No real dataset, model download, training, benchmark evaluation, SSH session,
-  or Slurm job has run on this development host.
+## 의사결정 문서
 
-See [Current Status](status.md) for the live implementation verdict and
-[Experiments](experiments/README.md) for results.
+| 질문 | 문서 |
+|---|---|
+| 문제와 성공 기준은 무엇인가? | [문제 정의와 연구 질문](problem.md) |
+| 어떤 시스템과 control을 사용할 것인가? | [아키텍처](architecture.md) |
+| 어떤 claim에 근거가 있는가? | [추적성](traceability.md) |
+| 다음 실행은 무엇인가? | [연구 로드맵](roadmap.md) |
+| 현재 go/no-go는 무엇인가? | [현재 상태](status.md) |
+| 어떤 외부 근거가 중요한가? | [논문 근거 목록](papers/README.md) |
+| 어떤 결정이 채택됐는가? | [아키텍처 결정](decisions/README.md) |
+| 어떤 결과가 측정됐는가? | [실험](experiments/README.md) |
+| 어떤 검토가 완료됐는가? | [날짜별 검토](reviews/README.md) |
+| 회사 실행 절차는 어디에 있는가? | [운영](operations/README.md) |
 
-## Page Tree
+## Confluence import 부록
 
-- [Source and provenance](source/README.md)
-- [Problem and research questions](problem.md)
-- [Architecture](architecture.md)
-- [Evidence and implementation traceability](traceability.md)
-- [Research roadmap](roadmap.md)
-- [Current status](status.md)
-- [Paper index](papers/README.md)
-- [Architecture decisions](decisions/README.md)
-- [Experiments and results](experiments/README.md)
-- [Dated reviews](reviews/README.md)
-- [Operations](operations/README.md): imports repository `HANDOFF.md` as child
-  Page ID `SM-OPERATIONS-HANDOFF`
+| Source 범위 | Import Page ID | Parent ID |
+|---|---|---|
+| `docs/README.md` | `SM-DOCS` | `SPACE-HOME` |
+| `docs/spatial-memory/README.md` | `SM-ROOT` | `SM-DOCS` |
+| `{problem,architecture,traceability,roadmap,status}.md` | Page metadata | `SM-ROOT` |
+| `source/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-SOURCE` |
+| `papers/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-PAPERS` |
+| `decisions/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-DECISIONS` |
+| `experiments/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-EXPERIMENTS` |
+| `reviews/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-REVIEWS` |
+| `operations/README.md` | `SM-OPERATIONS` | `SM-ROOT` |
+| Repository `HANDOFF.md` | `SM-OPERATIONS-HANDOFF` | `SM-OPERATIONS` |
 
-## Reading Paths
+Template과 `docs/` 아래 레거시 문서 3개는 제외한다. Page ID, relative link,
+완료된 experiment와 날짜별 review의 불변성을 유지한다.
 
-For the research idea:
-
-```text
-Problem -> Traceability -> Papers -> Decisions -> Architecture
-```
-
-For implementation readiness:
-
-```text
-Status -> Experiments -> Architecture -> Company handoff
-```
-
-For a new paper:
-
-```text
-Paper page -> supported claim -> decision -> experiment -> result
-```
-
-## Confluence Import Rules
-
-- Import this page as the parent page and preserve the directory hierarchy.
-- Import [Operations](operations/README.md) as `SM-OPERATIONS`, then import
-  repository `HANDOFF.md` as its `SM-OPERATIONS-HANDOFF` child; do not duplicate
-  the runbook in this tree.
-- Use the `Page ID` metadata value as the stable migration key.
-- Keep page titles unique within this tree.
-- Convert relative Markdown links only after every page has been created.
-- Keep repository code references as inline paths, or convert them to
-  commit-pinned source-control URLs after the target repository URL is known.
-- Preserve completed experiment and dated review pages as immutable records.
-- Keep living pages limited to this page, `problem.md`, `architecture.md`,
-  `traceability.md`, `roadmap.md`, and `status.md`.
-
-## Confluence Import Manifest
-
-This table is the canonical import scope, stable Page ID resolver, and parent
-map. A patterned row resolves each page's own ID from its `Page ID` metadata;
-its parent resolves to the fixed ID in this table. This replaces per-file parent
-metadata where a whole directory has one parent.
-
-| Source scope | Imported Page ID | Confluence parent ID | Import rule |
-|---|---|---|---|
-| `docs/README.md` | `SM-DOCS` | `SPACE-HOME` | Resolve the external sentinel to the configured space landing page |
-| `docs/spatial-memory/README.md` | `SM-ROOT` | `SM-DOCS` | Import project home |
-| `docs/spatial-memory/{problem,architecture,traceability,roadmap,status}.md` | Page metadata | `SM-ROOT` | Import living pages directly |
-| `docs/spatial-memory/source/README.md` | `SM-SOURCE` | `SM-ROOT` | Import source index |
-| Non-template `docs/spatial-memory/source/*.md` | Page metadata | `SM-SOURCE` | Import as source-index children |
-| `docs/spatial-memory/papers/README.md` | `SM-PAPERS` | `SM-ROOT` | Import paper index |
-| Non-template `docs/spatial-memory/papers/*.md` | Page metadata | `SM-PAPERS` | Import as paper-index children |
-| `docs/spatial-memory/decisions/README.md` | `SM-DECISIONS` | `SM-ROOT` | Import decision index |
-| Non-template `docs/spatial-memory/decisions/*.md` | Page metadata | `SM-DECISIONS` | Import as decision-index children |
-| `docs/spatial-memory/experiments/README.md` | `SM-EXPERIMENTS` | `SM-ROOT` | Import experiment index |
-| Non-template `docs/spatial-memory/experiments/*.md` | Page metadata | `SM-EXPERIMENTS` | Import as experiment-index children |
-| `docs/spatial-memory/reviews/README.md` | `SM-REVIEWS` | `SM-ROOT` | Import review index |
-| Non-template `docs/spatial-memory/reviews/*.md` | Page metadata | `SM-REVIEWS` | Import as review-index children |
-| `docs/spatial-memory/operations/README.md` | `SM-OPERATIONS` | `SM-ROOT` | Import operations parent |
-| Repository `HANDOFF.md` | `SM-OPERATIONS-HANDOFF` | `SM-OPERATIONS` | Import the canonical runbook as the operations child |
-| Any `TEMPLATE.md` | Excluded | Excluded | Repository authoring template, not a Confluence page |
-| `docs/implementation-review.md`, `docs/spatial-token-compression.md`, `docs/spatial-token-research-roadmap.md` | Excluded | Excluded | Legacy migration sources; canonical content is already in this tree |
-
-All relative page links in an imported page must resolve to another imported
-page. Refer to excluded templates and legacy sources as inline repository paths,
-not Markdown page links.
-
-[Back to documentation index](../README.md)
+[문서 목록으로 돌아가기](../README.md)

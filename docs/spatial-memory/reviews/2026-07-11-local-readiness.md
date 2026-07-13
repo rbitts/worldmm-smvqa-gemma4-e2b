@@ -1,63 +1,48 @@
-# 2026-07-11 Local Readiness Review
+# 2026-07-11 로컬 준비 상태 검토
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-REVIEW-2026-07-11 |
-| Review type | Local correctness and end-to-end readiness |
-| Scope | Code, tiny fixture, contracts, and launch-plan dry-run |
-| Remote work | None |
-| Verdict | Local preparation ready; learned reproduction incomplete |
+| 검토 유형 | Local correctness와 end-to-end readiness |
+| 범위 | Code, tiny fixture, contract, launch-plan dry-run |
+| Remote 작업 | 없음 |
+| 결론 | 로컬 준비 완료, learned reproduction 미완료 |
 
-## Reviewed Path
+## 핵심 결론
 
-```text
-prepared source
-    -> causal frame inventory
-    -> explicit and typed memory
-    -> retrieval
-    -> geometry proof
-    -> mock QA and metrics
-```
+Local pipeline correctness는 통과했다. Learned-method reporting은 통과하지
+못했다. 학습된 student가 persistent QA evidence를 생성하지 않았기 때문이다.
+검토 시점 결정은 benchmark claim 전에 checkpoint-to-record inference를 완결하는
+것이었다.
 
-The review also traced the learned path from teacher cache through DDP training
-and determined where it stops before deployment.
+## 근거
 
-## Closed Correctness Findings
+| 영역 | 해결된 finding |
+|---|---|
+| Memory state | Latest causal state, one-to-one association, validity closure, frame, uncertainty를 explicit하게 처리 |
+| Geometry | Typed object가 deterministic executor에 연결되고 incomplete count/last-seen은 abstain하며 proof hash가 query behavior를 bind |
+| QA trust | Future, missing, duplicate, unknown, off-scope, contradictory, stale-resume evidence 거부 |
+| Training/ops | DDP normalization, atomic checkpoint, approval-gated submitter 검증 |
 
-- count and last-seen treat neither bounded retrieval nor the byte-budgeted
-  typed artifact as a complete index;
-- latest-state selection prefers fresh causal records and rejects conflicts;
-- typed objects enter the geometry executor through an explicit adapter;
-- missing coordinate frames cannot silently match arbitrary frames;
-- quantization error increases uncertainty conservatively;
-- inverse relations preserve endpoint roles;
-- same-time instance association is one-to-one;
-- previous object state closes when movement is recorded;
-- proof hashes include behavior-affecting query options;
-- answer choices must agree with deterministic geometry proofs;
-- future, missing, duplicate, unknown, and off-scope evidence is rejected;
-- QA resume artifacts bind current inputs and model/prompt contracts;
-- DDP losses use global numerators and denominators;
-- generated submitters require explicit remote approval.
+검증 결과는 test 341개 통과, environment-specific test 1개 skip, Ruff와
+basedpyright 통과, tiny preflight·mock QA error/causal violation 0이었다.
 
-## Remaining Critical Findings
+## 남은 핵심 과제
 
-- the trained student is not used to produce persistent QA evidence;
-- geometry supervision still depends on external vectors;
-- association remains a closed-set classification head;
-- variable typed geometry lacks checkpoint inference decoding;
-- QA-aware selector utility and the typed student write decision are separate;
-- full-result reporting is not part of the preferred typed DAG.
+1. Student checkpoint가 persistent evidence 생성에 사용되지 않았다.
+2. Geometry supervision이 external vector에 의존했다.
+3. Association이 closed-set classification에 머물렀다.
+4. Variable typed geometry의 checkpoint inference decoding이 없었다.
+5. QA-aware selector utility와 deployed typed write decision이 분리돼 있었다.
+6. Preferred DAG에 공식 result reporting이 포함되지 않았다.
 
-## Verification Snapshot
+## 의사결정 영향
 
-- 341 tests passed; one environment-specific test skipped intentionally.
-- Ruff and basedpyright passed.
-- Tiny preflight returned zero errors.
-- Tiny mock QA returned zero causal violations.
-- No real training, model download, benchmark evaluation, SSH, or Slurm work ran.
+Decode, association, evidence, lineage를 닫는 최소 end-to-end bridge만 진행한다.
+Local mock metric이나 contract check를 benchmark result로 사용하지 않는다.
 
-This page records the review at the stated date. Later changes belong in a new
-dated review and in [Current Status](../status.md).
+이 review에서는 실제 training, model download, benchmark evaluation, SSH,
+Slurm 작업을 수행하지 않았다. 이후 사실은 [현재 상태](../status.md) 또는 새
+날짜별 review에 기록한다.
 
-[Back to review index](README.md)
+[검토 목록으로 돌아가기](README.md)

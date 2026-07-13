@@ -1,294 +1,140 @@
-# Architecture
+# 아키텍처
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-ARCHITECTURE |
-| Status | Living specification |
-| Last updated | 2026-07-12 |
-| Current implementation | Source-compact baseline plus production typed handoff bridge |
-| Target implementation | Guided transient geometry to learned typed persistent memory |
+| 상태 | 갱신형 specification |
+| 최종 갱신 | 2026-07-13 |
+| 현재 구현 | Heuristic baseline과 external typed-inference bridge |
+| 목표 | Guided transient geometry에서 learned typed persistent memory까지 연결 |
 
-## Architecture Principle
+## 핵심 아키텍처 결정
 
-Dense geometry is temporary computation. Long-term memory is an explicit,
-versioned spatial database containing only records needed for geometry QA,
-localization, and meaningful change history.
+| 영역 | 결정 |
+|---|---|
+| Persistent representation | Dense map/recurrent snapshot 대신 explicit typed record 사용 |
+| Geometry provider | G-CUT3R-compatible model을 transient external teacher/front-end로 사용 |
+| Storage control | Canonical serialized byte에 hard limit 적용 |
+| Spatial answer | Deterministic executor가 proof 또는 abstention 생성 |
+| 현재 경계 | Repository checkpoint 이후 external type-specific decode 필요 |
 
-G-CUT3R or another geometry foundation model is a teacher or front-end. Its
-recurrent state and dense point maps are not persistent memory.
+이 아키텍처는 contract probe 준비 상태이며 production 품질을 입증한 상태가 아니다.
+핵심 검증 대상은 실제 checkpoint가 question/label leakage 없이 valid하고 유용한
+byte-bounded record를 생성하는지 여부다.
 
-## Memory Layers
-
-```text
-Fast pose memory
-    recent alignment, motion, IMU/VIO state
-    frequent updates, short lifetime
-
-Transient geometry working state
-    point maps, depth, confidence, candidate slots
-    used while processing observations, then discarded
-
-Persistent explicit map
-    place, structure, object, free-space, and event records
-    infrequent verified writes
-
-Relocalization memory
-    sparse position, viewing ray, descriptor, uncertainty
-
-Evidence reservoir
-    bounded crops or events for text, appearance, surprise, and uncertainty
-```
-
-The separation prevents tracking updates from overwriting auditable long-term
-facts.
-
-## Current Local Baseline
+## 시스템 흐름
 
 ```text
-prepared source streams
-    -> causal at-most-1-Hz RGB inventory
-    -> structured object, pose, and gaze geometry
-    -> zone, object, relation, and trajectory candidates
-    -> per-window token and actual-byte writer
-    -> causal WorldMM retrieval
-    -> deterministic geometry executor
-    -> four-choice mock QA
+1 Hz RGB + native-rate IMU/VIO + optional calibrated depth
+    -> transient guided geometry state
+    -> typed candidates
+       object / plane / portal / free-space / landmark / event / no-write
+    -> utility and actual-byte selection
+    -> local-frame persistent database
+    -> causal retrieval
+    -> deterministic geometry proof
+    -> four-choice answer or abstention
 ```
 
-The baseline is intentionally heuristic. It validates contracts and failure
-boundaries before adding a large provider or learned writer.
+현재 local baseline은 learned geometry와 selection을 structured source field와
+heuristic으로 대체한다. 목적은 contract 검증이다.
 
-Relevant implementation:
+## Memory layer 구성
 
-- `src/worldmm_smvqa/sensor_frames.py`
-- `src/worldmm_smvqa/worldmm/spatial.py`
-- `src/worldmm_smvqa/worldmm/spatial_compression.py`
-- `src/worldmm_smvqa/retrieval.py`
-- `src/worldmm_smvqa/worldmm/geometry_executor.py`
-
-## Target Learned Path
-
-```text
-1 Hz RGB --------------------------+
-native-rate IMU/VIO ---------------+-> guided geometry teacher
-optional calibrated depth ---------+        |
-                                              v
-                                  causal transient geometry state
-                                              |
-                                              v
-                                     typed candidate decoder
-                         object / plane / portal / free-space
-                              landmark / event / no-write
-                                              |
-                            QA utility, geometry novelty,
-                         uncertainty reduction, pose information,
-                           event surprise, redundancy, bytes
-                                              |
-                                              v
-                                  hard actual-byte writer
-                                              |
-                                              v
-                                  local-frame persistent DB
-```
-
-The trained checkpoint does not expose enough information for this repository's
-generic student head to invent production typed geometry. The current handoff
-therefore delegates type-specific decode and open-world association to an
-approved executable with the exact `worldmm-spatial-infer-v1` contract:
-
-```text
-spatial_student.pt + sanitized sources + frame/sensor inventory
-    -> WORLDMM_SPATIAL_INFER_EXE
-    -> canonical typed_memory.jsonl
-    -> typed_memory.inference.json
-    -> repository schema, byte, digest, retrieval, and QA validation
-```
-
-The executable receives no questions or labels. Its sources input is the
-run-scoped sanitized copy under `inference_inputs/`, not the full fixture.
-Preflight first applies the at-most-1-Hz sensor manifest, clears transcript,
-caption, OCR, and object fields, and erases selected-frame descriptions; it
-retains source identity/time, pose/gaze, selected frame refs, and selected frame
-timestamps. Only those selected frame files are copied to
-`inference_inputs/frames/`, which becomes the frame root for every
-post-preflight adapter and QA stage. This is a production bridge, not evidence
-injection: repository retrieval builds the evidence packs from returned typed
-records and binds their lineage to the checkpoint, inference manifest, memory
-manifest, and exact episodic, semantic, visual, and typed-spatial bytes.
-
-Relevant preparation code:
-
-- `src/worldmm_smvqa/worldmm/gcut3r_teacher.py`
-- `src/worldmm_smvqa/teacher_materializer.py`
-- `src/worldmm_smvqa/spatial_train.py`
-- `src/worldmm_smvqa/worldmm/typed_memory.py`
-
-## Persistent Record Types
-
-| Type | Minimum geometry | Primary purpose |
+| Layer | 수명 | 목적 |
 |---|---|---|
-| Place/submap | Local SE(3) anchor, covariance, topology | Stable coordinate ownership and loop correction |
-| Plane | Normal, offset, extent, uncertainty | Wall, floor, ceiling, support geometry |
-| Portal | Position, orientation, extent, connected frames | Room transition and topology |
-| Free space | Coarse polygon or tile, height, validity | Reachability and visibility |
-| Object | Entity and instance IDs, centroid, extent, orientation | Metric and semantic object QA |
-| Landmark | Position, viewing ray, descriptor, quality | Relocalization and association |
-| Event | Kind, entities, before/after state, validity | Moved, appeared, disappeared, opened, closed |
-| No-write | Decision trace only | Explicit rejection; never persisted |
+| Fast pose memory | 짧음 | Alignment, motion, IMU/VIO state |
+| Transient geometry | Processing window 단위 | Point map, depth, confidence, candidate slot |
+| Persistent map | 장기 | 감사 가능한 place, structure, object, free-space, event fact |
+| Relocalization memory | 장기·sparse | Position, viewing ray, descriptor, uncertainty |
+| Evidence reservoir | 장기·bounded | Text, appearance, surprise, uncertain observation |
 
-Every persistent record also requires source video, local frame, temporal
-validity, confidence or uncertainty, provenance, and evidence references.
+Tracking state는 persistent fact를 덮어쓸 수 없다. Dense geometry는 verified
+record를 쓴 뒤 폐기한다.
 
-## Identity and Time
+## Persistent record contract 정의
 
-- Explicit source instance IDs take priority.
-- Heuristic association is one-to-one within an observation time.
-- Revisited detections may reuse a prior ID only when temporal and geometry
-  compatibility permits it.
-- A move closes the previous validity interval and creates a new state or event.
-- Retrieval selects the latest causally valid, non-conflicting state.
-- Missing frames, conflicting latest states, or incomplete indexes cause
-  abstention where required.
+| Type | 최소 geometry | 의사결정 용도 |
+|---|---|---|
+| Place/submap | Local SE(3) anchor, covariance, topology | Coordinate ownership, loop correction |
+| Plane | Normal, offset, extent, uncertainty | Wall, floor, ceiling, support |
+| Portal | Position, orientation, extent, connected frame | Transition, topology |
+| Free space | Coarse polygon/tile, height, validity | Reachability, visibility |
+| Object | Entity/instance ID, centroid, extent, orientation | Metric·semantic object QA |
+| Landmark | Position, viewing ray, descriptor, quality | Relocalization, association |
+| Event | Kind, entity, before/after state, validity | Movement, state change |
+| No-write | Decision trace만 보유 | Rejected candidate이며 persist 금지 |
 
-## Coordinate Frames
+모든 persisted record는 source video, local frame, temporal validity,
+confidence/uncertainty, provenance, evidence reference를 포함한다.
 
-Records are owned by local place or submap frames. Cross-frame operations require
-an explicit transform. Missing frames never silently match a requested frame.
-
-Supported frame meanings must remain distinct:
-
-- wearer-relative egocentric;
-- place/submap allocentric;
-- object-centric;
-- globally optimized building frame.
-
-Loop closure should update a submap transform rather than rewrite every object.
-
-## Writer Objective
-
-Candidate `i` is useful when it reduces future loss or uncertainty enough to
-justify its actual storage cost.
+## Production bridge 구조
 
 ```text
-utility(i)
-    = future QA loss reduction
-    + geometry coverage
-    + uncertainty reduction
-    + relocalization information
-    + event surprise
-    - redundancy
-    - serialized byte cost
+spatial_student.pt + sanitized sources + selected frames + sensor manifest
+    -> WORLDMM_SPATIAL_INFER_EXE (`worldmm-spatial-infer-v1`)
+    -> canonical typed_memory.jsonl + typed_memory.inference.json
+    -> repository schema, byte, digest, retrieval, proof, and QA validation
 ```
 
-Inference uses a hard writer with a real byte budget. Token count or a latent
-regularizer is not accepted as a substitute for serialized size.
+Executable에는 question과 label을 전달하지 않는다. Input은 selected source
+identity/time, pose/gaze, frame reference, frame timestamp만 포함한다. Transcript,
+caption, OCR, object annotation, unselected frame은 제거한다. Executable은
+type-specific decode, open-world association, candidate selection을 담당하고,
+repository code는 validation과 downstream evidence를 담당한다.
 
-Production typed artifacts are canonical UTF-8 JSONL. Budget accounting groups
-records by
-`(source_video_id, floor(first_seen_time / window_seconds))`; the current
-contract fixes `window_seconds=30.0` and defaults to 4,096 bytes per window.
-The repository rejects noncanonical rows, duplicate IDs, persisted `no_write`
-records, empty output, manifest mismatches, canonical rows over 1 MiB, and any
-over-budget window. Validation streams the artifact. Learned candidate utility
-inside the external decoder remains an unverified model property until the
-company-side probe runs.
+## 필수 control
 
-Production validation also joins records to sanitized sources and selected
-sensor frames. Source video and all record times must be in source bounds.
-`observed`, `multi_view_fused`, and `human_confirmed` require evidence; each
-typed `evidence_ref` is a bare same-video selected `frame_ref` whose timestamp
-falls within first/last seen. Its min/max timestamps must equal first/last seen,
-and `observation_count` must equal unique evidence count. This also prevents
-backdating because 30-second accounting keys on first seen. QA prediction audits
-use the separate `<video_id>/<frame_ref>` namespace.
+| Control | 요구사항 |
+|---|---|
+| Sampling | 모든 variant가 하나의 causal at-most-1-Hz frame inventory 공유 |
+| Byte budget | Canonical UTF-8 JSONL, 기본 4,096 byte per `(source_video_id, floor(first_seen_time / 30s))` window |
+| Artifact validity | Empty/noncanonical output, duplicate ID, persisted `no_write`, 1 MiB 초과 row, manifest mismatch, over-budget window 거부 |
+| Evidence grounding | Observed/fused/human record는 validity 내 selected same-video frame을 인용하고 min/max evidence time과 first/last seen, unique count와 `observation_count`가 일치 |
+| Identity/time | Explicit ID 우선, observation별 one-to-one association, move 시 이전 validity 종료, latest causal non-conflicting state retrieval |
+| Coordinate | Record는 local frame에 속하고 cross-frame operation은 explicit transform 요구 |
+| Retrieval | Question-video scope와 question-time cutoff 필수 |
+| Geometry proof | Entity role, operation, value, frame, unit, uncertainty, provenance, evidence, behavior-affecting option을 stable hash에 포함 |
+| Completeness | `count`/`last_seen`은 complete-index certificate, label-only pair는 certified uniqueness가 없으면 abstain |
+| QA boundary | Prompt에는 raw geometry dictionary가 아닌 verified proof만 제공하며 answer choice와 cited proof가 일치하고 real frame을 load해야 함 |
+| Lineage | Checkpoint, executable, typed memory, memory manifest, episodic/semantic/visual store, frame, sensor, config, data, prompt, prediction, metric hash 재계산·결속 |
+| Finalization | Remote manifest를 completion marker로 쓰기 전에 QA completion과 finalization input seal |
 
-## Query Path
+현재 deterministic operation은 `distance`, `near`, `relative_direction`,
+`last_seen`, `count`다. Missing frame, ambiguous entity, incompatible frame,
+excessive uncertainty, incomplete index는 abstention을 유발한다.
+
+## Writer 목표
+
+실제 저장 byte당 future QA·geometry value가 가장 큰 record를 선택한다.
 
 ```text
-question
-    -> language-to-operator planner
-    -> causal entity and geometry retrieval
-    -> deterministic operation
-    -> proof object
-    -> answer-choice verification
-    -> language explanation or abstention
+utility = QA loss reduction + geometry coverage + uncertainty reduction
+        + relocalization value + event surprise - redundancy - byte cost
 ```
 
-A proof contains:
+현재 production validation은 byte를 강제하지만 external decoder가 이 utility를
+학습했는지는 입증하지 못한다. 이는 회사 run에서 검증할 empirical question이다.
 
-- subject and object entity roles;
-- operation and value;
-- coordinate frame;
-- uncertainty and unit;
-- provenance;
-- evidence references;
-- a stable hash of every behavior-affecting query option.
+## 현재 gap과 실행 방향
 
-Count and last-seen operations require a complete-index certificate. The model
-prompt does not receive raw geometry dictionaries that could bypass the proof.
-The byte-budgeted student artifact cannot provide that certificate because
-selection may omit an object, newer state, or change event. Production student
-count and last-seen therefore abstain. Pair proofs may use all persisted causal
-objects in question-video scope only when the question names explicit entity
-IDs. Label-only selectors also require a completeness certificate proving
-uniqueness. Retrieved spatial evidence must first exact-match the canonical
-typed retrieval projection on ID, video, snippet, frame refs, times, and
-geometry. Pair proofs use record-local frames and reject cross-video pairs.
+Repository는 typed schema, teacher/cache contract, DDP candidate-head training,
+hard byte validation, retrieval, proof, QA check, lineage, report generation을
+소유한다. Production G-CUT3R extractor, raw sensor encoder, type-specific
+inference decoder, learned open-world association은 소유하지 않는다.
 
-## Causal and Trust Boundaries
+다음 실행은 승인된 contract probe다. Probe가 decode, association, byte
+selection, grounding, lineage의 구체적 실패를 확인하기 전에는 새 memory
+abstraction을 추가하지 않는다.
 
-- Evidence end time cannot exceed question time.
-- External teacher/inference adapters are digest-bound trusted executables. The
-  DAG denylist-scrubs known sensitive variables but is not an OS sandbox or
-  `env -i`; ambient `PATH`, `HOME`, `PYTHONPATH`, and Slurm state remain.
-- Evidence video must belong to the question scope.
-- Evidence IDs must be known, unique, and present exactly once per question.
-- Student QA recomputes evidence, checkpoint, typed-memory, inference-manifest,
-  config, sensor, and data hashes before invoking the model. It also parses the
-  supplied memory manifest and requires its SHA-256 plus the referenced
-  episodic, semantic, and visual file SHA-256 values to match student evidence
-  lineage. Typed memory keeps its separate inference-bound digest.
-- Resume artifacts are also bound to question, source, evidence, backend,
-  model, prompt, schema, evidence lane, required-frame policy, the memory
-  manifest, and the evidence-lineage file. The evidence-lineage digest is the
-  transitive resume binding for individual non-spatial store digests, which QA
-  still recomputes before a student QA start or resume.
-- QA prompt/resume contracts are versioned as
-  `qa-prompt-prediction-schema-v4` and `qa-resume-manifest-v5`. Prompt frame
-  rows carry `video_id`, `frame_ref`, and `timestamp`; persisted prediction refs
-  use `<video_id>/<frame_ref>` so equal frame names in different videos cannot
-  collide.
-- `qa/completed.json` seals predictions against the resume manifest. The report
-  stage then writes and rechecks `summary/finalization_inputs.sha256` so QA,
-  evidence lineage, memory manifest, episodic/semantic/visual stores, typed
-  memory, snapshot config, sensor, and split inputs cannot change between
-  evaluation and final identity/report generation. Finalization also rehashes
-  every named path immediately before publication and writes the remote
-  manifest last as the completion marker.
-- Production QA fails when an evidence pack resolves no real input frame.
-- `observed`, `multi_view_fused`, `model_inferred`, and `relation_inferred`
-  provenance remain distinguishable.
-
-## Decisions
+## 채택한 결정
 
 - [ADR-0001: Explicit typed memory](decisions/adr-0001-explicit-typed-memory.md)
-- [ADR-0002: G-CUT3R as teacher](decisions/adr-0002-gcut3r-as-teacher.md)
-- [ADR-0003: Value per actual byte](decisions/adr-0003-value-per-byte-writer.md)
+- [ADR-0002: G-CUT3R teacher](decisions/adr-0002-gcut3r-as-teacher.md)
+- [ADR-0003: Actual byte당 value](decisions/adr-0003-value-per-byte-writer.md)
 - [ADR-0004: Deterministic geometry proof](decisions/adr-0004-deterministic-geometry-proof.md)
 
-## Current Boundary
+현재 go/no-go는 [현재 상태](status.md), 승인된 실행 절차는 repository
+`HANDOFF.md`를 따른다.
 
-The repository-owned model still ends at `spatial_student.pt`; the staged
-production lane continues through the external typed inference contract and
-then returns to repository-owned validation, retrieval, QA, metrics,
-profile-bound run identity, and report generation. That lane is implemented but
-has not run on company data. A `probe` run is explicitly `contract_probe` /
-`PROBE`; only the separately approved `full` profile is `student` / `E1`.
-Official E1/E2/E3 remains blocked because matched E2/E3 identities are not
-generated. See
-[Current Status](status.md),
-[EXP-0002](experiments/exp-0002-typed-memory-bridge.md), and the operational
-source of truth is repository `HANDOFF.md`, imported under the
-[Operations](operations/README.md) parent in Confluence and not duplicated here.
-
-[Back to project home](README.md)
+[프로젝트 홈으로 돌아가기](README.md)

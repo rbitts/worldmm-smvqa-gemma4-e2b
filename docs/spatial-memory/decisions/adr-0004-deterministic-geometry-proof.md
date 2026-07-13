@@ -1,24 +1,16 @@
-# ADR-0004: Require deterministic proofs for geometry answers
+# ADR-0004: Geometry 답변에 deterministic proof 요구
 
-| Metadata | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-ADR-0004 |
 | ADR | ADR-0004 |
-| Project claims | C-003, C-009 |
-| Status | Accepted; locally verified |
-| Date | 2026-07-11 |
-| Traceability | [Geometry-grounded QA and auditability requirements](../traceability.md) |
-| Architecture | [Geometry executor and QA boundary](../architecture.md) |
+| 프로젝트 claim | C-003, C-009 |
+| 상태 | 채택; 로컬 검증 완료 |
+| 결정일 | 2026-07-11 |
+| 추적성 | [Geometry-grounded QA와 auditability 요구사항](../traceability.md) |
+| 아키텍처 | [Geometry executor-QA 경계](../architecture.md) |
 
-## Context and problem
-
-LLM이 spatial snippet이나 latent feature만 보고 거리, 방향, 개수, last-seen 값을
-생성하면 답을 좌표와 관측 근거로 검증하기 어렵다. Coordinate frame, uncertainty,
-entity role, temporal completeness가 빠지면 문법적으로 그럴듯한 답도 잘못될 수
-있다. Retrieved payload 자체를 prompt에 그대로 넣으면 untrusted spatial text가
-geometry fact처럼 사용될 위험도 있다.
-
-## Decision
+## 핵심 결론
 
 지원되는 geometry operation은 deterministic executor가 explicit record에서
 계산한다. Executor는 answerable value 또는 이유가 있는 abstention을 반환한다.
@@ -30,7 +22,7 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 인용해야 하며, machine-decodable choice가 proof value와 모순되면 prediction을
 거부한다.
 
-## Evidence
+## 근거와 판단 이유
 
 - [ConceptGraphs](../papers/conceptgraphs.md)는 explicit object relation과 queryable
   scene representation의 관련 근거다.
@@ -44,17 +36,7 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 - `src/worldmm_smvqa/qa.py`는 proof ID와 selected choice의 일관성을
   검증한다.
 
-## Alternatives considered
-
-| Alternative | Why not selected |
-|---|---|
-| LLM이 snippet에서 geometry를 직접 추론 | 좌표계, 수치, 근거를 재현 가능하게 검증하기 어려움 |
-| Raw geometry dictionary를 prompt에 전달 | unvalidated payload가 fact 또는 instruction처럼 사용될 수 있음 |
-| 모든 spatial relation을 graph edge로 미리 저장 | pairwise growth가 크고 좌표에서 계산 가능한 관계를 중복 저장함 |
-| 불확실성을 무시한 point estimate | near threshold와 direction boundary에서 과도한 확신을 생성함 |
-| 근거가 부족해도 best-effort answer 생성 | geometry-grounded 계약을 위반함; abstention이 더 안전함 |
-
-## Implementation
+## 구현 방향
 
 - 지원 operation은 `distance`, `near`, `relative_direction`, `last_seen`, `count`다.
 - Metric pair operation은 grounded provenance, 동일 coordinate frame, 완전한 XYZ,
@@ -78,7 +60,7 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 - QA trust boundary는 unknown, duplicate, unanswerable proof ID와 choice contradiction을
   거부한다.
 
-## Verification
+## 검증 결과와 남은 과제
 
 - `tests/test_geometry_executor.py`는 지원 operation과
   proof contents를 검사한다.
@@ -92,7 +74,25 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 - 로컬 tiny fixture에서 causal proof path를 검사했다. Official benchmark 결과나
   unrestricted natural-language geometry parser의 정확도를 주장하지 않는다.
 
-## Consequences
+## 배경
+
+LLM이 spatial snippet이나 latent feature만 보고 거리, 방향, 개수, last-seen 값을
+생성하면 답을 좌표와 관측 근거로 검증하기 어렵다. Coordinate frame, uncertainty,
+entity role, temporal completeness가 빠지면 문법적으로 그럴듯한 답도 잘못될 수
+있다. Retrieved payload 자체를 prompt에 그대로 넣으면 untrusted spatial text가
+geometry fact처럼 사용될 위험도 있다.
+
+## 대안
+
+| 대안 | 미선택 이유 |
+|---|---|
+| LLM이 snippet에서 geometry를 직접 추론 | 좌표계, 수치, 근거를 재현 가능하게 검증하기 어려움 |
+| Raw geometry dictionary를 prompt에 전달 | unvalidated payload가 fact 또는 instruction처럼 사용될 수 있음 |
+| 모든 spatial relation을 graph edge로 미리 저장 | pairwise growth가 크고 좌표에서 계산 가능한 관계를 중복 저장함 |
+| 불확실성을 무시한 point estimate | near threshold와 direction boundary에서 과도한 확신을 생성함 |
+| 근거가 부족해도 best-effort answer 생성 | geometry-grounded 계약을 위반함; abstention이 더 안전함 |
+
+## Trade-off 검토
 
 - Geometry answer가 entity, frame, uncertainty, provenance, evidence로 감사 가능하다.
 - 지원되지 않거나 모호한 질문은 답변하지 않는다. Coverage보다 correctness와
@@ -104,6 +104,6 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 - Complete-index certificate의 생성 주체와 scope를 persistent memory pipeline에서
   명시해야 한다.
 
-## Supersession
+## 대체 이력
 
-None.
+없음.

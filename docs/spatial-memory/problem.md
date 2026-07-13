@@ -1,118 +1,60 @@
-# Problem and Research Questions
+# 문제 정의와 연구 질문
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-PROBLEM |
-| Status | Active |
-| Last updated | 2026-07-11 |
-| Scope | SuperMemory-VQA and eventual AI-glass deployment |
+| 상태 | 활성 |
+| 최종 갱신 | 2026-07-13 |
+| 범위 | SuperMemory-VQA와 향후 AI-glass 배포 |
 
-## Problem
+## 핵심 결론
 
-An AI-glass system must answer later questions grounded in space and time while
-observing only sparse RGB frames and retaining limited long-term memory.
+Long-term memory를 explicit, typed, byte-bounded spatial record로 구축한다.
+Dense geometry는 observation 처리 중에만 사용하고, metric answer에는
+deterministic proof를 요구한다. 동일 actual-byte budget의 explicit baseline을
+측정하기 전에는 generic latent quantization을 우선하지 않는다.
 
-The system must support questions such as:
+## 필요성
 
-- Where was an object last observed?
-- How far apart were two objects?
-- Was an object moved, added, or removed?
-- What was left, right, in front of, or behind the wearer?
-- Which objects were supported by or contained in another object?
-- Can the wearer move between two places through known portals and free space?
+AI glass는 약 1 Hz의 sparse RGB를 관측하고 제한된 저장 공간에서 이후의 위치,
+거리, 방향, containment, reachability, change 질문에 답해야 한다. Frame, dense
+map, recurrent-state snapshot은 시간에 따라 증가하며 직접 감사 가능한 evidence를
+제공하지 않는다.
 
-Text-only answers are insufficient. Geometry answers require an auditable proof
-containing entity identities, operation, coordinate frame, uncertainty,
-provenance, temporal validity, and evidence references.
-
-## Constraints
-
-### RQ-001: Sparse sensing
-
-RGB observations are approximately 1 Hz. Consecutive views can have low overlap,
-wide baselines, blur, occlusion, or room transitions. Native-rate IMU/VIO may be
-available and must remain separate from the RGB sampling budget.
-
-### RQ-002: Lifelong storage
-
-Memory growth must follow new places, objects, and meaningful changes rather
-than frame count. Repeated visits to an unchanged room must converge toward a
-stable current-state representation.
-
-### RQ-003: Explicit geometry-grounded QA
-
-Metric answers cannot be guessed by a language model. A deterministic executor
-must compute distance, direction, visibility, topology, temporal state, and
-other supported operators from explicit records.
-
-### RQ-004: Unknown future questions
-
-The writer does not know future questions. Optimizing only for a fixed QA
-template distribution can delete information needed by out-of-distribution
-questions.
-
-### RQ-005: Device model cost
-
-The final system needs a compact student path. Large geometry foundation models
-may serve as offline teachers, but their reported server-GPU throughput does not
-establish on-device feasibility.
-
-### RQ-006: Causality and provenance
-
-No question may use observations after its question time. Model-inferred
-geometry must remain distinguishable from direct or multi-view observation.
-
-## Core Hypothesis
-
-Future geometry QA can be preserved more efficiently by directly generating
-typed sufficient statistics than by generating and then compressing generic
-dense features.
+핵심 가설:
 
 ```text
-image and sensor history
-    -> transient dense reasoning
-    -> sparse typed memory records
-    -> deterministic geometry operations
-    -> answer and proof
+sparse observations -> transient geometry -> typed records
+    -> deterministic operation -> answer + proof
 ```
 
-## Success Criteria
+## 핵심 연구 질문
 
-### Correctness
+| ID | 제약 | 필요한 결과 |
+|---|---|---|
+| RQ-001 | Sparse, low-overlap sensing | Causal RGB와 available IMU/VIO 또는 depth guidance 결합 |
+| RQ-002 | Lifelong storage | Frame 수가 아닌 새 장소·object·change에 비례하는 growth |
+| RQ-003 | Geometry-grounded QA | Explicit record와 deterministic operator에서 metric answer 생성 |
+| RQ-004 | 미지의 future question | Query-agnostic geometry core와 bounded evidence reserve 보존 |
+| RQ-005 | Device model cost | Record contract와 server baseline 안정화 후 distillation |
+| RQ-006 | Causality와 provenance | Future evidence 차단, observed/inferred geometry 구분 |
 
-- Every answerable geometry response carries a matching deterministic proof.
-- Entity identity, frame, validity, uncertainty, and provenance remain intact.
-- Causal violation count is zero.
-- Unknown or unsupported geometry causes abstention rather than fabrication.
+## 성공 gate
 
-### Compression
+| 영역 | Gate |
+|---|---|
+| Correctness | Answerable geometry result마다 entity, frame, validity, uncertainty, provenance, evidence, proof 일치 |
+| Safety | Unsupported/incomplete geometry는 abstain하고 causal violation은 0 |
+| Compression | Hour·area·object·event·revisit당 actual byte와 QA-versus-bytes Pareto 보고 |
+| Model | Checkpoint가 valid typed record를 decode하고 existing-instance 또는 `NEW` association 지원 |
+| Evaluation | Matched variant의 split, data, frame, model, checkpoint, config, seed, prompt digest 고정 |
 
-- Storage is measured using actual serialized bytes.
-- Results report bytes per hour, new area, object, and change event.
-- Repeated-visit growth is measured explicitly.
-- QA and geometry quality are reported as a Pareto curve against bytes.
+## 비목표
 
-### Model
+- Lifelong dense point map, Gaussian scene, recurrent-state snapshot 저장.
+- Photorealistic reconstruction을 primary objective로 사용.
+- Spatial-only language model 구축.
+- Server-GPU throughput만으로 on-device 가능성 주장.
+- Explicit actual-byte baseline 전에 learned codec 도입.
 
-- Sparse RGB and pose guidance share a causal observation contract.
-- Student output decodes into valid typed records.
-- Learned association supports unseen instances or explicitly emits `NEW`.
-- The deployed write gate is the gate supervised by QA and geometry utility.
-
-### Evaluation
-
-- Official split, data digest, model digest, checkpoint digest, configuration,
-  seed, and frame manifest are recorded.
-- Main, without-spatial, and retrieval-protocol ablations share those contracts.
-- Paper-reported results and project-reproduced results are never mixed.
-
-## Non-Goals
-
-- Lifelong storage of dense point maps, Gaussian scenes, or recurrent-state
-  snapshots.
-- Photorealistic reconstruction as the primary metric.
-- A spatial-only language model.
-- Claiming on-device feasibility from server-GPU experiments.
-- Adding a learned codec before explicit actual-byte baselines are measured.
-
-[Back to project home](README.md)
+[프로젝트 홈으로 돌아가기](README.md)

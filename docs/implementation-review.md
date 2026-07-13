@@ -1,130 +1,38 @@
-# SuperMemory-VQA Spatial Memory Implementation Review
+# SuperMemory-VQA Spatial Memory 구현 검토
 
-> Historical 2026-07-11 review source. The immutable review page is
-> [spatial-memory/reviews/2026-07-11-local-readiness.md](spatial-memory/reviews/2026-07-11-local-readiness.md),
-> and current status lives in [spatial-memory/status.md](spatial-memory/status.md).
+| 항목 | 값 |
+|---|---|
+| Page ID | SM-IMPLEMENTATION-REVIEW |
+| 문서 역할 | 과거 검토 요약 |
+| 검토일 | 2026-07-11 |
+| 현재 source of truth | [현재 상태](spatial-memory/status.md) |
+| 고정 검토 기록 | [2026-07-11 로컬 준비 상태](spatial-memory/reviews/2026-07-11-local-readiness.md) |
 
-## Verdict
+## 핵심 결론
 
-Current repository is a strong local-preparation scaffold plus a working
-heuristic explicit-memory baseline. It is not yet an end-to-end reproduction of
-the learned G-CUT3R-derived method.
+로컬 준비는 완료됐지만 learned end-to-end reproduction은 완료되지 않았다.
+Heuristic explicit-memory 경로는 tiny fixture에서 동작했으나, 학습된 student가
+QA에 사용되는 persistent evidence를 생성하지 못했다.
 
-The source-compact baseline runs:
+## 검토 시점 근거
 
-```text
-prepared source streams
-  -> causal 1 Hz inventory
-  -> explicit object/relation/zone/trajectory tokens
-  -> actual-byte per-window writer
-  -> causal retrieval
-  -> deterministic geometry proofs
-  -> four-choice QA and 0-100 benchmark metrics
-```
+- Causal source inventory, explicit memory, actual-byte limit, retrieval,
+  deterministic proof, four-choice QA, 0–100 metric이 로컬에서 동작했다.
+- Typed schema, external teacher/cache contract, DDP candidate-head training,
+  hard typed-record validation이 구현돼 있었다.
+- 341개 test와 Ruff, basedpyright가 통과했고 tiny QA의 causal violation은 0이었다.
+- 실제 model download, training, benchmark evaluation, SSH, Slurm 작업은 없었다.
 
-The learned lane currently stops at a checkpoint:
+## 차단 결론
 
-```text
-external teacher cache + external supervision
-  -> materialized rows
-  -> DDP typed candidate head
-  -> spatial_student.pt
-  -X-> typed inference / association / persistent evidence
-```
+Pinned checkpoint가 canonical typed record를 내부 생성하고, 해당 record가
+actual-byte·grounding contract를 충족하며, QA evidence/proof가 checkpoint에
+transitive하게 연결되기 전까지 learned-method 또는 공식 benchmark 결과를
+보고하지 않는다.
 
-## Implemented And Locally Verified
+검토 당시 미완료 항목은 production G-CUT3R extraction, raw sensor encoding,
+type-specific inference decode, open-world association, 배포 write gate의 QA
+supervision, matched 공식 ablation이었다.
 
-- Prepared-dataset preflight checks IDs, semantic question/label parity,
-  four-choice/N/A contract, timebase, causal ranges, evidence scope, 1 Hz frame
-  selection, optional frame files, and spatial sensor coverage.
-- Object identity, change type, previous-state validity closure, latest-state
-  selection, one-to-one heuristic association, coordinate-frame preservation,
-  and quantization uncertainty are explicit.
-- Compact records enforce token and actual serialized-byte limits per causal
-  window. Typed records also have a total actual-byte hard writer.
-- Flat typed object, plane, portal, free-space, landmark, and event artifacts
-  can enter retrieval. `no_write` records cannot enter persistent memory.
-- Geometry execution supports distance, near, relative direction, last-seen,
-  and count. Count and last-seen abstain without a complete-index certificate;
-  the byte-budgeted production typed artifact does not provide one. Pair proofs
-  require explicit entity IDs unless the same certificate proves label
-  uniqueness.
-- Proofs retain subject/object roles, frame, uncertainty, provenance, evidence,
-  and all query parameters in a stable proof hash.
-- QA rejects unknown, missing, duplicate, off-scope, or future evidence packs.
-  Spatial snippets and geometry dictionaries are removed from model prompts.
-- QA resume artifacts are bound to evidence, question, source, backend, model,
-  and prompt/schema hashes.
-- Evaluation implements four-way QA-Acc and QA-MRR plus answerability F1 on the
-  paper's 0-100 scale. CLI evaluation rejects causal evidence violations.
-- Counterfactual selector rows require explicit utility and split manifests;
-  lexical evidence-overlap supervision is legacy-only.
-- DDP losses and validation use global numerators/denominators. Checkpointing is
-  atomic and configuration/cache-bound.
-- Generated Slurm DAG separates CPU/GPU work, uses 10 nodes x 8 GPUs by default,
-  enforces explicit approval and run-scoped output, passes one 1 Hz manifest
-  through ingest and teacher stages, and writes rank-specific teacher shards.
-
-## P0 Blockers Before Final Reproduction
-
-1. No installed or repository-owned G-CUT3R extractor. The current adapter and
-   cache validator are contracts only.
-2. No raw RGB/IMU/VIO student encoder. Current PyTorch model is a candidate head
-   over externally supplied vectors.
-3. No type-specific checkpoint inference decoder for variable geometry such as
-   plane/free-space polygons.
-4. No learned open-world pointer association. Current student association is a
-   closed-set class head.
-5. No internal checkpoint-to-typed-memory path. The preferred DAG still accepts
-   externally produced student evidence, so checkpoint changes need not change
-   QA metrics.
-6. QA-aware selector and typed student are separate candidate spaces. Deletion
-   utility does not supervise the deployed typed write gate.
-7. No repository-owned counterfactual deletion job that produces the utility
-   cache.
-8. Preferred typed DAG runs the main lane only. Spatial/protocol ablations,
-   byte Pareto curves, diagnostics, and final report still belong to the legacy
-   lane or operator steps.
-
-## P1 Research Gaps
-
-- Long-term source-compact memory is bounded per window, not by global/submap
-  current-state capacity. Repeated unchanged observations can still grow over
-  time to preserve historical benchmark queries.
-- Multi-evidence retrieval keeps a one-clip-per-video default. Questions needing
-  several disjoint moments require configurable diverse clip selection.
-- Query-time intervals such as "during placement" are not parsed into validity
-  constraints.
-- Allocentric and egocentric direction need separate operators. Egocentric
-  direction now requires raw IMU or online-causal VIO wearer yaw with an
-  `observed_through_time` certificate; missing/offline/future pose evidence
-  correctly causes abstention.
-- Submap graph optimization, loop closure, ray-aware landmark replacement, and
-  surprise evidence reservoir are schemas/design targets, not runtime systems.
-- External geometry and association supervision remain trusted inputs; teacher
-  record-derived type-specific target encoding is still required.
-- Official raw-data ingest is outside this repository. Prepared files must have
-  their split, time normalization, and dataset digest pinned before evaluation.
-
-## Company-Side Go/No-Go Gates
-
-Do not report final benchmark numbers until all gates pass:
-
-1. Prepared dataset preflight has zero errors; warnings are reviewed.
-2. Official evaluation split and source/question/label digests are recorded.
-3. G-CUT3R provider provenance, checkpoint, 1 Hz manifest, and causal cache
-   digests validate.
-4. Student checkpoint produces flat typed records internally; no external
-   evidence symlink bypass remains.
-5. Typed artifact file size satisfies the configured hard byte cap after actual
-   serialization.
-6. Every geometry answer cites a matching deterministic proof; count uses a
-   completeness certificate.
-7. Main, without-spatial, and retrieval-protocol lanes share model, frames,
-   split, and budgets.
-8. Causal violation count is zero and QA resume manifests match current inputs.
-9. Report includes bytes/hour, bytes/new area, bytes/object, bytes/change,
-   repeated-visit growth, and QA-vs-bytes Pareto curves.
-
-No real training, model download, benchmark evaluation, SSH session, or Slurm
-submission was performed during this local review.
+이 레거시 문서는 갱신하지 않는다. 당시 근거는 고정 검토 기록, 현재 go/no-go는
+[현재 상태](spatial-memory/status.md)를 사용한다.

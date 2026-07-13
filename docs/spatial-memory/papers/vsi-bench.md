@@ -1,34 +1,34 @@
 # Thinking in Space: How Multimodal Large Language Models See, Remember, and Recall Spaces
 
-| Field | Value |
+| 항목 | 값 |
 |---|---|
 | Page ID | SM-PAPER-VSI-BENCH |
-| Status | Reviewed; code and dataset available |
-| Publication | CVPR 2025 Oral, pp. 10632–10643; arXiv:2412.14171 v2 |
-| Primary source | [CVF proceedings](https://openaccess.thecvf.com/content/CVPR2025/html/Yang_Thinking_in_Space_How_Multimodal_Large_Language_Models_See_Remember_CVPR_2025_paper.html) |
-| Official code | [vision-x-nyu/thinking-in-space](https://github.com/vision-x-nyu/thinking-in-space) |
-| Last checked | 2026-07-11 |
-| Project links | [Parent: paper index](README.md) · [Architecture](../architecture.md) · [Traceability](../traceability.md) |
-| Project claims | [Traceability](../traceability.md): C-003, C-008 |
+| 상태 | 검토 완료; code와 dataset 사용 가능 |
+| 출판 | CVPR 2025 Oral, pp. 10632–10643; arXiv:2412.14171 v2 |
+| 1차 출처 | [CVF proceedings](https://openaccess.thecvf.com/content/CVPR2025/html/Yang_Thinking_in_Space_How_Multimodal_Large_Language_Models_See_Remember_CVPR_2025_paper.html) |
+| 공식 code | [vision-x-nyu/thinking-in-space](https://github.com/vision-x-nyu/thinking-in-space) |
+| 최종 확인 | 2026-07-11 |
+| 프로젝트 연결 | [상위: 논문 목록](README.md) · [아키텍처](../architecture.md) · [추적성](../traceability.md) |
+| 프로젝트 claim | [추적성](../traceability.md): C-003, C-008 |
 
-## 30-second summary
+## 핵심 결론
+
+- 단절된 국소 인상보다 통일된 동종 중심 표현이 더 좋다.
+- 상대 방향, 거리, 경로 및 미터법 관련 질문은 별도로 평가해야 한다.
+- 명시적인 공간 구조는 언어 전용 추론 프롬프트가 지원되지 않는 경우 도움이 될 수 있다.
+- 프로젝트에서는 결정론적 기하학 작업이 language model에 기하학 추정을 요청하는 대신 명시적 레코드를 사용해야 한다고 추론한다.
+
+## 근거 상태
+
+재현되지 않았다. VSI-Bench는 외부 공간 오류 분류 및 평가 참조로 유지된다.
+
+## 논문 핵심
 
 VSI-Bench는 다중 모드 모델이 순차 비디오에서 실내 공간을 재구성하고 불러올 수 있는지 여부를 평가한다. 프롬프트 전용 추론은 격차를 좁히지 못하는 반면, 명시적 인지 지도는 상대 거리 정확도를 향상시킵니다. 이는 전역 공간 표현 및 기하학 실행에 대한 직접적인 증거이지만 저장 압축에 대한 증거는 아니다.
 
-## Problem addressed
+## 근거
 
-강력한 비디오 언어 모델은 안정적인 동종 중심 모델을 구축하지 않고도 콘텐츠를 인식할 수 있다. VSI-Bench는 8가지 공간 작업을 사용하여 자기중심적 실내 스캔 비디오에서 구성, 측정항목 추정 및 시공간 회상을 테스트한다.
-
-## Relevant method
-
-- ScanNet, ScanNet++ 및 ARKitScenes의 288개 비디오를 통해 5,000개 이상의 QA 쌍을 구축한다.
-- 테스트 개체 수, 상대 거리, 상대 방향, 경로 계획, 절대 거리, 개체 크기, 공간 크기 및 모양 순서.
-- 객관식 작업에는 정확도를 사용하고 수치 작업에는 평균 상대 정확도를 사용한다.
-- 설명과 모델 생성 인지 지도를 이용한 프로브 모델 추론.
-
-## Paper-reported evidence
-
-| Dataset | Condition | Metric | Reported result | Location |
+| Dataset | 조건 | Metric | 논문 보고 결과 | 위치 |
 |---|---|---|---|---|
 | VSI-Bench | Gemini-1.5 Pro | Average | 45.4 | Table 1 |
 | VSI-Bench | Best reported open model, LLaVA-Video-72B | Average | 40.9 | Table 1 |
@@ -39,28 +39,28 @@ VSI-Bench는 다중 모드 모델이 순차 비디오에서 실내 공간을 재
 
 논문에서는 zero-shot 생각의 사슬과 생각의 나무가 평균 성능을 약 4포인트 감소시킨 반면, 모델 생성 인지 지도는 상대 거리 작업을 10포인트 향상시켰다고 보고한다.
 
-## What this supports here
-
-- 단절된 국소 인상보다 통일된 동종 중심 표현이 더 좋다.
-- 상대 방향, 거리, 경로 및 미터법 관련 질문은 별도로 평가해야 한다.
-- 명시적인 공간 구조는 언어 전용 추론 프롬프트가 지원되지 않는 경우 도움이 될 수 있다.
-- 프로젝트에서는 결정론적 기하학 작업이 language model에 기하학 추정을 요청하는 대신 명시적 레코드를 사용해야 한다고 추론한다.
-
-## What it does not prove
+## 판단 한계
 
 - 특정 유형의 레코드 스키마 또는 학습된 쓰기 정책이다.
 - 스토리지 감소, 실제 바이트 제한, 평생 메모리 또는 1Hz 샘플링.
 - 단안 RGB의 미터법 교정 또는 포즈 uncertainty 처리.
 - SuperMemory-VQA 전송.
 
-## Project reproduction status
+## 문제 배경
 
-재현되지 않았다. VSI-Bench는 외부 공간 오류 분류 및 평가 참조로 유지된다.
+강력한 비디오 언어 모델은 안정적인 동종 중심 모델을 구축하지 않고도 콘텐츠를 인식할 수 있다. VSI-Bench는 8가지 공간 작업을 사용하여 자기중심적 실내 스캔 비디오에서 구성, 측정항목 추정 및 시공간 회상을 테스트한다.
 
-## References
+## 관련 방법
+
+- ScanNet, ScanNet++ 및 ARKitScenes의 288개 비디오를 통해 5,000개 이상의 QA 쌍을 구축한다.
+- 테스트 개체 수, 상대 거리, 상대 방향, 경로 계획, 절대 거리, 개체 크기, 공간 크기 및 모양 순서.
+- 객관식 작업에는 정확도를 사용하고 수치 작업에는 평균 상대 정확도를 사용한다.
+- 설명과 모델 생성 인지 지도를 이용한 프로브 모델 추론.
+
+## 참고문헌
 
 - 양지한 외. [Thinking in Space: How Multimodal Large Language Models See, Remember, and Recall Spaces](https://openaccess.thecvf.com/content/CVPR2025/html/Yang_Thinking_in_Space_How_Multimodal_Large_Language_Models_See_Remember_CVPR_2025_paper.html). CVPR 2025.
-- [Official project page](https://vision-x-nyu.github.io/thinking-in-space.github.io/).
-- [Official repository](https://github.com/vision-x-nyu/thinking-in-space).
-- [Official dataset](https://huggingface.co/datasets/nyu-visionx/VSI-Bench).
-- [Back to paper index](README.md).
+- [공식 project page](https://vision-x-nyu.github.io/thinking-in-space.github.io/).
+- [공식 repository](https://github.com/vision-x-nyu/thinking-in-space).
+- [공식 dataset](https://huggingface.co/datasets/nyu-visionx/VSI-Bench).
+- [논문 근거 목록으로 돌아가기](README.md).
