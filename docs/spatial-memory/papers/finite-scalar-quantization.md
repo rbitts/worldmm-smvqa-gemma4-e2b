@@ -9,7 +9,7 @@
 | 공식 code | [Google Research FSQ](https://github.com/google-research/google-research/tree/master/fsq) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [논문 목록](README.md) · [프로젝트 홈](../README.md) · [문제 정의](../problem.md) · [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-012 |
+| Project claims | [Traceability](../traceability.md): C-012 |
 
 ## 핵심 결론
 

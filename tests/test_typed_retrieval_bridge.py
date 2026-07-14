@@ -210,6 +210,7 @@ def test_flat_typed_jsonl_is_retrieval_ready_and_no_write_is_skipped(
         "coordinate_frame": "room-1",
         "uncertainty_m": 0.1,
         "last_seen_time": 2.0,
+        "confidence": 0.9,
         "provenance": "observed",
         "evidence_refs": "frame-object",
         "x": 1.0,
@@ -219,6 +220,18 @@ def test_flat_typed_jsonl_is_retrieval_ready_and_no_write_is_skipped(
         "extent_y": 0.2,
         "extent_z": 0.2,
     }
+
+
+def test_object_place_label_is_preserved_in_typed_projection() -> None:
+    record = _object("mug", "mug", (1.0, 2.0, 3.0)).model_copy(
+        update={"place_label": "kitchen counter"},
+    )
+
+    projected = build_retrieval_records((), (), (), (record,))[0]
+
+    assert projected.geometry is not None
+    assert projected.geometry["place_label"] == "kitchen counter"
+    assert "in kitchen counter" in projected.snippet
 
 
 def test_unknown_typed_record_fails_closed(tmp_path: Path) -> None:

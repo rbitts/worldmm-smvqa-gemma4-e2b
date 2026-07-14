@@ -3,9 +3,10 @@
 | 항목 | 값 |
 |---|---|
 | Page ID | SM-ADR-0004 |
+| Confluence parent | SM-DECISIONS |
 | ADR | ADR-0004 |
 | 프로젝트 claim | C-003, C-009 |
-| 상태 | 채택; 로컬 검증 완료 |
+| 상태 | 채택; provenance 조항 일부 대체 |
 | 결정일 | 2026-07-11 |
 | 추적성 | [Geometry-grounded QA와 auditability 요구사항](../traceability.md) |
 | 아키텍처 | [Geometry executor-QA 경계](../architecture.md) |
@@ -38,11 +39,14 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 
 ## 구현 방향
 
-- 지원 operation은 `distance`, `near`, `relative_direction`, `last_seen`, `count`다.
+- 지원 operation은 `distance`, `near`, `relative_direction`, `last_seen`,
+  `last_location`, `count`다.
 - Metric pair operation은 grounded provenance, 동일 coordinate frame, 완전한 XYZ,
   uncertainty limit를 요구한다.
 - `near` threshold와 direction boundary가 uncertainty interval과 겹치면 abstain한다.
-- `count`와 `last_seen`은 complete entity index certificate가 없으면 abstain한다.
+- `count`, `last_seen`, `last_location`은 complete entity index certificate가 없으면
+  abstain한다. `last_location`은 evidence-bound object `place_label`을 반환하며
+  missing label에서는 abstain한다.
 - 같은 certificate가 label uniqueness를 보장하지 않으면 pair operation도
   question에 explicit entity ID가 있어야 한다. Retrieved top-k의 유일 label은
   uniqueness 근거가 아니다.
@@ -58,7 +62,8 @@ QA model에는 raw spatial geometry를 주지 않고 검증된 proof만 geometry
 - Proof hash는 query parameters와 result, entity role, provenance, evidence를 포함한
   canonical payload에서 생성한다.
 - QA trust boundary는 unknown, duplicate, unanswerable proof ID와 choice contradiction을
-  거부한다.
+  거부한다. `last_location`도 proof value와 정확히 한 semantic place choice가
+  일치해야 한다.
 
 ## 검증 결과와 남은 과제
 
@@ -106,4 +111,6 @@ geometry fact처럼 사용될 위험도 있다.
 
 ## 대체 이력
 
-없음.
+[ADR-0006](adr-0006-evidence-bound-inferred-geometry.md)이 2026-07-14부터
+grounded-provenance whitelist를 대체한다. Deterministic executor, abstention,
+proof-to-choice 결정은 유지한다.

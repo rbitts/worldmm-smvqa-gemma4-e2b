@@ -7,15 +7,17 @@
 | Child Page ID | SM-OPERATIONS-HANDOFF |
 | Child source | Repository `HANDOFF.md` |
 | 상태 | 실행 준비 중 |
-| 최종 검토 | 2026-07-13 |
+| 최종 검토 | 2026-07-14 |
 
 ## 실행 방향
 
 Repository `HANDOFF.md`가 유일한 runbook이다. Confluence에서는
 `SM-OPERATIONS-HANDOFF`로 import하며 이곳에 절차를 복사하거나 분기하지 않는다.
 
-현재 운영 결론은 공식 training/evaluation **No-Go**다. 명시적으로 승인된
-1-node × 1-GPU contract probe만 다음 실행 요청으로 허용한다.
+현재 운영 결론은 공식 training/evaluation **No-Go**다. 먼저 read-only company
+sensor coverage audit 결과를 검토한다. 이후 별도 승인을 받은 bounded EXP-0004/0005
+offline teacher run만 다음 실행 요청으로 허용한다. Legacy student probe를 현재
+Goal의 대체물로 실행하지 않는다.
 
 ## 실행 전 gate
 

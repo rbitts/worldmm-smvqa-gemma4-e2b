@@ -13,6 +13,9 @@ from typing import Literal, Protocol, Self, cast, override, runtime_checkable
 from pydantic import Field, FiniteFloat, model_validator
 
 from worldmm_smvqa.schema import FrozenModel
+from worldmm_smvqa.worldmm.spatial_sensor import (
+    CameraIntrinsics as CameraIntrinsics,  # noqa: PLC0414, TC001
+)
 from worldmm_smvqa.worldmm.typed_memory import TypedMemoryRecord  # noqa: TC001
 
 type TeacherBackend = Literal["gcut3r_external", "cut3r_cache_fallback"]
@@ -58,15 +61,6 @@ class PoseGuidance(FrozenModel):
         return self
 
 
-class CameraIntrinsics(FrozenModel):
-    width_px: int = Field(gt=0)
-    height_px: int = Field(gt=0)
-    fx: FiniteFloat = Field(gt=0.0)
-    fy: FiniteFloat = Field(gt=0.0)
-    cx: FiniteFloat
-    cy: FiniteFloat
-
-
 class DepthGuidance(FrozenModel):
     depth_ref: str = Field(min_length=1)
     depth_scale_m: FiniteFloat = Field(gt=0.0)
@@ -79,8 +73,20 @@ class TeacherObservation(FrozenModel):
     timestamp: FiniteFloat = Field(ge=0.0)
     frame_ref: str = Field(min_length=1)
     local_frame_id: str = Field(min_length=1)
+    camera_intrinsics: CameraIntrinsics | None = None
     pose_guidance: PoseGuidance | None = None
     depth_guidance: DepthGuidance | None = None
+
+    @model_validator(mode="after")
+    def _require_consistent_intrinsics(self) -> Self:
+        if (
+            self.camera_intrinsics is not None
+            and self.depth_guidance is not None
+            and self.camera_intrinsics != self.depth_guidance.intrinsics
+        ):
+            msg = "camera and depth intrinsics must match"
+            raise ValueError(msg)
+        return self
 
 
 class TeacherRequest(TeacherObservation):
@@ -218,6 +224,7 @@ class GCut3RTeacherAdapter:
                 timestamp=observation.timestamp,
                 frame_ref=observation.frame_ref,
                 local_frame_id=observation.local_frame_id,
+                camera_intrinsics=observation.camera_intrinsics,
                 pose_guidance=observation.pose_guidance,
                 depth_guidance=observation.depth_guidance,
                 sequence_index=sequence_index,

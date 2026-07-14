@@ -1204,10 +1204,10 @@ def test_source_pose_90_degrees_reaches_direction_proof_without_unit_conversion(
     )
     evidence = tuple(
         EvidenceItem(
-            memory_id=entity_id,
-            video_id=source.video_id,
-            snippet=entity_id,
-            frame_refs=(),
+                memory_id=entity_id,
+                video_id=source.video_id,
+                snippet=entity_id,
+                frame_refs=(f"frame-{entity_id}",),
             source_store="spatial",
             start_time=1.0,
             end_time=1.0,

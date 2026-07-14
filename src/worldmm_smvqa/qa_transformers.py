@@ -48,6 +48,7 @@ from worldmm_smvqa.sensor_frames import (
 )
 from worldmm_smvqa.transformers_backend import TransformersGenerationError
 from worldmm_smvqa.video_frames import sample_video_frames
+from worldmm_smvqa.worldmm.spatial_sensor import is_trusted_causal_pose
 from worldmm_smvqa.worldmm.typed_memory import (
     DEFAULT_TYPED_MEMORY_WINDOW_SECONDS,
     TypedMemoryWriterError,
@@ -561,21 +562,11 @@ def causal_wearer_pose(
     trusted = tuple(
         sample
         for sample in source.pose_samples
-        if sample.timestamp <= question.question_time
-        and sample.observed_through_time is not None
-        and sample.timestamp
-        <= sample.observed_through_time
-        <= question.question_time
-        and sample.yaw_degrees is not None
-        and (
-            (sample.source == "imu" and sample.processing_mode == "raw")
-            or (
-                sample.source == "vio"
-                and sample.processing_mode == "online_causal"
-            )
+        if is_trusted_causal_pose(
+            sample,
+            cutoff_time=question.question_time,
+            coordinate_frame=coordinate_frame,
         )
-        and (sample.coordinate_frame or "source_world") == coordinate_frame
-        and sample.pose_covariance_xyz_m_rpy_deg is not None
     )
     if not trusted:
         return None

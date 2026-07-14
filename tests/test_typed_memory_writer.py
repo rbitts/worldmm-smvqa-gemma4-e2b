@@ -50,7 +50,9 @@ def _object(memory_id: str, *, label: str = "mug") -> ObjectMemoryRecord:
 
 def _no_write(memory_id: str) -> NoWriteMemoryRecord:
     source = _object(memory_id)
-    common = source.model_dump(exclude={"geometry", "semantic_label", "record_type"})
+    common = source.model_dump(
+        exclude={"geometry", "semantic_label", "place_label", "record_type"},
+    )
     return NoWriteMemoryRecord.model_validate(
         {
             **common,
@@ -242,6 +244,24 @@ def test_artifact_validator_accepts_contextually_grounded_record(
     )
 
     assert summary.record_count == 1
+
+
+def test_contextual_model_inference_requires_selected_frame_evidence(
+    tmp_path: Path,
+) -> None:
+    record = _object("inferred-without-evidence").model_copy(
+        update={"provenance": "model_inferred"},
+    )
+    output = tmp_path / "memory.jsonl"
+    _ = output.write_bytes(canonical_jsonl_bytes(record))
+
+    with pytest.raises(TypedMemoryWriterError, match="requires evidence_refs"):
+        _ = validate_typed_memory_artifact(
+            output,
+            byte_budget_per_window=10_000,
+            sources=_grounding_sources(),
+            sensor_records=build_sensor_frame_manifest(_grounding_sources()),
+        )
 
 
 @pytest.mark.parametrize(

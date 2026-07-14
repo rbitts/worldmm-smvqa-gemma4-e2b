@@ -114,6 +114,7 @@ def _observations() -> tuple[TeacherObservation, ...]:
             timestamp=1.0,
             frame_ref="frame-1.jpg",
             local_frame_id="room-1",
+            camera_intrinsics=intrinsics,
             pose_guidance=PoseGuidance(
                 source="vio",
                 reference_frame_id="room-1",
@@ -147,6 +148,8 @@ def test_mock_provider_cache_roundtrip_is_prefix_causal(tmp_path: Path) -> None:
 
     assert loaded == rows
     assert provider.requests[0].previous_state_ref is None
+    assert provider.requests[0].camera_intrinsics is not None
+    assert provider.requests[0].depth_guidance is None
     assert provider.requests[1].previous_state_ref == "state:0"
     assert provider.requests[1].prefix_before_sha256 == rows[0].prefix_sha256
     assert (
@@ -157,6 +160,24 @@ def test_mock_provider_cache_roundtrip_is_prefix_causal(tmp_path: Path) -> None:
         decode_teacher_response(encode_teacher_response(rows[0].response))
         == rows[0].response
     )
+
+
+def test_teacher_observation_rejects_conflicting_camera_calibration() -> None:
+    intrinsics = cast("CameraIntrinsics", _observations()[0].camera_intrinsics)
+    with pytest.raises(ValidationError, match="camera and depth intrinsics must match"):
+        _ = TeacherObservation(
+            observation_id="obs-conflict",
+            video_id="video-1",
+            timestamp=1.0,
+            frame_ref="frame-1.jpg",
+            local_frame_id="room-1",
+            camera_intrinsics=intrinsics,
+            depth_guidance=DepthGuidance(
+                depth_ref="depth.npy",
+                depth_scale_m=0.001,
+                intrinsics=intrinsics.model_copy(update={"fx": 501.0}),
+            ),
+        )
 
 
 def test_cache_digest_tampering_is_rejected() -> None:

@@ -22,6 +22,11 @@ artifacts belong on approved remote compute only.
 No real model or dataset download, training, benchmark evaluation, or remote job
 has been run as part of this implementation work.
 
+Current Goal: audit real sensor availability, then measure a causal offline
+teacher-oracle object/location ceiling under the same serialized-byte budget.
+G-CUT3R is offline teacher only. Raw student implementation starts only after an
+Oracle Go result; see the canonical [roadmap](docs/spatial-memory/roadmap.md).
+
 ## Prepared-Data Preflight
 
 Run preflight before any expensive stage:
@@ -70,9 +75,10 @@ relations plus wearer trajectory summaries. Gaze targets are preferred for
 anchors when available; otherwise the anchor approximates the wearer pose at
 detection time.
 
-## Compressed Spatial Memory Model
+## Compressed Spatial Memory Baseline
 
-The on-device path is one composable model:
+The current local heuristic baseline is one composable pipeline. It is not a
+profiled on-device learned model:
 
 ```text
 SpatialGeometryEncoder
@@ -130,14 +136,15 @@ episodic + semantic + visual + spatial
   -> Gemma QA decoder
 ```
 
-## Typed Teacher And Student Preparation
+## Offline Teacher And Legacy Student Scaffold
 
 `worldmm.typed_memory` defines explicit `object`, `plane`, `portal`,
 `free_space`, `landmark`, `event`, and `no_write` records. Geometry,
 uncertainty, validity, instance identity, provenance, and evidence references
 stay explicit; writable records are charged by canonical serialized JSONL bytes.
 
-G-CUT3R is an external teacher contract, not a bundled dependency. An external
+G-CUT3R is an offline external teacher/oracle contract, not an on-device model or
+bundled dependency. An external
 provider receives one causal observation plus only the previous opaque state and
 must emit typed records. The cache records backend/provider identity, request and
 response digests, prefix hash continuity, state references, and observation
@@ -208,7 +215,7 @@ uncertainty reduction, pose information, surprise, redundancy, and actual bytes.
 Rows carry hashes of both inputs. Split validation keeps question, participant,
 session, and video groups out of conflicting train/validation/test partitions.
 
-The typed candidate head is a PyTorch multi-head model for record type, typed
+The feature-level typed candidate head is a PyTorch multi-head model for record type, typed
 geometry, association, uncertainty, byte rate, and teacher distillation. It is
 not yet a raw RGB/IMU encoder and has no checkpoint-to-record inference decoder.
 CPU
@@ -233,11 +240,12 @@ python -m torch.distributed.run ... \
 QA prompt construction removes spatial snippets and geometry dictionaries, then
 passes only executor proofs. Retrieval bundles the required spatial relation and
 endpoint objects; the deterministic executor supports
-distance, relative direction, near, last-seen, and count. Each answerable proof
-contains the operation, entity IDs, coordinate frame, value, propagated
+distance, relative direction, near, last-seen, last-location, and count. Each
+answerable proof contains the operation, entity IDs, coordinate frame, value, propagated
 uncertainty, provenance, and evidence refs. Ambiguous entities, frame mismatch,
-unsupported provenance, missing yaw, or excessive uncertainty yield an explicit
-unanswerable proof. Count requires an explicit complete-index certificate. Model
+unsupported provenance, missing inferred frame evidence, low confidence, missing
+yaw, or excessive uncertainty yield an explicit unanswerable proof. Count,
+last-seen, and last-location require an explicit complete-index certificate. Model
 output may persist only known answerable proof IDs. Current memory IDs can still
 encode entity labels; an opaque-ID layer remains future work.
 
@@ -249,22 +257,24 @@ or future certificates abstain.
 Student QA independently converts canonical `typed_memory.jsonl` back through
 the retrieval projection and requires every spatial evidence item to exact-match
 its memory ID, video, snippet, frame refs, time range, and geometry. The
-byte-budgeted typed artifact is not a complete entity index. Count and last-seen
-abstain. Pair proofs also require explicit entity IDs in the question unless an
+byte-budgeted typed artifact is not a complete entity index. Count, last-seen,
+and last-location abstain. Pair proofs also require explicit entity IDs in the question unless an
 end-to-end completeness certificate establishes label uniqueness; the generated
 production DAG does not issue one. Pair proofs use the records' actual local
 frame and reject cross-video pairs.
 
 ## Learned-Path Boundary
 
-Local preparation does not contain the production encoder, type-specific
-geometry decoder, or open-world association implementation. The staged DAG
-therefore requires an approved external teacher extractor or causal cache,
-explicit student supervision, and `WORLDMM_SPATIAL_INFER_EXE`. It builds
+Local preparation now contains a strict causal sensor schema and a selected
+teacher-point to object/place target compiler. It does not contain the semantic
+mask/place provider, production RGB encoder, native-sensor integration, or
+open-world association. The staged legacy DAG therefore requires an approved
+external teacher extractor or causal cache, explicit student supervision, and
+`WORLDMM_SPATIAL_INFER_EXE`. It builds
 student-backed evidence itself from returned typed records; prebuilt student
 evidence, counterfactual utility, and selector split files are not staged-DAG
 inputs or substitutes. The source-compact path remains a tested heuristic
-baseline, not evidence that the learned G-CUT3R student is reproduced.
+baseline, not evidence that a learned or on-device G-CUT3R student is reproduced.
 
 ## 1 Hz Sensor Input Contract
 

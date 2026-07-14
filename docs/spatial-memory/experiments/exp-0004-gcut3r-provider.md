@@ -7,7 +7,7 @@
 | Confluence parent | SM-EXPERIMENTS |
 | 상태 | 계획 |
 | 근거 수준 | External-provider/cache contract check만 완료 |
-| 최종 검토 | 2026-07-11 |
+| 최종 검토 | 2026-07-14 |
 | 선행 조건 | 승인된 company GPU run과 external G-CUT3R implementation |
 
 ## 핵심 결론
@@ -17,9 +17,10 @@
 
 ## 다음 결정
 
-Go이면 검증된 provider/checkpoint 조합을 ADR-0002의 채택 근거로 연결하고
-EXP-0002 training input으로 고정한다. No-go이면 provider를 교체하거나 fallback을
-유지한다. G-CUT3R를 persistent memory로 직접 저장하는 별도 경로는 추가하지 않는다.
+Go이면 검증된 provider/checkpoint 조합을
+[EXP-0005](exp-0005-teacher-oracle-ceiling.md)의 offline oracle로 고정한다. No-go이면
+provider를 교체하거나 fallback을 유지한다. G-CUT3R를 device runtime 또는
+persistent memory로 직접 저장하는 경로는 추가하지 않는다.
 
 ## 근거
 
@@ -77,7 +78,7 @@ supervision으로 materialize될 수 있다.
 | Cache provenance | Request/response/manifest/source/split digest 필수 |
 | Teacher variant | 동일 frame 아래 `gcut3r_external`과 declared fallback/cache variant |
 | Dataset, split, provider path, checkpoint, run ID | 실행 전 TBD 해소 |
-| Raw RGB / IMU / VIO / depth availability | Preflight·기록 필수, 현재 미확인 |
+| Raw RGB / camera intrinsics / IMU / VIO / depth availability | Preflight·실제 coverage 기록 필수, 현재 미확인; intrinsics는 depth와 독립 |
 
 ## 추적성
 
@@ -87,6 +88,7 @@ supervision으로 materialize될 수 있다.
 | Claim | [C-002: bounded long-term memory](../traceability.md) | teacher output 전체가 아닌 typed sufficient records만 보존 |
 | Claim | [C-006: pose and map separation](../traceability.md) | pose-guided transient teacher와 persistent record 경계 검증 |
 | Decision | [ADR-0002: G-CUT3R as teacher](../decisions/adr-0002-gcut3r-as-teacher.md) | 대형 geometry model을 persistent memory가 아닌 offline teacher로 사용 |
+| Decision | [ADR-0005: hybrid device compiler](../decisions/adr-0005-hybrid-on-device-compiler.md) | Provider 결과를 device architecture claim과 분리 |
 | Decision | [ADR-0001: explicit typed memory](../decisions/adr-0001-explicit-typed-memory.md) | teacher geometry를 student record supervision으로 변환 |
 | Paper | [G-CUT3R](../papers/g-cut3r.md) | pose/depth-guided sparse-view geometry 근거 |
 | Paper | [CUT3R](../papers/cut3r.md) | recurrent geometry teacher의 fallback context |

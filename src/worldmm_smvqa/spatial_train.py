@@ -212,9 +212,10 @@ def distributed_context(env: Mapping[str, str]) -> DistributedContext:
 
 
 def build_student(config: StudentConfig) -> object:
+    """Build a feature-level candidate head, not a raw RGB/IMU device model."""
     torch = _require_torch()
 
-    class TinySpatialStudent(torch.nn.Module):
+    class TypedCandidateHead(torch.nn.Module):
         def __init__(self) -> None:
             super().__init__()
             self.encoder = torch.nn.Sequential(
@@ -259,7 +260,7 @@ def build_student(config: StudentConfig) -> object:
                 "distillation": self.distillation_head(hidden),
             }
 
-    return TinySpatialStudent()
+    return TypedCandidateHead()
 
 
 def compute_losses(

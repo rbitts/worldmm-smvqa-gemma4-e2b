@@ -9,7 +9,7 @@
 | 공식 code | [Google DeepMind Sonnet VQ-VAE example](https://github.com/google-deepmind/sonnet/blob/v1/sonnet/examples/vqvae_example.ipynb) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [논문 목록](README.md) · [프로젝트 홈](../README.md) · [문제 정의](../problem.md) · [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-012 |
+| Project claims | [Traceability](../traceability.md): C-012 |
 
 ## 핵심 결론
 

@@ -216,6 +216,7 @@ class ObjectMemoryRecord(TypedMemoryRecordBase):
     record_type: Literal["object"] = "object"
     geometry: ObjectGeometry
     semantic_label: NonEmptyStr
+    place_label: NonEmptyStr | None = None
 
 
 class PlaneMemoryRecord(TypedMemoryRecordBase):
@@ -350,7 +351,7 @@ _TYPED_MEMORY_ADAPTER: Final[TypeAdapter[TypedMemoryRecord]] = TypeAdapter(
     TypedMemoryRecord
 )
 _EVIDENCE_REQUIRED_PROVENANCE: Final = frozenset(
-    {"observed", "multi_view_fused", "human_confirmed"}
+    {"observed", "multi_view_fused", "model_inferred", "human_confirmed"}
 )
 
 type SourceBounds = dict[str, tuple[float, float]]

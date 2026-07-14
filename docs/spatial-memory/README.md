@@ -5,7 +5,7 @@
 | Page ID | SM-ROOT |
 | Confluence parent | SM-DOCS |
 | 상태 | 로컬 준비 진행 |
-| 최종 갱신 | 2026-07-13 |
+| 최종 갱신 | 2026-07-14 |
 | 목표 | Geometry-grounded QA용 explicit compressed spatial memory |
 
 ## 핵심 결론
@@ -13,22 +13,24 @@
 | 항목 | 결정 |
 |---|---|
 | 기술 방향 | Explicit typed spatial record를 유지하고 dense geometry는 transient하게 사용 |
-| 현재 준비도 | 로컬 contract와 heuristic baseline 준비 완료 |
+| 현재 Goal | Raw student 전 causal teacher-oracle object/location ceiling 검증 |
+| 현재 준비도 | Sensor/target/proof local contract 구현; real oracle 미실행 |
 | 공식 보고 | **No-Go**: learned path end-to-end 미실행 |
-| 다음 승인 대상 | 명시적 승인 후 1-node × 1-GPU contract probe |
-| Scale-up 조건 | Probe가 checkpoint-to-evidence lineage를 닫고 budget 내 valid typed record 생성 |
+| 다음 승인 대상 | Company data sensor audit 후 EXP-0005 bounded teacher-oracle run |
+| Student 조건 | Oracle이 동일 byte budget에서 object/location utility 개선 |
 
-지금은 latent codec이나 더 큰 model architecture를 추가하지 않는다. 먼저 하나의
-학습 checkpoint가 감사 가능하고 byte-bounded인 spatial evidence를 생성하며,
-그 결과가 downstream QA에 반영되는지 입증한다.
+지금은 latent codec, all-type decoder, raw RGB/IMU student를 추가하지 않는다.
+먼저 offline teacher가 만든 evidence-bound object/place record의 downstream QA
+효용을 입증한다. G-CUT3R는 on-device model이 아니다.
 
 ## 근거
 
 - Tiny-fixture source-compact memory는 diagnostic source representation의 216개
   record·96,456 JSONL byte 대신 15개 record·6,050 byte를 유지했다(15.94× 축소).
   이는 pipeline sanity이며 benchmark 근거가 아니다.
-- Causal retrieval, actual-byte limit, typed schema, deterministic proof,
-  four-choice QA, DDP training contract, production artifact lineage가 구현돼 있다.
+- Causal sensor schema, selected-point teacher target compiler, actual-byte limit,
+  typed schema, evidence/confidence-gated `last_location` proof, four-choice QA,
+  DDP scaffold, production artifact lineage가 구현돼 있다.
 - Production G-CUT3R extractor, raw RGB/IMU/VIO student encoder,
   repository-owned type-specific decoder, learned open-world association은 없다.
 - 이 개발 host에서 실제 dataset, model download, training, evaluation, SSH,
@@ -36,18 +38,22 @@
 
 ## 즉시 실행 방향
 
-1. 회사 compute에 pinned external teacher와 inference executable을 준비한다.
-2. 고정 causal frame inventory로 승인된 contract probe를 실행한다.
-3. Probe 통과 후 별도 full learned-E1 run 승인을 요청한다.
-4. 공식 비교 전 matched E2/E3 identity를 추가한다.
-5. Learned bridge가 valid해진 뒤 QA-versus-bytes를 측정한다.
+1. Prepared source의 readable RGB, camera intrinsics, native pose/depth coverage를
+   실제 비율로 audit한다.
+2. Pinned external teacher와 semantic mask/place provider를 company compute에
+   준비한다.
+3. 고정 causal frame inventory로 EXP-0005 teacher-oracle object/location ceiling을
+   실행한다.
+4. Oracle Go일 때만 최소 hybrid student와 target-device profile을 설계한다.
+5. Student가 유효해진 뒤 matched E1/E2/E3와 QA-versus-bytes를 측정한다.
 
 ## 시스템 범위
 
 ```text
-1 Hz RGB + native-rate IMU/VIO + optional depth
-    -> transient guided geometry
-    -> typed record candidates
+offline only: RGB -> G-CUT3R teacher -> selected point targets
+device: 1 Hz RGB semantics + native IMU/VIO + optional depth
+    -> deterministic calibrated geometry
+    -> minimal typed object/place/event candidates
     -> value / actual-byte writer
     -> explicit persistent memory
     -> causal retrieval

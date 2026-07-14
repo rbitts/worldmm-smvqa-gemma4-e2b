@@ -5,7 +5,7 @@
 | Page ID | SM-PAPERS |
 | 상태 | 활성 evidence catalog |
 | 최종 확인 | 2026-07-11 |
-| 논문 page | 42 |
+| Paper pages | 42 |
 | Confluence parent | SM-ROOT |
 
 ## 핵심 결론
@@ -113,12 +113,11 @@ memory의 byte budget을 설정하지 않는다.
 | 보류 (Deferred) | 더 단순한 baseline 측정 전 정당화되지 않음 |
 | 검증 필요 (Needs verification) | Canonical source 또는 numerical claim 미확인 |
 
-## 근거 관리 원칙
+## Secondary Bibliography Policy
 
 - Traceable claim은 primary-source page, index row, reverse `C-*` mapping이
   필요하다.
-- Secondary source는 discovery에만 사용하며 decision/result에 쓰기 전에
-  primary page로 승격한다.
+- Secondary sources are discovery-only; verify the primary source before citing it in an ADR.
 - Paper-reported value, project inference, reproduction을 분리한다.
 - PDF, 긴 abstract, recursive bibliography를 commit하지 않는다.
 - 새 page는 `docs/spatial-memory/papers/TEMPLATE.md`를 사용한다.

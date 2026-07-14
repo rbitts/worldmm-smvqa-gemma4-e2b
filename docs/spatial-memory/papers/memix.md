@@ -9,7 +9,7 @@
 | 공식 code | [dongjiacheng06/MeMix](https://github.com/dongjiacheng06/MeMix) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [상위: 논문 목록](README.md) · [아키텍처](../architecture.md) · [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-002, C-005, C-011 |
+| Project claims | [Traceability](../traceability.md): C-002, C-005, C-011 |
 
 ## 핵심 결론
 

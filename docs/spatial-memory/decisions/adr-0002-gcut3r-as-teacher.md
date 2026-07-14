@@ -3,6 +3,7 @@
 | 항목 | 값 |
 |---|---|
 | Page ID | SM-ADR-0002 |
+| Confluence parent | SM-DECISIONS |
 | ADR | ADR-0002 |
 | 프로젝트 claim | C-001, C-006 |
 | 상태 | 채택; 일부 구현 |
@@ -12,8 +13,10 @@
 
 ## 핵심 결론
 
-G-CUT3R-compatible model을 회사 환경에서 실행하는 외부 offline teacher로
-사용한다. Teacher에는 1 Hz RGB observation과 가능한 pose/depth guidance를 주고,
+G-CUT3R-compatible model을 회사 환경에서 실행하는 외부 offline teacher/oracle로만
+사용한다. On-device runtime, persistent memory, 최종 student architecture가 아니다.
+Teacher에는 1 Hz RGB observation, 독립된 camera intrinsics, 가능한 pose/depth
+guidance를 주고,
 출력은 causal prefix와 digest에 묶인 typed-record cache로 materialize한다.
 Repository는 provider protocol과 cache contract를 소유하지만 G-CUT3R code나
 checkpoint를 자동 설치, 다운로드, 포함하지 않는다.
@@ -28,7 +31,10 @@ ADR-0001의 typed record이며 teacher state snapshot이 아니다.
 - [G-CUT3R](../papers/g-cut3r.md)는 pose/depth guidance가 있는 sparse-view geometry
   teacher 선택의 직접적인 연구 근거다.
 - `src/worldmm_smvqa/worldmm/gcut3r_teacher.py`는 external
-  provider, ordered causal state, request/response/prefix digest 계약을 구현한다.
+  provider, independent camera calibration, ordered causal state,
+  request/response/prefix digest 계약을 구현한다.
+- `src/worldmm_smvqa/worldmm/spatial_teacher_targets.py`는 selected teacher points를
+  evidence-bound object record로 변환하는 최소 target compiler를 구현한다.
 - `src/worldmm_smvqa/teacher_materializer.py`는 검증된
   cache record와 외부 supervision을 training row로 결합한다.
 - [local readiness review](../reviews/2026-07-11-local-readiness.md)는 실제 extractor와
@@ -47,12 +53,13 @@ ADR-0001의 typed record이며 teacher state snapshot이 아니다.
   request multiset은 sensor observation과 정확히 같아야 한다.
 - Materializer는 cache의 모든 teacher record가 supervision row와 정확히 대응하고
   train/validation group이 교차하지 않는지 검사한다.
-- `src/worldmm_smvqa/spatial_train.py`는 materialized vector를
-  입력받는 candidate head와 DDP training/checkpoint 골격을 제공한다.
+- `src/worldmm_smvqa/spatial_train.py`는 materialized vector를 입력받는
+  feature-level candidate head와 DDP training/checkpoint 골격만 제공한다. Raw
+  sensor student 또는 device model로 해석하지 않는다.
 - Precomputed cache mode에서는 request `(video_id, frame_ref, timestamp)`
   coverage가 selected sensor manifest와 정확히 일치해야 한다.
-- 외부 미구현: 실제 G-CUT3R provider, raw RGB/IMU/VIO feature encoder, teacher
-  pseudo-label 생성, type-specific target encoding, production inference
+- 외부 미구현: 실제 G-CUT3R provider, semantic mask/place provider, raw
+  RGB/IMU/VIO feature encoder, teacher pseudo-label 생성, production inference
   executable의 semantic correctness.
 
 ## 검증 결과와 남은 과제
@@ -91,11 +98,14 @@ AI-glass 입력은 약 1 Hz라 연속 frame overlap이 낮을 수 있다. 영구
   수 있다.
 - Provider ID, checkpoint, input manifest, cache digest를 experiment provenance에
   반드시 기록해야 한다.
-- 회사 환경에서 provider/cache, supervision, checkpoint, production inference
-  executable 중 하나라도 준비되지 않으면 learned lane은 fail closed한다.
+- 먼저 [EXP-0005](../experiments/exp-0005-teacher-oracle-ceiling.md)로 teacher-oracle
+  utility를 측정한다. Provider/cache, semantic supervision, frame/calibration 중
+  하나라도 준비되지 않으면 oracle lane은 fail closed한다.
 - Teacher가 출력한 inferred geometry는 observed fact와 동일한 provenance로 승격하지
-  않는다.
+  않는다. Proof admission은 [ADR-0006](adr-0006-evidence-bound-inferred-geometry.md)의
+  evidence/confidence 조건을 따른다.
 
 ## 대체 이력
 
-없음.
+없음. Device compiler 경계는
+[ADR-0005](adr-0005-hybrid-on-device-compiler.md)가 추가한다.

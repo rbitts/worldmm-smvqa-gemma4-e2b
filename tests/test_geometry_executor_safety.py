@@ -39,7 +39,13 @@ def _entity(entity_id: str, x: float) -> dict[str, object]:
     }
 
 
-def _typed_object(name: str, label: str, x: float) -> ObjectMemoryRecord:
+def _typed_object(
+    name: str,
+    label: str,
+    x: float,
+    *,
+    place_label: str | None = None,
+) -> ObjectMemoryRecord:
     return ObjectMemoryRecord(
         memory_id=f"memory:{name}",
         source_video_id="video:1",
@@ -66,6 +72,7 @@ def _typed_object(name: str, label: str, x: float) -> ObjectMemoryRecord:
             extent=(0.2, 0.2, 0.2),
         ),
         semantic_label=label,
+        place_label=place_label,
     )
 
 
@@ -373,7 +380,7 @@ def test_recognized_geometry_intent_emits_unanswerable_planning_proof() -> None:
     assert proofs[0].reason == "geometry query planning failed or selector is ambiguous"
 
 
-def test_last_seen_where_never_cites_timestamp_as_location() -> None:
+def test_last_location_without_records_emits_planning_abstention() -> None:
     question = read_fixture_questions(Path("tests/fixtures/tiny_smvqa"))[0].model_copy(
         update={"question": "Where was the mug last seen?"},
     )
@@ -394,7 +401,7 @@ def test_last_seen_where_never_cites_timestamp_as_location() -> None:
     )[0]
 
     assert not proof.answerable
-    assert proof.reason == "last-seen location proof is not implemented"
+    assert proof.reason == "geometry query planning failed or selector is ambiguous"
 
 
 @pytest.mark.parametrize(
@@ -402,10 +409,9 @@ def test_last_seen_where_never_cites_timestamp_as_location() -> None:
     [
         "Which room was the mug last seen in?",
         "What location last saw the mug?",
-        "Where and when was the mug last seen?",
     ],
 )
-def test_last_seen_location_variants_never_return_timestamp(
+def test_last_seen_location_variants_return_evidence_bound_place(
     question_text: str,
 ) -> None:
     question = QuestionRequest(
@@ -428,12 +434,135 @@ def test_last_seen_location_variants_never_return_timestamp(
     proof = geometry_proofs_for_question(
         question,
         pack,
-        spatial_records=(_typed_object("mug", "mug", 0.0),),
+        spatial_records=(
+            _typed_object(
+                "mug",
+                "mug",
+                0.0,
+                place_label="kitchen counter",
+            ),
+        ),
+        entity_index_complete=True,
+    )[0]
+
+    assert proof.answerable
+    assert proof.operation == "last_location"
+    assert proof.value == "kitchen counter"
+    assert proof.uncertainty is None
+    assert proof.confidence == pytest.approx(0.9)
+    assert proof.evidence_refs == ("frame:mug", "memory:mug")
+
+
+def test_combined_last_time_and_location_intent_abstains() -> None:
+    question = QuestionRequest(
+        question_id="q-last-time-and-location",
+        video_id="video:1",
+        question="Where and when was the mug last seen?",
+        question_time=3.0,
+        answer_choices=(),
+    )
+    pack = EvidencePack(
+        question_id=question.question_id,
+        video_id=question.video_id,
+        requested_stores=("spatial",),
+        selected_stores=(),
+        evidence_budget=1,
+        evidence=(),
+        causal_filtered_count=0,
+    )
+
+    proof = geometry_proofs_for_question(
+        question,
+        pack,
+        spatial_records=(
+            _typed_object("mug", "mug", 0.0, place_label="kitchen counter"),
+        ),
+        entity_index_complete=True,
     )[0]
 
     assert not proof.answerable
-    assert proof.value is None
-    assert proof.reason == "last-seen location proof is not implemented"
+    assert proof.reason == "query requests both last-seen time and location"
+
+
+def test_last_location_without_place_label_abstains() -> None:
+    proof = execute_geometry(
+        (_typed_object("mug", "mug", 0.0),),
+        GeometryQuery(
+            operation="last_location",
+            coordinate_frame="room:1",
+            subject="entity:mug",
+            entity_index_complete=True,
+        ),
+    )
+
+    assert not proof.answerable
+    assert proof.reason == "last-known place label is missing"
+
+    missing_time = execute_geometry(
+        (
+            {
+                **_entity("mug:1", 0.0),
+                "place_label": "kitchen counter",
+            },
+        ),
+        GeometryQuery(
+            operation="last_location",
+            coordinate_frame="room:1",
+            subject="mug:1",
+            entity_index_complete=True,
+        ),
+    )
+    assert not missing_time.answerable
+    assert missing_time.reason == "last-location time is missing"
+
+
+def test_model_inferred_geometry_requires_observation_evidence() -> None:
+    inferred = {
+        **_entity("mug:1", 0.0),
+        "provenance": "model_inferred",
+        "evidence_refs": ["frame:mug:1"],
+        "confidence": 0.8,
+    }
+    grounded = execute_geometry(
+        (inferred, _entity("desk:1", 1.0)),
+        GeometryQuery(
+            operation="distance",
+            coordinate_frame="room:1",
+            subject="mug:1",
+            object="desk:1",
+        ),
+    )
+    missing_evidence = execute_geometry(
+        (
+            {
+                **inferred,
+                "evidence_refs": ["memory:mug:1"],
+                "memory_id": "memory:mug:1",
+            },
+        ),
+        GeometryQuery(
+            operation="last_seen",
+            coordinate_frame="video-time",
+            subject="mug:1",
+            entity_index_complete=True,
+        ),
+    )
+
+    assert grounded.answerable
+    assert not missing_evidence.answerable
+    assert missing_evidence.reason == "entity grounding evidence is missing: mug:1"
+
+    low_confidence = execute_geometry(
+        ({**inferred, "confidence": 0.49}, _entity("desk:1", 1.0)),
+        GeometryQuery(
+            operation="distance",
+            coordinate_frame="room:1",
+            subject="mug:1",
+            object="desk:1",
+        ),
+    )
+    assert not low_confidence.answerable
+    assert low_confidence.reason == "inferred entity confidence is below limit: mug:1"
 
 
 def test_budgeted_spatial_records_do_not_certify_count_completeness() -> None:

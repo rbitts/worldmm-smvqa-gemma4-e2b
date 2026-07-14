@@ -9,7 +9,7 @@
 | 공식 code | [AIoT-MLSys-Lab/supermemory-vqa](https://github.com/AIoT-MLSys-Lab/supermemory-vqa) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [논문 목록](README.md), [문제 정의](../problem.md), [아키텍처](../architecture.md), [현재 상태](../status.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-008, C-009 |
+| Project claims | [Traceability](../traceability.md): C-008, C-009 |
 
 ## 핵심 결론
 
