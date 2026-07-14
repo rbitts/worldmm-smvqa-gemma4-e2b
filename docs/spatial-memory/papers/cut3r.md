@@ -9,7 +9,7 @@
 | 공식 code | [CUT3R/CUT3R](https://github.com/CUT3R/CUT3R) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [논문 목록](README.md), [아키텍처](../architecture.md), [ADR-0002](../decisions/adr-0002-gcut3r-as-teacher.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-001, C-006 |
+| Project claims | [Traceability](../traceability.md): C-001, C-006 |
 
 ## 핵심 결론
 

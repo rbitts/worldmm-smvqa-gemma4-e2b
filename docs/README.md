@@ -11,8 +11,9 @@
 
 - **현재 결론:** 로컬 contract와 heuristic baseline은 준비됐지만, 공식
   learned-method 보고는 아직 차단 상태다.
-- **즉시 실행:** [현재 상태](spatial-memory/status.md)의 승인된 contract
-  probe부터 수행한다. 해당 gate 통과 전 benchmark 성능을 주장하지 않는다.
+- **즉시 실행:** [현재 상태](spatial-memory/status.md)의 sensor audit와
+  teacher-oracle gate부터 수행한다. 해당 gate 통과 전 benchmark 성능을 주장하지
+  않는다.
 - **Source of truth:** 아래 canonical Spatial Memory 문서만 사용한다. 레거시
   문서는 안내 용도로만 유지한다.
 
@@ -40,8 +41,8 @@
 
 ## 레거시 문서
 
-- [Spatial Token Compression](spatial-token-compression.md)
-- [Spatial Token 연구 로드맵](spatial-token-research-roadmap.md)
-- [2026-07-11 구현 검토](implementation-review.md)
+- `spatial-token-compression.md`
+- `spatial-token-research-roadmap.md`
+- `implementation-review.md`
 
 새 결정과 결과는 `docs/spatial-memory/` 아래에 기록한다.

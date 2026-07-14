@@ -9,7 +9,7 @@
 | 공식 code | [matthewdm0816/MVScanQA](https://github.com/matthewdm0816/MVScanQA) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [상위: 논문 목록](README.md) · [아키텍처](../architecture.md) · [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-008 |
+| Project claims | [Traceability](../traceability.md): C-008 |
 
 ## 핵심 결론
 

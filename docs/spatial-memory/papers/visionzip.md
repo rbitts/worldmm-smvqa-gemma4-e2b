@@ -11,7 +11,7 @@
 | 공식 code | [JIA-Lab-research/VisionZip](https://github.com/JIA-Lab-research/VisionZip) |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [상위: 논문 목록](README.md) · [아키텍처](../architecture.md) · [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-011 |
+| Project claims | [Traceability](../traceability.md): C-011 |
 
 ## 핵심 결론
 

@@ -177,6 +177,7 @@ def test_typed_record_dict_uses_instance_id_and_observed_provenance() -> None:
                 "uncertainty_m": 0.1,
                 "provenance": "observed",
                 "memory_id": "memory:cup:7",
+                "evidence_refs": ["frame:cup:7"],
             },
             {
                 "instance_id": "table:3",
@@ -188,6 +189,7 @@ def test_typed_record_dict_uses_instance_id_and_observed_provenance() -> None:
                 "uncertainty_m": 0.1,
                 "provenance": "observed",
                 "memory_id": "memory:table:3",
+                "evidence_refs": ["frame:table:3"],
             },
         ),
         GeometryQuery(

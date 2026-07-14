@@ -15,12 +15,14 @@
 ## Purpose
 
 This document is the next-run handoff toward official SuperMemory-VQA
-experiments. The immediate authorized shape is a contract probe, not an official
-benchmark claim or local completion report.
+experiments. The current Goal is a sensor audit followed by a bounded offline
+teacher-oracle object/location experiment, not a student contract probe, official
+benchmark claim, or local completion report.
 
-Goal: run WorldMM-SMVQA on company compute and measure whether explicit spatial
-memory plus the WorldMM retrieval policy improves official QA metrics under the
-benchmark-compatible input contract:
+Goal: first measure whether causal, evidence-bound offline teacher object/place
+records improve the object/location slice under the same actual-byte budget. Only
+an Oracle Go result may authorize a minimal hybrid on-device student. Final QA still
+uses the benchmark-compatible input contract:
 
 ```text
 retrieved memory text + 32 uniformly sampled pre-question video frames
@@ -29,11 +31,11 @@ retrieved memory text + 32 uniformly sampled pre-question video frames
 
 ## Current State
 
-Local preparation code and a staged Slurm plan are ready for a company-side
-artifact-contract probe, not a final reproduction run.
-Generated execution defaults to a bounded 1-node x 1-GPU probe; full 10-node x
-8-GPU execution requires separate approval. Probe mode requires a reduced
-fixture and refuses the full dataset root. Real data/model execution remains unverified.
+Local causal sensor, teacher-target, typed-memory, and proof contracts are ready.
+The existing staged Slurm plan remains a legacy student artifact-contract scaffold;
+it does not execute EXP-0005 and must not substitute for the current Goal. EXP-0005
+still needs a company-side provider, semantic mask/place adapter, sensor coverage
+report, and a reviewed launch config. Real data/model execution remains unverified.
 
 Implemented locally:
 
@@ -48,17 +50,23 @@ Implemented locally:
 - explicit typed teacher records for object, plane, portal, free-space,
   landmark, event, and no-write candidates
 - causal external G-CUT3R provider/cache contract with request/response digests,
-  prefix hash chain, state continuity, pose/depth guidance, and no automatic
+  prefix hash chain, state continuity, independent camera intrinsics,
+  pose/depth guidance, and no automatic
   download/import
+- strict on-device observation contract for calibrated camera, optional depth/gaze,
+  and trusted raw-IMU or online-causal-VIO pose
+- selected teacher-point to evidence-bound object target compiler with explicit
+  extent and uncertainty floors; semantic mask/place extraction remains external
 - teacher-cache/supervision materializer with actual serialized-byte targets
   and train/validation leakage checks; geometry and association targets remain
   externally supplied
 - deletion-based counterfactual QA utility, actual-byte value, and explicit
   participant/session/question split manifest with input hashes; this remains a
   separate P2 scaffold and is not an input to the generated DAG
-- remote-only PyTorch typed student training with genuine
+- remote-only PyTorch feature-level candidate-head training with genuine
   `torch.distributed` DDP, distributed sampling/validation, and atomic resume
-  checkpoints; CPU dry-run performs only a forward/loss check
+  checkpoints; this is not a raw RGB/IMU or device student, and CPU dry-run performs
+  only a forward/loss check
 - production external inference contract with typed-record byte-budget and
   checkpoint/sensor/record digest revalidation
 - effective spatial experiment persisted in local/remote manifests
@@ -67,9 +75,9 @@ Implemented locally:
 - WorldMM store routing with spatial-first route for location questions
 - retrieval traces in every evidence pack
 - QA prompt containing sampled frame manifest and retrieved memory JSON
-- deterministic geometry executor for distance, direction, near, last-seen, and
-  count, with entity IDs, coordinate frame, uncertainty, provenance, evidence,
-  and proof-ID validation in predictions
+- deterministic geometry executor for distance, direction, near, last-seen,
+  last-location, and count, with inferred evidence/confidence gates, entity IDs,
+  coordinate frame, uncertainty, provenance, evidence, and proof-ID validation
 - real Gemma path using multimodal frame inputs when frame files exist
 - distributed Qwen memory generation partitioned by video across ranks
 - batch retrieval that loads memory artifacts once
@@ -109,7 +117,8 @@ mode in the run manifest before allocating compute:
 
 | Mode | Current readiness | Allowed claim |
 | --- | --- | --- |
-| `probe` | Conditional bounded learned contract run | Requires reduced fixture, external teacher/cache, supervision, production inference executable, and real frames; emits `contract_probe` / `PROBE` |
+| `teacher-oracle` | **BLOCKED** pending adapter and approval | EXP-0005 diagnostic only; never emits `student` / `E1` |
+| `probe` | Deferred legacy learned contract run | Allowed only after EXP-0005 Go and architecture/config review; emits `contract_probe` / `PROBE` |
 | `full` | Conditional learned E1 run | Requires a new full-profile approval and the same production contracts; emits `student` / `E1` |
 | `official-e1-e2-e3` | **BLOCKED** | No official claim until all three experiment identities are complete |
 
@@ -126,9 +135,13 @@ prepared dataset/frame completeness.
 
 Blocking gaps before claiming final-method reproduction:
 
-- no repository-owned G-CUT3R/raw RGB-IMU-VIO encoder, type-specific geometry
-  decoder, or open-world association; production inference therefore requires
-  `WORLDMM_SPATIAL_INFER_EXE`
+- no verified company sensor coverage report, repository-owned G-CUT3R provider,
+  or semantic mask/place adapter for EXP-0005
+- no evidence that teacher object/place records improve object/location QA under
+  the same actual-byte budget
+- no raw RGB semantic encoder, native-sensor device integration, causal open-world
+  association, or target-device profile; production student inference would still
+  require `WORLDMM_SPATIAL_INFER_EXE`
 - preferred typed DAG generates a probe/full student report, but does not yet
   run E2/E3, byte Pareto, or a matched official E1/E2/E3 report
 
@@ -195,6 +208,14 @@ Each `sources.jsonl` row should include available source signals:
 - frame metadata with `frame_ref` and `timestamp`
 - optional `pose_samples`
 - optional `gaze_samples`
+
+EXP-0005 additionally requires a reviewed adapter from prepared frame assets and
+platform metadata to `CausalSensorObservation`. Each selected RGB observation must
+carry camera intrinsics independently of optional depth. Any pose used for online
+proof must satisfy the trusted causal policy below; optional gaze must be an explicit
+origin-plus-direction ray. The current three prepared JSONL files do not by themselves
+prove that these signals or readable frame assets exist. Audit actual coverage before
+requesting GPU time; do not synthesize missing calibration or mark offline SLAM causal.
 
 Canonical `pose_samples` JSON is unit-explicit:
 

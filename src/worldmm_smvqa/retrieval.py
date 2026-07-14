@@ -631,6 +631,8 @@ def _spatial_candidate(  # noqa: PLR0911, PLR0912
             x, y, z = record.geometry.centroid
             extent_x, extent_y, extent_z = record.geometry.extent
             geometry = _typed_geometry(record, record.semantic_label)
+            if record.place_label is not None:
+                geometry["place_label"] = record.place_label
             geometry.update(
                 {
                     "x": x,
@@ -645,7 +647,7 @@ def _spatial_candidate(  # noqa: PLR0911, PLR0912
                 record,
                 snippet=(
                     f"{record.semantic_label} {record.instance_id} in "
-                    f"{record.local_frame_id} near "
+                    f"{record.place_label or record.local_frame_id} near "
                     f"({_format_float(x)},{_format_float(y)},{_format_float(z)})"
                 ),
                 geometry=geometry,
@@ -820,6 +822,7 @@ def _typed_geometry(
         "coordinate_frame": record.local_frame_id,
         "uncertainty_m": record.geometry_uncertainty.standard_deviation_m,
         "last_seen_time": record.last_seen_time,
+        "confidence": record.confidence,
         "provenance": record.provenance,
     }
     if record.evidence_refs:

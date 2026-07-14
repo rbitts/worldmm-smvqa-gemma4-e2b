@@ -20,8 +20,8 @@ Learned spatial compiler와 공식 SuperMemory-VQA 성능은 검증되지 않았
 
 Source-compact를 heuristic E0 baseline으로 유지한다. ADR-0001, ADR-0003,
 ADR-0004의 구현 계약은 local-verified 상태로 둘 수 있지만 benchmark 채택 근거는
-아니다. 다음 결정은 [EXP-0002](exp-0002-typed-memory-bridge.md)가 checkpoint를
-typed artifact와 QA evidence에 실제로 연결한 뒤 내린다.
+아니다. 다음 결정은 [EXP-0005](exp-0005-teacher-oracle-ceiling.md)가 동일 byte
+budget의 object/location teacher-oracle utility를 측정한 뒤 내린다.
 
 ## 근거
 
@@ -49,7 +49,8 @@ JSONL 비교값이다. Dense G-CUT3R feature, binary device encoding, latency, e
 실제 장기 revisit growth를 측정한 값이 아니다.
 
 **C-002 local result:** Bounded source-compact memory는 legacy diagnostic의 216개
-record·96,456 JSONL byte 대신 15개 record·6,050 byte를 유지해 15.94× 축소됐다.
+record·96,456 JSONL byte 대신 15개 record·6,050 byte를 유지해 15.94× 축소됐다
+(`15.94x reduction`).
 이는 heuristic tiny-fixture path만 검증하며 learned typed memory나 lifelong
 convergence를 검증하지 않는다.
 

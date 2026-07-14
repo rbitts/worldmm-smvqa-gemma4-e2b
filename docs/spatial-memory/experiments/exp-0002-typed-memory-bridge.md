@@ -1,132 +1,106 @@
-# EXP-0002: Typed-memory bridge
+# EXP-0002: Minimal hybrid student typed-memory bridge
 
 | 항목 | 값 |
 | --- | --- |
 | Page ID | SM-EXP-0002 |
 | Experiment ID | EXP-0002 |
 | Confluence parent | SM-EXPERIMENTS |
-| 상태 | Local contract 구현, run 대기 |
-| 근거 수준 | Production bridge와 lineage contract check만 완료 |
-| 최종 검토 | 2026-07-12 |
-| 선행 조건 | EXP-0004 teacher artifact |
+| 상태 | 재설계; EXP-0005 Go 대기 |
+| 근거 수준 | Legacy feature-head와 lineage contract local check만 완료 |
+| 최종 검토 | 2026-07-14 |
+| 선행 조건 | EXP-0005 teacher-oracle object/location utility Go |
 
 ## 핵심 결론
 
-대기. Repository handoff는 checkpoint 이후 external production inference
-bridge와 E1 reporting까지 연결되었지만 실행되지 않았다. Contract probe 통과 전에는
-learned-method reproduction으로 간주할 수 없고, immutable E2/E3 identity가 없으므로
-official E1/E2/E3 결과로도 간주할 수 없다.
-
-Contract probe가 성공해도 result는 `contract_probe` / `PROBE`다. 별도 승인된
-`full` run만 `student` / `E1`을 생성한다.
+**대기.** 기존 supplied-vector candidate head는 raw RGB/IMU student도, open-world
+typed decoder도, on-device model도 아니다. EXP-0005가 useful target을 확인하기
+전에는 이 scaffold를 production student result로 실행하지 않는다.
 
 ## 다음 결정
 
-Go이면 ADR-0001과 ADR-0003을 learned path에 적용 완료로 올리고 EXP-0003 Pareto
-평가를 시작한다. No-go이면 새 abstraction을 추가하기 전에 decoder, association,
-checkpoint-evidence digest chain 중 실패한 최소 경로만 수정한다.
-
-실행, 승인, artifact 경로의 canonical 절차는 repository root의
-`HANDOFF.md`를 따른다. Confluence import 후에는 이 문서가
-`SM-OPERATIONS` 하위의 `SM-OPERATIONS-HANDOFF` 페이지다.
+EXP-0005 Go이면 object/place/event 중 실제 QA utility를 만든 최소 target만 선택하고,
+small semantic perception + native causal VIO/depth + deterministic projection으로
+student input과 output contract를 다시 고정한다. No-go이면 student architecture를
+추가하지 않는다.
 
 ## 근거
 
 미실행.
 
-Local check는 generated DAG가 contract version validation, inference input
-sanitization, canonical typed JSONL/window byte 검사, 내부 evidence 생성, student
-lineage·real frame 검증, profile-bound identity와 remote manifest/report 생성을
-수행함을 입증한다. Production executable, checkpoint, model, frame set, company
-benchmark run을 사용하지 않았으므로 가설 자체는 검증하지 않는다.
+Local check는 feature-level candidate head, DDP loss/checkpoint, external inference
+lineage, canonical typed JSONL/window-byte validation이 동작함만 입증한다. Image
+encoder, sensor fusion, mask-to-geometry, open-world association, mobile executable,
+real checkpoint는 없다.
 
 ## 의사결정 gate
 
-| Metric 또는 invariant | Go 조건 |
-| --- | --- |
-| Checkpoint traceability | Checkpoint, decoder config, typed artifact, evidence, QA manifest digest가 하나의 chain 구성 |
-| Decode validity | 모든 selected candidate가 하나의 typed schema로 validate되거나 fail closed |
-| Association validity | Persistent ID가 unique하고 causal validity interval이 충돌하지 않음 |
-| Actual bytes | 모든 30초 window가 기본 4,096 byte 이하이며 canonical file size와 manifest total이 정확히 일치 |
-| Persistence | Artifact의 `no_write` record 0 |
-| QA grounding | 모든 answerable geometry prediction이 matching proof와 evidence ID 인용 |
-| Leakage | Causal/off-scope evidence violation 0 |
-| Comparison | 동일 input에서 QA-Acc, QA-MRR, Ans-F1, target spatial slice 보고 |
+| Metric 또는 invariant | Scale | Go 조건 |
+| --- | --- | --- |
+| Oracle retention | object/location slice | EXP-0005 T1 gain의 사전 정의 비율 유지 |
+| QA-Acc, QA-MRR, Ans-F1 | 0-100 | E0/T1과 matched input·byte로 보고 |
+| Association | precision/recall | Existing/NEW, false merge, duplicate ID 목표를 run 전 고정 |
+| Typed validity | count | Invalid record, persisted no-write, duplicate ID 0 |
+| Grounding | count | Missing/off-scope evidence와 low-confidence accepted proof 0 |
+| Actual serialized bytes | bytes | 동일 30초 window budget; 기본 4,096 byte 이하 |
+| Device profile | latency, memory, energy | Target hardware와 허용값을 run 전 고정; server latency 대체 금지 |
+| Causal violations | count | 0 |
 
 ## 비교안
 
 | Variant | 변경 요소 | 고정 input |
 | --- | --- | --- |
-| A: Source-compact | EXP-0001의 heuristic spatial record | Split, 1 Hz frame manifest, retrieval, QA backend, byte accounting |
-| B: Student typed bridge | Contract-v1 checkpoint-decoded typed record | Split, 1 Hz frame manifest, retrieval, QA backend, matched per-window byte budget |
+| E0: Source-compact | Existing heuristic spatial memory | Split, frame inventory, non-spatial stores, retrieval, QA, byte budget |
+| T1: Teacher oracle | EXP-0005의 object/place teacher record | E0 고정 input |
+| S1: Hybrid student | Small semantic encoder + native geometry + minimal typed writer | E0 고정 input |
 
-Prebuilt QA evidence는 Variant B로 인정하지 않는다. Production DAG는 repository
-validation 이후 executable의 typed JSONL에서 evidence를 생성해야 한다.
+`spatial_train.py`의 supplied feature vector를 raw RGB처럼 보고하는 variant는 허용하지
+않는다. 모든 candidate type을 고정 dimension으로 생성하는 legacy head도 S1 정의가
+아니다.
 
 ## 가설
 
-Trained spatial student checkpoint를 type-specific geometry record로 decode하고 같은
-artifact를 actual-byte writer, retrieval, deterministic geometry executor, QA까지
-내부 연결하면 checkpoint 변화가 evidence와 QA 결과에 추적 가능하게 반영된다.
+Offline teacher 전체를 복제하지 않고 object/place semantics만 작은 perception model로
+distill하며 calibrated native VIO/depth로 geometry를 계산하면, 동일 byte budget에서
+teacher-oracle QA gain의 유의미한 부분을 target device budget 안에 유지할 수 있다.
 
 ## 실행 contract
 
-실행 전 dataset, split, code revision, teacher/checkpoint/config digest를 고정해야 한다.
-현재 production interface는 다음과 같이 고정되어 있다.
-
 | 항목 | 고정값 |
 | --- | --- |
-| Candidate types | object, plane, portal, free_space, landmark, event, no_write |
-| Persistent types | object, plane, portal, free_space, landmark, event |
-| Required record fact | Entity/instance ID, local frame, covariance, validity, first/last seen, confidence, provenance, evidence ref |
-| Training input | Explicit train/validation split이 있는 materialized teacher row |
-| Student output | Record type, typed geometry target, association, uncertainty, rate, distillation |
-| Inference executable | Contract version과 exact `worldmm-spatial-infer-v1:self-test-ok`; self-test는 accuracy가 아닌 CLI/schema/canonical writer 검사 |
-| Inference input | Checkpoint, sanitized `inference_inputs/sources.jsonl`, copied selected `inference_inputs/frames/` root, sensor-frame manifest; question/label 없음 |
-| Inference output | Canonical `typed_memory.jsonl`, `typed_memory.inference.json` |
-| Adapter lineage | Adapter가 sanitized-source, frame-content-manifest, producer-executable SHA-256을 받고 manifest가 이를 echo하며 repository가 3개 모두 재계산 |
-| Selection boundary | External executable이 candidate ranking/selection을 소유하고 repository는 persisted schema, canonical byte, budget만 validate |
-| Persistence guard | Streaming validation, canonical row 최대 1 MiB, `no_write` serialize 금지, duplicate ID/invalid artifact fail closed |
-| Grounding guard | Source video/record time이 source bound와 일치하고 grounded provenance의 bare same-video evidence min/max가 first/last seen과, unique count가 `observation_count`와 일치 |
-| Window contract | `window_seconds=30.0`, validity backdating 방지를 위해 key는 `(source_video_id, floor(first_seen_time / 30.0))` |
-| Byte guard | Window당 기본 4,096 byte, 모든 window와 total canonical file byte를 재계산해 manifest와 일치 |
-| Retrieval guard | Question video scope의 causally eligible record만 허용 |
-| Proof guard | Answerable geometry choice에 matching deterministic proof 필요 |
-| QA guard | Spatial evidence가 canonical typed projection과 exact match; byte-budgeted record는 count/last-seen completeness 또는 label uniqueness를 certify할 수 없어 해당 query는 abstain; explicit-ID local-frame pair proof는 cross-video entity 거부; real frame과 v4 audit 필수 |
-| Memory lineage | Student evidence에 memory-manifest와 episodic/semantic/visual SHA-256 기록; typed memory는 별도 checkpoint/inference-bound 유지; QA가 모든 referenced artifact 재계산 |
-| Resume guard | QA v4 resume이 memory-manifest/evidence-lineage digest를 직접 bind하고 validated lineage가 individual non-spatial store byte를 transitive하게 bind |
-| Result guard | Profile-neutral `metrics/metrics.json`, `summary/run_identity.json`; finalization input seal에 QA/lineage, memory manifest, episodic/semantic/visual/typed artifact, config, sensor, split input 포함; probe는 `contract_probe`/`PROBE`, full은 `student`/`E1` |
-| Dataset, split, checkpoint, run ID | 실행 전 TBD 해소 |
+| Architecture | EXP-0005 Go target만; [ADR-0005](../decisions/adr-0005-hybrid-on-device-compiler.md) 준수 |
+| Training input | Raw selected RGB + available causal native sensor signal; question/label 없음 |
+| Teacher use | Offline target generation only; inference executable에서 G-CUT3R load 금지 |
+| Output | Evidence-bound object/place/event/no-write 중 승인된 최소 subset |
+| Association | Existing entity pointer 또는 `NEW`; fixed closed-set ID 분류 금지 |
+| Code revision | TBD |
+| Dataset, split, input digests | TBD |
+| Teacher/student/model/config digests | TBD |
+| Sensor/frame/calibration digests | TBD |
+| Random seed | TBD |
+| Byte-budget scope와 값 | 30초 source window당 기본 4,096 byte; run 전 고정 |
+| Target device와 profile method | TBD |
+| QA backend와 prompt schema | TBD |
+| Run ID | TBD |
 
-현재 learned-lane 경계:
-
-```text
-external teacher cache and supervision
-  -> materialized rows
-  -> DDP typed candidate head
-  -> spatial_student.pt
-  -> WORLDMM_SPATIAL_INFER_EXE
-  -> type-specific decode, association, actual-byte selection
-  -> validated canonical typed artifact
-  -> repository-built retrieval evidence and real-frame QA
-  -> profile-bound PROBE or learned E1 remote manifest and final report
-```
+Checkpoint, executable, typed memory, evidence, QA, metric, report digest chain은 기존
+production handoff guard를 재사용한다. EXP-0005 이전 legacy checkpoint probe는
+architecture validation이 아니라 scaffold diagnostic으로만 기록한다.
 
 ## 추적성
 
 | 유형 | Link | 관련성 |
 | --- | --- | --- |
-| Claim | [C-001: sparse geometry](../traceability.md) | 1 Hz 관측을 typed geometry candidate로 변환 |
-| Claim | [C-002: bounded long-term memory](../traceability.md) | decoded record를 actual-byte budget 아래 선택 |
-| Claim | [C-003: verifiable geometry QA](../traceability.md) | checkpoint 출력부터 proof까지 provenance 유지 |
-| Claim | [C-005: actual-byte accounting](../traceability.md) | checkpoint-decoded record를 실제 byte budget으로 선택 |
-| Decision | [ADR-0001: explicit typed memory](../decisions/adr-0001-explicit-typed-memory.md) | object, plane, portal, free-space, landmark, event schema |
-| Decision | [ADR-0002: G-CUT3R as teacher](../decisions/adr-0002-gcut3r-as-teacher.md) | external teacher supervision으로 student 학습 |
-| Decision | [ADR-0003: value per actual byte](../decisions/adr-0003-value-per-byte-writer.md) | decoded candidate를 실제 JSONL 비용으로 선택 |
-| Decision | [ADR-0004: deterministic geometry proof](../decisions/adr-0004-deterministic-geometry-proof.md) | geometry answer를 typed record와 proof에 결속 |
-| Paper context | [G-CUT3R](../papers/g-cut3r.md) | sparse-view guided teacher 후보; 아직 repo에서 재현되지 않음 |
-| Paper context | [Point3R](../papers/point3r.md) | position-indexed explicit memory 근거 |
-| Paper context | [ConceptGraphs](../papers/conceptgraphs.md) | object-centric explicit graph 근거 |
+| Claim | [C-001: sparse geometry](../traceability.md) | Native guidance와 semantic perception 결합 |
+| Claim | [C-002: bounded long-term memory](../traceability.md) | Minimal typed output과 hard byte budget |
+| Claim | [C-003: verifiable geometry QA](../traceability.md) | Student output에서 deterministic proof까지 결속 |
+| Claim | [C-005: actual-byte accounting](../traceability.md) | Oracle/student를 동일 serialized-byte budget으로 비교 |
+| Claim | [C-006: transient/persistent separation](../traceability.md) | Teacher와 device runtime 분리 |
+| Claim | [C-009: provenance and abstention](../traceability.md) | Inferred evidence/confidence gate 유지 |
+| Decision | [ADR-0001: explicit typed memory](../decisions/adr-0001-explicit-typed-memory.md) | Persistent output contract |
+| Decision | [ADR-0003: value per actual byte](../decisions/adr-0003-value-per-byte-writer.md) | Hard byte writer |
+| Decision | [ADR-0005: hybrid device compiler](../decisions/adr-0005-hybrid-on-device-compiler.md) | Student architecture boundary |
+| Decision | [ADR-0006: inferred geometry](../decisions/adr-0006-evidence-bound-inferred-geometry.md) | Proof admission boundary |
+| Experiment | [EXP-0005: teacher oracle](exp-0005-teacher-oracle-ceiling.md) | Distillation 전 utility ceiling |
 
 ## 실행 provenance
 
@@ -135,7 +109,6 @@ external teacher cache and supervision
 | Run ID | 미할당 |
 | Code revision | 미고정 |
 | Student checkpoint | 없음 |
-| Decoder config/digest | 없음 |
 | Slurm job ID 또는 process reference | 없음 |
 | Company artifact path | 없음 |
 | Metrics artifact | 없음 |

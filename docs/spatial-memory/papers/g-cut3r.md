@@ -7,9 +7,9 @@
 | 출판 | ICLR 2026 |
 | 1차 출처 | [공식 OpenReview record](https://openreview.net/forum?id=J7DiMqmIFl) |
 | 공식 code | Paper는 OpenReview supplementary material에 source code가 있다고 설명하나 standalone official repository는 미확인 |
-| 최종 확인 | 2026-07-11 |
+| 최종 확인 | 2026-07-14 |
 | 프로젝트 연결 | [논문 목록](README.md), [아키텍처](../architecture.md), [ADR-0002](../decisions/adr-0002-gcut3r-as-teacher.md), [현재 상태](../status.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-001 |
+| Project claims | [Traceability](../traceability.md): C-001 |
 
 ## 핵심 결론
 
@@ -21,7 +21,11 @@
 
 ## 근거 상태
 
-저장소는 외부 공급자 프로토콜, 인과 캐시 해시, 교사 구체화 및 DDP 후보자 헤드 교육 스캐폴드를 구현한다. G-CUT3R 추출기 또는 체크포인트가 포함되어 있지 않으며 G-CUT3R 추론을 실행하지 않았다. 체크포인트에서 입력된 메모리로의 추론은 여전히 ​​P0 차단제로 남아 있다.
+저장소는 외부 provider/cache, 독립 camera calibration, selected-point object target
+compiler를 구현한다. G-CUT3R extractor/checkpoint 또는 semantic mask/place provider는
+포함하지 않으며 inference를 실행하지 않았다. 현재 P0 blocker는 student checkpoint가
+아니라 [EXP-0005](../experiments/exp-0005-teacher-oracle-ceiling.md)의
+teacher-oracle object/location utility다.
 
 ## 논문 핵심
 

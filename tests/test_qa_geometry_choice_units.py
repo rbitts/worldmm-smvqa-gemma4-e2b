@@ -9,14 +9,14 @@ from worldmm_smvqa.qa import QAParseError, parse_qa_output
 from worldmm_smvqa.schema import AnswerChoice, QuestionRequest
 from worldmm_smvqa.worldmm.geometry_executor import GeometryProof
 
-Operation = Literal["distance", "last_seen", "count"]
+Operation = Literal["distance", "last_seen", "last_location", "count"]
 Unit = Literal["meters", "seconds", "count"]
 
 
 def _parse(
     operation: Operation,
-    unit: Unit,
-    value: float,
+    unit: Unit | None,
+    value: float | str,
     choices: tuple[str, str, str],
     answer: str,
 ) -> None:
@@ -84,6 +84,27 @@ def test_geometry_choice_matching_normalizes_supported_units(
     answer: str,
 ) -> None:
     _parse(operation, unit, value, choices, answer)
+
+
+def test_last_location_proof_matches_one_semantic_place_choice() -> None:
+    _parse(
+        "last_location",
+        None,
+        "kitchen counter",
+        ("on the kitchen counter", "in the bedroom", "near the door"),
+        "A",
+    )
+
+
+def test_last_location_proof_rejects_different_selected_place() -> None:
+    with pytest.raises(QAParseError, match="contradicts cited geometry proof"):
+        _parse(
+            "last_location",
+            None,
+            "kitchen counter",
+            ("on the kitchen counter", "in the bedroom", "near the door"),
+            "B",
+        )
 
 
 def test_two_meters_does_not_match_two_feet() -> None:

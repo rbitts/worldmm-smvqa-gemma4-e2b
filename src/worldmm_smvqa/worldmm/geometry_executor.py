@@ -21,13 +21,20 @@ type GeometryOperation = Literal[
     "relative_direction",
     "near",
     "last_seen",
+    "last_location",
     "count",
 ]
 type GeometryValue = bool | float | int | str
 type GeometryInput = GeometryEntityFact | BaseModel | Mapping[str, object]
 
 _GROUNDED = frozenset(
-    {"observed", "object_geometry", "multi_view_fused", "human_confirmed"},
+    {
+        "observed",
+        "object_geometry",
+        "multi_view_fused",
+        "model_inferred",
+        "human_confirmed",
+    },
 )
 _VECTOR_DIMENSIONS = 3
 _COUNT_INVALIDATING_EVENT_KINDS = frozenset(
@@ -40,12 +47,15 @@ class GeometryEntityFact(FrozenModel):
     label: str
     provenance: str
     evidence_refs: tuple[str, ...]
+    record_ref: str | None = None
     source_video_id: str | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     x: float | None = None
     y: float | None = None
     z: float | None = None
     coordinate_frame: str | None = None
     uncertainty_m: float | None = Field(default=None, ge=0.0)
+    place_label: str | None = None
     last_seen_time: float | None = None
     time_uncertainty_s: float = Field(default=0.0, ge=0.0)
 
@@ -59,6 +69,7 @@ class GeometryEntityFact(FrozenModel):
             raise ValueError(msg)
         values = (
             *position,
+            self.confidence,
             self.uncertainty_m,
             self.last_seen_time,
             self.time_uncertainty_s,
@@ -79,6 +90,7 @@ class GeometryQuery(FrozenModel):
     wearer_yaw_uncertainty_degrees: float = Field(default=0.0, ge=0.0)
     near_threshold_m: float = Field(default=1.5, gt=0.0)
     max_uncertainty_m: float = Field(default=0.5, ge=0.0)
+    min_inferred_confidence: float = Field(default=0.5, ge=0.0, le=1.0)
     entity_index_complete: bool = False
 
     @model_validator(mode="after")
@@ -88,6 +100,7 @@ class GeometryQuery(FrozenModel):
             self.wearer_yaw_uncertainty_degrees,
             self.near_threshold_m,
             self.max_uncertainty_m,
+            self.min_inferred_confidence,
         )
         if any(value is not None and not math.isfinite(value) for value in values):
             msg = "geometry query values must be finite"
@@ -106,6 +119,7 @@ class GeometryProof(FrozenModel):
     coordinate_frame: str
     uncertainty: float | None = Field(default=None, ge=0.0)
     uncertainty_unit: Literal["meters", "seconds", "count"] | None = None
+    confidence: float | None = Field(default=None, ge=0.0, le=1.0)
     provenance: tuple[str, ...]
     evidence_refs: tuple[str, ...]
     reason: str | None = None
@@ -139,6 +153,8 @@ def execute_geometry(
         return _count(facts, invalid, query)
     if query.operation == "last_seen":
         return _last_seen(facts, query)
+    if query.operation == "last_location":
+        return _last_location(facts, query)
     return _pair(facts, query)
 
 
@@ -181,7 +197,7 @@ def plan_geometry_query(  # noqa: PLR0911,PLR0913
             entity_index_complete=entity_index_complete,
         )
     entity_ids = tuple(dict.fromkeys(fact.entity_id for fact in mentions))
-    required = 1 if operation == "last_seen" else 2
+    required = 1 if operation in {"last_seen", "last_location"} else 2
     if len(entity_ids) != required:
         return None
     if (
@@ -201,7 +217,7 @@ def plan_geometry_query(  # noqa: PLR0911,PLR0913
     )
 
 
-def geometry_proofs_for_question(  # noqa: PLR0913
+def geometry_proofs_for_question(  # noqa: PLR0911,PLR0913
     question: QuestionRequest,
     evidence_pack: EvidencePack,
     *,
@@ -277,10 +293,27 @@ def geometry_proofs_for_question(  # noqa: PLR0913
                 ),
             ),
         )
-    location_intent = _last_seen_location_intent(question_text)
-    if operation == "last_seen" and (
-        location_intent or not _last_seen_time_intent(question_text)
-    ):
+    if operation == "last_location" and _last_seen_time_intent(question_text):
+        location_query = query or GeometryQuery(
+            operation="last_location",
+            coordinate_frame=effective_frame,
+            entity_index_complete=certified_complete_index,
+        )
+        selected = tuple(
+            fact
+            for fact in _latest(facts)
+            if location_query.subject is None
+            or fact.entity_id == location_query.subject
+        )
+        return (
+            _proof(
+                location_query,
+                selected,
+                _Result(reason="query requests both last-seen time and location"),
+                subject_entity_id=location_query.subject,
+            ),
+        )
+    if operation == "last_seen" and not _last_seen_time_intent(question_text):
         last_seen_query = query or GeometryQuery(
             operation="last_seen",
             coordinate_frame=effective_frame,
@@ -297,20 +330,18 @@ def geometry_proofs_for_question(  # noqa: PLR0913
                 last_seen_query,
                 selected,
                 _Result(
-                    reason=(
-                        "last-seen location proof is not implemented"
-                        if location_intent
-                        else "last-seen proof requires an explicit time intent"
-                    ),
+                    reason="last-seen proof requires an explicit time intent",
                 ),
                 subject_entity_id=last_seen_query.subject,
             ),
         )
     if query is not None:
-        if query.operation == "last_seen" and _newer_transition_event_exists(
-            transition_events,
-            facts,
-            query.subject,
+        if query.operation in {"last_seen", "last_location"} and (
+            _newer_transition_event_exists(
+                transition_events,
+                facts,
+                query.subject,
+            )
         ):
             return (
                 _proof(
@@ -499,11 +530,11 @@ def _last_seen(  # noqa: PLR0911
             _Result(reason=reason),
             subject_entity_id=fact.entity_id,
         )
-    if fact.provenance not in _GROUNDED:
+    if grounding_error := _grounding_error(fact, query):
         return _proof(
             query,
             (fact,),
-            _Result(reason="entity provenance is not geometry-grounded"),
+            _Result(reason=grounding_error),
             subject_entity_id=fact.entity_id,
         )
     if fact.last_seen_time is None:
@@ -521,6 +552,57 @@ def _last_seen(  # noqa: PLR0911
             uncertainty=fact.time_uncertainty_s,
             unit="seconds",
         ),
+        subject_entity_id=fact.entity_id,
+    )
+
+
+def _last_location(  # noqa: PLR0911
+    facts: Sequence[GeometryEntityFact],
+    query: GeometryQuery,
+) -> GeometryProof:
+    if not query.entity_index_complete:
+        return _proof(
+            query,
+            (),
+            _Result(reason="last-location requires a complete entity index"),
+        )
+    if query.subject is None:
+        return _proof(query, (), _Result(reason="entity selector required"))
+    fact, reason = _one(facts, query.subject)
+    if fact is None:
+        return _proof(query, (), _Result(reason=reason))
+    if reason:
+        return _proof(
+            query,
+            (fact,),
+            _Result(reason=reason),
+            subject_entity_id=fact.entity_id,
+        )
+    if grounding_error := _grounding_error(fact, query):
+        return _proof(
+            query,
+            (fact,),
+            _Result(reason=grounding_error),
+            subject_entity_id=fact.entity_id,
+        )
+    if fact.last_seen_time is None:
+        return _proof(
+            query,
+            (fact,),
+            _Result(reason="last-location time is missing"),
+            subject_entity_id=fact.entity_id,
+        )
+    if fact.place_label is None:
+        return _proof(
+            query,
+            (fact,),
+            _Result(reason="last-known place label is missing"),
+            subject_entity_id=fact.entity_id,
+        )
+    return _proof(
+        query,
+        (fact,),
+        _Result(value=fact.place_label),
         subject_entity_id=fact.entity_id,
     )
 
@@ -566,11 +648,11 @@ def _count(
             (),
             _Result(reason="no matching grounded entity records"),
         )
-    if any(fact.provenance not in _GROUNDED for fact in selected):
+    if any(_grounding_error(fact, query) for fact in selected):
         return _proof(
             query,
             selected,
-            _Result(reason="one or more entities are not geometry-grounded"),
+            _Result(reason="one or more entities lack grounded evidence"),
         )
     return _proof(
         query,
@@ -691,19 +773,20 @@ def _fact(record: GeometryInput) -> GeometryEntityFact:
     if not evidence_refs:
         evidence_refs = _text_items(raw.get("evidence_refs"))
     memory_id = raw.get("memory_id")
-    if isinstance(memory_id, str) and memory_id not in evidence_refs:
-        evidence_refs = (*evidence_refs, memory_id)
     return GeometryEntityFact(
         entity_id=entity_id,
         label=label,
         provenance=provenance,
         evidence_refs=evidence_refs,
+        record_ref=memory_id if isinstance(memory_id, str) else None,
         source_video_id=_maybe_text(raw, "video_id", "source_video_id"),
+        confidence=_number(raw.get("confidence")),
         x=_number(raw.get("x")) if raw.get("x") is not None else position[0],
         y=_number(raw.get("y")) if raw.get("y") is not None else position[1],
         z=_number(raw.get("z")) if raw.get("z") is not None else position[2],
         coordinate_frame=_maybe_text(raw, "coordinate_frame", "local_frame_id"),
         uncertainty_m=uncertainty_m,
+        place_label=_maybe_text(raw, "place_label"),
         last_seen_time=_number(raw.get("last_seen_time", raw.get("end_time"))),
         time_uncertainty_s=_number(raw.get("time_uncertainty_s")) or 0.0,
     )
@@ -783,13 +866,13 @@ def _canonical_fact(fact: GeometryEntityFact) -> str:
 
 def _geometry_state(
     fact: GeometryEntityFact,
-) -> tuple[float | None, float | None, float | None, str | None]:
-    return (fact.x, fact.y, fact.z, fact.coordinate_frame)
+) -> tuple[float | None, float | None, float | None, str | None, str | None]:
+    return (fact.x, fact.y, fact.z, fact.coordinate_frame, fact.place_label)
 
 
 def _invalid_metric_fact(fact: GeometryEntityFact, query: GeometryQuery) -> str:
-    if fact.provenance not in _GROUNDED:
-        return f"entity is not geometry-grounded: {fact.entity_id}"
+    if grounding_error := _grounding_error(fact, query):
+        return grounding_error
     if fact.coordinate_frame != query.coordinate_frame:
         return f"coordinate frame mismatch: {fact.entity_id}"
     if fact.x is None or fact.y is None or fact.z is None:
@@ -798,6 +881,19 @@ def _invalid_metric_fact(fact: GeometryEntityFact, query: GeometryQuery) -> str:
         return f"entity uncertainty is missing: {fact.entity_id}"
     if fact.uncertainty_m > query.max_uncertainty_m:
         return f"entity uncertainty exceeds limit: {fact.entity_id}"
+    return ""
+
+
+def _grounding_error(fact: GeometryEntityFact, query: GeometryQuery) -> str:
+    if fact.provenance not in _GROUNDED:
+        return f"entity is not geometry-grounded: {fact.entity_id}"
+    if not any(ref != fact.record_ref for ref in fact.evidence_refs):
+        return f"entity grounding evidence is missing: {fact.entity_id}"
+    if fact.provenance == "model_inferred":
+        if fact.confidence is None:
+            return f"inferred entity confidence is missing: {fact.entity_id}"
+        if fact.confidence < query.min_inferred_confidence:
+            return f"inferred entity confidence is below limit: {fact.entity_id}"
     return ""
 
 
@@ -813,6 +909,20 @@ def _proof(
     subject_entity_id: str | None = None,
     object_entity_id: str | None = None,
 ) -> GeometryProof:
+    confidence = min(
+        (fact.confidence for fact in facts if fact.confidence is not None),
+        default=None,
+    )
+    evidence_refs = tuple(
+        sorted(
+            {
+                ref
+                for fact in facts
+                for ref in (*fact.evidence_refs, fact.record_ref)
+                if ref is not None
+            },
+        ),
+    )
     payload: dict[str, object] = {
         "query": query.model_dump(mode="json"),
         "answerable": result.reason is None,
@@ -824,10 +934,9 @@ def _proof(
         "coordinate_frame": query.coordinate_frame,
         "uncertainty": result.uncertainty,
         "uncertainty_unit": result.unit,
+        "confidence": confidence,
         "provenance": tuple(sorted({fact.provenance for fact in facts})),
-        "evidence_refs": tuple(
-            sorted({ref for fact in facts for ref in fact.evidence_refs}),
-        ),
+        "evidence_refs": evidence_refs,
         "reason": result.reason,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
@@ -843,10 +952,9 @@ def _proof(
         coordinate_frame=query.coordinate_frame,
         uncertainty=result.uncertainty,
         uncertainty_unit=result.unit,
+        confidence=confidence,
         provenance=tuple(sorted({fact.provenance for fact in facts})),
-        evidence_refs=tuple(
-            sorted({ref for fact in facts for ref in fact.evidence_refs}),
-        ),
+        evidence_refs=evidence_refs,
         reason=result.reason,
     )
 
@@ -907,9 +1015,14 @@ def _text_items(value: object) -> tuple[str, ...]:
     raise TypeError(msg)
 
 
-def _operation(text: str) -> GeometryOperation | None:
+def _operation(text: str) -> GeometryOperation | None:  # noqa: PLR0911
     if any(term in text for term in ("last seen", "last saw", "last observed")):
-        return "last_seen"
+        return "last_location" if _last_seen_location_intent(text) else "last_seen"
+    if _last_seen_location_intent(text) and any(
+        term in text
+        for term in ("did i leave", "did i put", "was left", "was placed")
+    ):
+        return "last_location"
     if any(term in text for term in ("how many", "number of", "count of")):
         return "count"
     if any(term in text for term in ("how far", "distance")):

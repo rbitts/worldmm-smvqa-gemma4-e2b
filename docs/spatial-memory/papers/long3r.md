@@ -9,7 +9,7 @@
 | 공식 code | [zgchen33/LONG3R](https://github.com/zgchen33/LONG3R/) — repository에 code 공개 예정으로 표기 |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [상위: 논문 목록](README.md) · [아키텍처](../architecture.md) · [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-002, C-005 |
+| Project claims | [Traceability](../traceability.md): C-002, C-005 |
 
 ## 핵심 결론
 

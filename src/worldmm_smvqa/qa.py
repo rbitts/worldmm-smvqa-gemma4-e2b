@@ -582,6 +582,14 @@ def _proof_supports_choice(  # noqa: PLR0911
         " ".join(text.casefold().replace("_", " ").split())
         for text in all_choice_texts
     )
+    if proof.operation == "last_location" and isinstance(proof.value, str):
+        expected = " ".join(proof.value.casefold().replace("_", " ").split())
+        if not expected:
+            return None
+        pattern = re.compile(rf"(?<!\w){re.escape(expected)}(?!\w)")
+        if not any(pattern.search(text) for text in all_normalized):
+            return None
+        return pattern.search(normalized) is not None
     if proof.operation == "relative_direction" and isinstance(proof.value, str):
         aliases = {
             "left": ("left",),

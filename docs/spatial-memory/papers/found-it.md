@@ -9,7 +9,7 @@
 | 공식 code | 2026-07-11 기준 미공개; paper에 publication 이후 공개 예정으로 표기 |
 | 최종 확인 | 2026-07-11 |
 | 프로젝트 연결 | [논문 목록](README.md), [문제 정의](../problem.md), [아키텍처](../architecture.md), [추적성](../traceability.md) |
-| 프로젝트 claim | [추적성](../traceability.md): C-004 |
+| Project claims | [Traceability](../traceability.md): C-004 |
 
 ## 핵심 결론
 

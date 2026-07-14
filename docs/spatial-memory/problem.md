@@ -4,7 +4,7 @@
 |---|---|
 | Page ID | SM-PROBLEM |
 | 상태 | 활성 |
-| 최종 갱신 | 2026-07-13 |
+| 최종 갱신 | 2026-07-14 |
 | 범위 | SuperMemory-VQA와 향후 AI-glass 배포 |
 
 ## 핵심 결론
@@ -13,6 +13,11 @@ Long-term memory를 explicit, typed, byte-bounded spatial record로 구축한다
 Dense geometry는 observation 처리 중에만 사용하고, metric answer에는
 deterministic proof를 요구한다. 동일 actual-byte budget의 explicit baseline을
 측정하기 전에는 generic latent quantization을 우선하지 않는다.
+
+현재 Goal은 raw student 구현이 아니다. Offline teacher-oracle object/place record가
+같은 byte budget에서 object/location QA에 실제 효용이 있는지 먼저 측정한다.
+G-CUT3R는 이 oracle/target 생성에만 사용한다. Go 결과가 나온 target만 native
+sensor 기반 hybrid device compiler로 distill한다.
 
 ## 필요성
 
@@ -39,6 +44,36 @@ sparse observations -> transient geometry -> typed records
 | RQ-005 | Device model cost | Record contract와 server baseline 안정화 후 distillation |
 | RQ-006 | Causality와 provenance | Future evidence 차단, observed/inferred geometry 구분 |
 
+## RQ-001: Sparse sensing
+
+Available camera calibration과 causal IMU/VIO/depth만 사용해 sparse RGB 사이 geometry를
+구성한다. Missing signal은 합성하지 않는다.
+
+## RQ-002: Lifelong storage
+
+Persistent growth를 frame 수가 아닌 useful object, place, event, revisit에 묶고 actual
+serialized byte로 측정한다.
+
+## RQ-003: Explicit geometry-grounded QA
+
+Metric과 last-location answer를 typed fact, deterministic operator, evidence-bound
+proof에 연결한다.
+
+## RQ-004: Unknown future question
+
+Known query text에 overfit하지 않는 stable geometry core와 bounded evidence reserve를
+평가한다.
+
+## RQ-005: Device model cost
+
+Teacher-oracle utility가 확인된 최소 target만 hybrid compiler로 distill하고 target
+hardware에서 latency, memory, energy를 측정한다.
+
+## RQ-006: Causality and provenance
+
+Future input과 자기참조 evidence를 거부하고 observed, model-inferred,
+relation-inferred provenance를 구분한다.
+
 ## 성공 gate
 
 | 영역 | Gate |
@@ -46,7 +81,8 @@ sparse observations -> transient geometry -> typed records
 | Correctness | Answerable geometry result마다 entity, frame, validity, uncertainty, provenance, evidence, proof 일치 |
 | Safety | Unsupported/incomplete geometry는 abstain하고 causal violation은 0 |
 | Compression | Hour·area·object·event·revisit당 actual byte와 QA-versus-bytes Pareto 보고 |
-| Model | Checkpoint가 valid typed record를 decode하고 existing-instance 또는 `NEW` association 지원 |
+| Oracle | Evidence-bound teacher object/place record가 동일 byte baseline보다 target slice utility 개선 |
+| Model | Oracle Go 이후 raw RGB semantics와 native sensor geometry에서 valid record 및 existing/`NEW` association 생성 |
 | Evaluation | Matched variant의 split, data, frame, model, checkpoint, config, seed, prompt digest 고정 |
 
 ## 비목표
