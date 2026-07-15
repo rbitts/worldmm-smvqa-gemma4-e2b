@@ -3277,6 +3277,12 @@ PY
               "$WORLDMM_OUTPUT_ROOT/qa/completed.json" \
               "$summary_path" \
               "$WORLDMM_EXECUTION_REPO/configs/remote.example.yaml" \
+              "$WORLDMM_MODEL_CONTRACT" \
+              "$WORLDMM_STUDENT_ARCHITECTURE" \
+              "$WORLDMM_PROVIDER_LOCK" \
+              "$WORLDMM_OUTPUT_ROOT/diagnostics/model_load/model_load_consensus.json" \
+              "$WORLDMM_OUTPUT_ROOT/summary/submission_manifest.json" \
+              "$WORLDMM_OUTPUT_ROOT/summary/student_terminal.json" \
               "$WORLDMM_SENSOR_FRAME_MANIFEST" \
               "$RUN_FIXTURE/sources.jsonl" \
               "$RUN_FIXTURE/questions.jsonl" \
@@ -3377,6 +3383,14 @@ paths = {
     "env_contract": root / "diagnostics/env_contract.json",
     "frame_assets": root / "diagnostics/frame_assets.sha256",
     "preflight_inputs": root / "diagnostics/preflight_inputs.sha256",
+    "model_contract": Path(os.environ["WORLDMM_MODEL_CONTRACT"]),
+    "student_architecture": Path(os.environ["WORLDMM_STUDENT_ARCHITECTURE"]),
+    "provider_lock": Path(os.environ["WORLDMM_PROVIDER_LOCK"]),
+    "model_load_consensus": (
+        root / "diagnostics/model_load/model_load_consensus.json"
+    ),
+    "submission_manifest": root / "summary/submission_manifest.json",
+    "student_terminal": root / "summary/student_terminal.json",
     "checkpoint": root / "checkpoints/spatial_student.pt",
     "inference_manifest": root / "memory/typed_memory.inference.json",
     "inference_sources": root / "inference_inputs/sources.jsonl",
@@ -3451,7 +3465,7 @@ if actual_resume != expected_resume:
     raise SystemExit("QA resume manifest no longer matches current QA inputs")
 raw_sources = read_source_streams(fixture, use_sensor_manifest=False)
 sensor_records = read_sensor_frame_manifest(qa_args.sensor_frame_manifest)
-validate_evidence_lineage(
+lineage = validate_evidence_lineage(
     paths["evidence"],
     "student",
     paths["evidence_lineage"],
@@ -3468,6 +3482,16 @@ validate_evidence_lineage(
     sources=raw_sources,
     sensor_records=sensor_records,
 )
+if lineage is None:
+    raise SystemExit("student evidence lineage unexpectedly absent")
+expected_trust_digests = {
+    "model_contract_sha256": sha256(paths["model_contract"]),
+    "student_architecture_sha256": sha256(paths["student_architecture"]),
+    "model_load_consensus_file_sha256": sha256(paths["model_load_consensus"]),
+}
+for field, expected in expected_trust_digests.items():
+    if getattr(lineage, field) != expected:
+        raise SystemExit(f"student trust digest mismatch: {field}")
 prediction_records = tuple(
     PredictionRecord.model_validate_json(line)
     for line in paths["predictions"].read_text(encoding="utf-8").splitlines()
@@ -3571,6 +3595,19 @@ manifest_payload = {
     "lane": "student",
     "split_id": split_id,
     "code_sha256": code_sha256,
+    "model_contract_sha256": lineage.model_contract_sha256,
+    "provider_lock_sha256": artifact_hashes["provider_lock_sha256"],
+    "student_architecture_sha256": lineage.student_architecture_sha256,
+    "model_load_consensus_payload_sha256": (
+        lineage.model_load_consensus_payload_sha256
+    ),
+    "model_load_consensus_file_sha256": (
+        lineage.model_load_consensus_file_sha256
+    ),
+    "submission_manifest_file_sha256": (
+        artifact_hashes["submission_manifest_sha256"]
+    ),
+    "student_terminal_payload_sha256": artifact_hashes["student_terminal_sha256"],
     "checkpoint_sha256": artifact_hashes["checkpoint_sha256"],
     "typed_memory_sha256": artifact_hashes["typed_memory_sha256"],
     "inference_manifest_sha256": artifact_hashes["inference_manifest_sha256"],

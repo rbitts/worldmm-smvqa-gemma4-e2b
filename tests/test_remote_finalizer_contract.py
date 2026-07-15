@@ -59,6 +59,19 @@ def test_generated_finalizer_revalidates_and_writes_probe_report(
     assert manifest.result_class == "contract_probe"
     assert manifest.execution_profile == "probe"
     assert manifest.evidence_lineage_sha256 == _sha(paths["evidence_lineage"])
+    assert manifest.model_contract_sha256 == _sha(paths["model_contract"])
+    assert manifest.provider_lock_sha256 == _sha(paths["provider_lock"])
+    assert manifest.student_architecture_sha256 == _sha(paths["student_architecture"])
+    assert manifest.model_load_consensus_payload_sha256 == "c" * 64
+    assert manifest.model_load_consensus_file_sha256 == _sha(
+        paths["model_load_consensus"],
+    )
+    assert manifest.submission_manifest_file_sha256 == _sha(
+        paths["submission_manifest"],
+    )
+    assert manifest.student_terminal_payload_sha256 == _sha(
+        paths["student_terminal"],
+    )
     assert manifest.run_identity_sha256 == _sha(
         output / "summary/run_identity.json",
     )
@@ -69,12 +82,12 @@ def test_generated_finalizer_revalidates_and_writes_probe_report(
     assert (output / "summary/final_report.md").is_file()
 
 
-def test_generated_finalizer_rejects_changed_sealed_artifact(
+def test_generated_finalizer_rejects_changed_sealed_trust_artifact(
     tmp_path: Path,
 ) -> None:
     output = tmp_path / "output/tampered-finalizer"
     paths, env = _prepare_finalizer_run(output)
-    _ = paths["summary"].write_text("tampered after seal\n", encoding="utf-8")
+    _ = paths["model_contract"].write_text("tampered after seal\n", encoding="utf-8")
 
     result = subprocess.run(
         [
@@ -112,6 +125,9 @@ def _prepare_finalizer_run(
         "WORLDMM_EXECUTION_REPO": str(output / "code_snapshot"),
         "WORLDMM_SENSOR_FRAME_MANIFEST": str(paths["sensor"]),
         "WORLDMM_SPATIAL_INFER_EXE": str(paths["inference_producer"]),
+        "WORLDMM_MODEL_CONTRACT": str(paths["model_contract"]),
+        "WORLDMM_STUDENT_ARCHITECTURE": str(paths["student_architecture"]),
+        "WORLDMM_PROVIDER_LOCK": str(paths["provider_lock"]),
         "WORLDMM_EXECUTION_PROFILE": "probe",
         "WORLDMM_RUN_ID": "probe-finalizer",
         "SLURM_JOB_ID": "12345",
@@ -154,6 +170,14 @@ def _prepare_finalizer_artifacts(output: Path) -> dict[str, Path]:
         "frame_assets": output / "diagnostics/frame_assets.sha256",
         "preflight_inputs": output / "diagnostics/preflight_inputs.sha256",
         "gemma_model_fingerprint": output / "diagnostics/gemma_model.sha256",
+        "model_contract": output / "trust/model_boundary_contract_v1.json",
+        "student_architecture": output / "trust/student_architecture_v1.json",
+        "provider_lock": output / "trust/model_load_provider_lock_v1.json",
+        "model_load_consensus": (
+            output / "diagnostics/model_load/model_load_consensus.json"
+        ),
+        "submission_manifest": output / "summary/submission_manifest.json",
+        "student_terminal": output / "summary/student_terminal.json",
         "checkpoint": output / "checkpoints/spatial_student.pt",
         "inference_manifest": output / "memory/typed_memory.inference.json",
         "inference_sources": output / "inference_inputs/sources.jsonl",
@@ -190,6 +214,12 @@ def _prepare_finalizer_artifacts(output: Path) -> dict[str, Path]:
         "frame_assets",
         "preflight_inputs",
         "gemma_model_fingerprint",
+        "model_contract",
+        "student_architecture",
+        "provider_lock",
+        "model_load_consensus",
+        "submission_manifest",
+        "student_terminal",
         "checkpoint",
         "finalization_inputs",
         "summary",
@@ -301,10 +331,10 @@ def _prepare_finalizer_artifacts(output: Path) -> dict[str, Path]:
         lane="student",
         producer="spatial-student",
         evidence_sha256=_sha(paths["evidence"]),
-        model_contract_sha256="a" * 64,
-        student_architecture_sha256="b" * 64,
+        model_contract_sha256=_sha(paths["model_contract"]),
+        student_architecture_sha256=_sha(paths["student_architecture"]),
         model_load_consensus_payload_sha256="c" * 64,
-        model_load_consensus_file_sha256="d" * 64,
+        model_load_consensus_file_sha256=_sha(paths["model_load_consensus"]),
         checkpoint_sha256=_sha(paths["checkpoint"]),
         inference_manifest_sha256=_sha(paths["inference_manifest"]),
         config_sha256=_sha(paths["config"]),
