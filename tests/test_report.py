@@ -406,6 +406,13 @@ def test_report_accepts_complete_student_lineage(
         "lane": "student",
         "split_id": digest,
         "code_sha256": digest,
+        "model_contract_sha256": digest,
+        "provider_lock_sha256": digest,
+        "student_architecture_sha256": digest,
+        "model_load_consensus_payload_sha256": digest,
+        "model_load_consensus_file_sha256": digest,
+        "submission_manifest_file_sha256": digest,
+        "student_terminal_payload_sha256": digest,
         "checkpoint_sha256": digest,
         "typed_memory_sha256": digest,
         "inference_manifest_sha256": digest,
@@ -444,6 +451,11 @@ def test_report_accepts_complete_student_lineage(
     report = report_path.read_text(encoding="utf-8")
     assert "result_class: student" in report
     assert f"evidence_lineage_sha256: {digest}" in report
+    assert f"model_contract_sha256: {digest}" in report
+    assert f"student_architecture_sha256: {digest}" in report
+    assert f"model_load_consensus_payload_sha256: {digest}" in report
+    assert f"model_load_consensus_file_sha256: {digest}" in report
+    assert f"student_terminal_payload_sha256: {digest}" in report
     assert f"run_identity_sha256: {digest}" in report
     assert f"finalization_inputs_sha256: {digest}" in report
     assert "- [E1] QA\\-Acc: 1.000000" in report
@@ -468,6 +480,14 @@ def test_report_accepts_complete_student_lineage(
             "complete student result missing digests: run_identity_sha256",
         ),
         ({"run_identity_sha256": "not-a-digest"}, "run_identity_sha256"),
+        (
+            {"model_load_consensus_payload_sha256": None},
+            "model_load_consensus_payload_sha256",
+        ),
+        (
+            {"student_terminal_payload_sha256": None},
+            "student_terminal_payload_sha256",
+        ),
         (
             {"finalization_inputs_sha256": None},
             "complete student result missing digests: finalization_inputs_sha256",
@@ -525,6 +545,13 @@ def test_report_requires_valid_contract_probe_evidence_lineage(
         lane="student",
         split_id=digest,
         code_sha256=digest,
+        model_contract_sha256=digest,
+        provider_lock_sha256=digest,
+        student_architecture_sha256=digest,
+        model_load_consensus_payload_sha256=digest,
+        model_load_consensus_file_sha256=digest,
+        submission_manifest_file_sha256=digest,
+        student_terminal_payload_sha256=digest,
         checkpoint_sha256=digest,
         typed_memory_sha256=digest,
         inference_manifest_sha256=digest,

@@ -18,6 +18,7 @@ from worldmm_smvqa.cli_commands import (
     handle_diagnose_spatial,
     handle_evaluate,
     handle_launch_remote,
+    handle_mock_dag,
     handle_preflight,
     handle_prepare_fixture,
     handle_qa,
@@ -108,6 +109,15 @@ def command_specs() -> tuple[CommandSpec, ...]:
             handle_diagnose_spatial,
         ),
         CommandSpec("report", "Write a run handoff report.", handle_report),
+        CommandSpec(
+            "mock-dag",
+            "Validate the model-free production-consumer DAG.",
+            handle_mock_dag,
+            allowed_options=frozenset(
+                {"--config", "--fixture", "--student-architecture"},
+            ),
+            required_options=("--fixture",),
+        ),
         CommandSpec("smoke", "Run the tiny local pipeline.", handle_smoke),
         CommandSpec(
             "launch-remote",
@@ -155,6 +165,10 @@ def command_help(command: str) -> str:
             "worldmm-smvqa validate-teacher-oracle-inputs "
             "--sensor-audit SENSOR_AUDIT --experiment-config EXPERIMENT_CONFIG "
             "--out OUT"
+        ),
+        "mock-dag": (
+            "worldmm-smvqa mock-dag [--config CONFIG] --fixture FIXTURE "
+            "[--student-architecture STUDENT_ARCHITECTURE]"
         ),
         "launch-remote": (
             "worldmm-smvqa launch-remote [--config CONFIG] --out OUT "

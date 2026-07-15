@@ -4,7 +4,7 @@
 |---|---|
 | Page ID | SM-ARCHITECTURE |
 | 상태 | 갱신형 specification |
-| 최종 갱신 | 2026-07-14 |
+| 최종 갱신 | 2026-07-15 |
 | 현재 구현 | Heuristic baseline, causal sensor/teacher target contract, typed bridge |
 | 목표 | Teacher-oracle로 utility 확인 후 hybrid device compiler 연결 |
 
@@ -22,6 +22,22 @@
 이 아키텍처는 production 품질을 입증한 상태가 아니다. 핵심 검증 대상은 student
 checkpoint가 아니라 offline teacher object/place record가 question/label leakage
 없이 유용한 byte-bounded evidence를 만드는지 여부다.
+
+## Model boundary trust chain
+
+[ADR-0007](decisions/adr-0007-model-boundary-contract-and-load-gate.md)은 G-CUT3R
+teacher→spatial trainable lineage와 Qwen/spatial retrieval fan-in→Gemma QA topology를
+하나의 immutable model-free contract로 고정한다. Local mock는 production-owned
+consumer와 synthetic tensor/checkpoint wiring만 검증하며 production weight/data,
+network, GPU를 사용하지 않는다.
+
+Remote student completion의 trust chain은
+`model contract → student architecture → accepted provider lock → physical all-rank
+load consensus → checkpoint v2 → typed memory → EvidenceLineage → QA resume →
+student terminal/manifest → report`다. Student lineage와 report는 contract,
+architecture, consensus payload/file digest를 모두 요구한다. Mock와
+contract-probe는 각각 local wiring과 loadability만 주장하며 forward compatibility나
+quality를 주장하지 않는다.
 
 ## 시스템 흐름
 

@@ -4,7 +4,7 @@
 |---|---|
 | Page ID | SM-TRACEABILITY |
 | 상태 | 갱신형 index |
-| 최종 갱신 | 2026-07-14 |
+| 최종 갱신 | 2026-07-15 |
 | 목적 | 문제, 근거, 결정, 구현, 실험, 결과 연결 |
 
 ## 핵심 요약
@@ -50,6 +50,7 @@ Real sensor availability와 teacher-oracle QA utility가 즉시 해결해야 할
 | C-010 | Fixed latent bottleneck은 decoder baseline으로 유용하지만 geometry sufficiency 입증 전 explicit geometry를 대체할 수 없다. | [TokenLearner](papers/tokenlearner.md), [Perceiver](papers/perceiver.md), [BLIP-2](papers/blip-2.md) | 채택된 latent-memory ADR 없음 | `spatial_train.py`는 supplied vector candidate head이며 raw encoder가 아님 | Equal-byte typed-versus-latent experiment 없음 | 보류 |
 | C-011 | Geometry-aware novelty와 duplicate removal은 generic attention-only pruning보다 강한 baseline이다. | [Good Token Hunting](papers/good-token-hunting.md), [DART](papers/dart.md), [FEATHER](papers/feather.md), [Geometry-Aware Token Pruning](papers/geometry-aware-token-pruning.md), [VisionZip](papers/visionzip.md), [MeMix](papers/memix.md) | 별도 ADR 없이 writer baseline으로 취급 | Selector preparation에 geometry novelty/redundancy feature 존재 | [EXP-0003](experiments/exp-0003-byte-pareto.md) 미실행 | 비교 계획 |
 | C-012 | Model/latent value quantization은 primary persistent-memory 방법이 아닌 후속 deployment optimization이다. | [FSQ](papers/finite-scalar-quantization.md), [VQ-VAE](papers/vq-vae.md), [QVGGT](papers/qvggt.md), [rate-distortion](papers/end-to-end-optimized-image-compression.md) | [ADR-0001](decisions/adr-0001-explicit-typed-memory.md)의 explicit-first 방향 | Learned codec/model PTQ 미배포 | Project experiment 없음 | 보류 |
+| C-013 | Local wiring evidence와 remote loadability/training authorization을 분리하고 contract→architecture→consensus→checkpoint→retrieval→QA→terminal/report identity를 fail-closed로 전파해야 한다. | Project safety/claim-integrity requirement | [ADR-0007](decisions/adr-0007-model-boundary-contract-and-load-gate.md) | `model_contract.py`, `mock_dag.py`, `spatial_train.py`, `retrieval_types.py`, `qa_transformers.py`, `report.py`; remote control plane | Tiny/mock contract and byte-regression verification only; provider conformance/load/training 미실행 | Local implementation; remote approval 차단 |
 
 ## 근거 등급
 

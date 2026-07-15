@@ -2,9 +2,10 @@ from __future__ import annotations
 
 # allow: SIZE_OK - command router module predates this change; split by command group
 # when the CLI surface grows again.
+import importlib
 import os
 from pathlib import Path
-from typing import TYPE_CHECKING, Final
+from typing import TYPE_CHECKING, Final, Protocol, cast
 
 from worldmm_smvqa.chunking import (
     build_chunks,
@@ -386,6 +387,34 @@ def handle_diagnose_spatial(args: ParsedArgs) -> CommandResult:
         raise CliUsageError(detail="diagnose-spatial requires --out")
     write_spatial_retrieval_diagnostics(args.input, args.labels, args.out)
     return CommandResult(stdout=f"wrote {args.out}\n")
+
+
+class _MockDagRunner(Protocol):
+    def __call__(
+        self,
+        fixture: Path,
+        *,
+        student_architecture: Path = ...,
+    ) -> object: ...
+
+
+def handle_mock_dag(args: ParsedArgs) -> CommandResult:
+    _config = load_config(args.config)
+    if args.fixture is None:
+        raise CliUsageError(detail="mock-dag requires --fixture")
+    run_local_mock_dag = cast(
+        "_MockDagRunner",
+        importlib.import_module("worldmm_smvqa.mock_dag").run_local_mock_dag,
+    )
+
+    if args.student_architecture is None:
+        _ = run_local_mock_dag(args.fixture)
+    else:
+        _ = run_local_mock_dag(
+            args.fixture,
+            student_architecture=args.student_architecture,
+        )
+    return CommandResult(stdout="")
 
 
 def handle_report(args: ParsedArgs) -> CommandResult:

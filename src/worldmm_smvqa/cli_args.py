@@ -41,6 +41,7 @@ class ParsedArgs:
     sensor_audit: Path | None
     experiment_config: Path | None
     profile: str | None
+    student_architecture: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +67,7 @@ class ParsedValueArgs:
     sensor_audit: Path | None
     experiment_config: Path | None
     profile: str | None
+    student_architecture: Path | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +143,7 @@ def parse_args(  # noqa: PLR0912, PLR0915
         None,
         None,
         None,
+        None,
     )
     real_model = False
     local = False
@@ -170,6 +173,7 @@ def parse_args(  # noqa: PLR0912, PLR0915
         "--sensor-audit",
         "--experiment-config",
         "--profile",
+        "--student-architecture",
     }
 
     provided_options: set[str] = set()
@@ -261,6 +265,7 @@ def parse_args(  # noqa: PLR0912, PLR0915
         value_args.sensor_audit,
         value_args.experiment_config,
         value_args.profile,
+        value_args.student_architecture,
     )
     return spec, parsed
 
@@ -270,6 +275,8 @@ def parse_value_option(
     option: str,
     value: str,
 ) -> ParsedValueArgs:
+    if option == "--student-architecture":
+        return replace(args, student_architecture=Path(value))
     path_options = {
         "--config",
         "--out",
