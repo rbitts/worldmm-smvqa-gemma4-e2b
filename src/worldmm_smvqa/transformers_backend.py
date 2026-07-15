@@ -156,9 +156,7 @@ def _flatten_floats(value: _NestedFloats) -> tuple[float, ...]:
         case float() | int():
             return (float(value),)
         case Sequence():
-            return tuple(
-                item for entry in value for item in _flatten_floats(entry)
-            )
+            return tuple(item for entry in value for item in _flatten_floats(entry))
 
 
 def generate_transformers_text(prompt: str, model_ref: str) -> str:

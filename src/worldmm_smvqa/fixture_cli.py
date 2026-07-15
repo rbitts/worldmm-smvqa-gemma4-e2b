@@ -21,7 +21,4 @@ def validate_schema_stdout(config: Path, input_dir: Path | None) -> str:
 
 
 def format_fixture_counts(counts: FixtureCounts) -> str:
-    return (
-        f"source_examples={counts.source_examples} "
-        f"qa_examples={counts.qa_examples}"
-    )
+    return f"source_examples={counts.source_examples} qa_examples={counts.qa_examples}"

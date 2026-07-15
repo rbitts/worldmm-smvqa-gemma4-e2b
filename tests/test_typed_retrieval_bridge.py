@@ -4,7 +4,9 @@ import json
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
+from worldmm_smvqa.qa_prompt import build_qa_prompt
 from worldmm_smvqa.retrieval import (
     InvalidRetrievalStoreError,
     RetrievalOptions,
@@ -13,7 +15,11 @@ from worldmm_smvqa.retrieval import (
     read_typed_spatial_retrieval_records,
     retrieve_evidence,
 )
-from worldmm_smvqa.retrieval_types import RetrievalMemoryRecord
+from worldmm_smvqa.retrieval_types import (
+    CanonicalOracleEvidencePack,
+    RetrievalMemoryRecord,
+    canonical_oracle_to_evidence_pack,
+)
 from worldmm_smvqa.schema import QuestionRequest
 from worldmm_smvqa.worldmm.geometry_executor import geometry_proofs_for_question
 from worldmm_smvqa.worldmm.typed_memory import (
@@ -26,6 +32,7 @@ from worldmm_smvqa.worldmm.typed_memory import (
     NoWriteMemoryRecord,
     ObjectGeometry,
     ObjectMemoryRecord,
+    ObjectPresenceMemoryRecord,
     PlaneGeometry,
     PlaneMemoryRecord,
     PortalGeometry,
@@ -87,6 +94,29 @@ def _object(
             ),
             "semantic_label": label,
         },
+    )
+
+
+def _object_presence() -> ObjectPresenceMemoryRecord:
+    digest = "a" * 64
+    return ObjectPresenceMemoryRecord(
+        memory_id="e0-presence-mug",
+        source_video_id="video-1",
+        observation_id="observation-1",
+        frame_ref="frame-e0-mug",
+        timestamp_us=1_000_000,
+        semantic_class="mug",
+        semantic_confidence=0.9,
+        semantic_provider_id="semantic-provider-v1",
+        ontology_sha256=digest,
+        mask_sha256=digest,
+        mask_schema_id="mask-rle-v1",
+        mask_sealed_root_sha256=digest,
+        mask_manifest_sha256=digest,
+        mask_width_px=640,
+        mask_height_px=480,
+        mask_dtype="bool",
+        source_inventory_sha256=digest,
     )
 
 
@@ -222,6 +252,70 @@ def test_flat_typed_jsonl_is_retrieval_ready_and_no_write_is_skipped(
     }
 
 
+def test_e0_presence_writer_retrieval_and_canonical_qa_round_trip(
+    tmp_path: Path,
+) -> None:
+    presence = _object_presence()
+    manifest = _manifest(tmp_path, canonical_jsonl_bytes(presence))
+
+    loaded = read_retrieval_memory_artifacts(manifest)
+
+    assert len(loaded) == 1
+    projected = loaded[0]
+    assert projected.memory_id == presence.memory_id
+    assert projected.source_store == "semantic"
+    assert projected.video_id == presence.source_video_id
+    assert (projected.start_time, projected.end_time) == (1.0, 1.0)
+    assert projected.frame_refs == (presence.frame_ref,)
+    assert projected.geometry is None
+    for lineage in (
+        f"observation_id={presence.observation_id}",
+        f"semantic_provider_id={presence.semantic_provider_id}",
+        f"ontology_sha256={presence.ontology_sha256}",
+        f"mask_sha256={presence.mask_sha256}",
+        f"mask_schema_id={presence.mask_schema_id}",
+        f"mask_sealed_root_sha256={presence.mask_sealed_root_sha256}",
+        f"mask_manifest_sha256={presence.mask_manifest_sha256}",
+        f"source_inventory_sha256={presence.source_inventory_sha256}",
+        f"timestamp_us={presence.timestamp_us}",
+    ):
+        assert lineage in projected.snippet
+    assert "coordinate_frame=" not in projected.snippet
+    assert "place_label=" not in projected.snippet
+
+    question = QuestionRequest(
+        question_id="e0-question",
+        video_id=presence.source_video_id,
+        question="What object was observed?",
+        question_time=2.0,
+        answer_choices=(),
+    )
+    retrieved = retrieve_evidence(
+        question,
+        loaded,
+        enabled_stores=frozenset({"semantic"}),
+        options=RetrievalOptions(evidence_budget=1),
+    )
+    canonical = CanonicalOracleEvidencePack(
+        variant="E0",
+        question_id=retrieved.question_id,
+        video_id=retrieved.video_id,
+        requested_stores=retrieved.requested_stores,
+        selected_stores=retrieved.selected_stores,
+        evidence_budget=retrieved.evidence_budget,
+        evidence=retrieved.evidence,
+        causal_filtered_count=retrieved.causal_filtered_count,
+        retrieval_trace=retrieved.retrieval_trace,
+    )
+
+    prompt = build_qa_prompt(question, canonical_oracle_to_evidence_pack(canonical))
+
+    assert canonical.evidence[0].source_store == "semantic"
+    assert canonical.evidence[0].geometry is None
+    assert presence.mask_sha256 in prompt
+    assert presence.frame_ref in prompt
+
+
 def test_object_place_label_is_preserved_in_typed_projection() -> None:
     record = _object("mug", "mug", (1.0, 2.0, 3.0)).model_copy(
         update={"place_label": "kitchen counter"},
@@ -239,6 +333,14 @@ def test_unknown_typed_record_fails_closed(tmp_path: Path) -> None:
 
     with pytest.raises(InvalidRetrievalStoreError, match="future_primitive"):
         _ = read_retrieval_memory_artifacts(manifest)
+    malformed = _object_presence().model_dump(mode="json")
+    del malformed["frame_ref"]
+    malformed_manifest = _manifest(
+        tmp_path,
+        f"{json.dumps(malformed)}\n".encode(),
+    )
+    with pytest.raises(ValidationError, match="frame_ref"):
+        _ = read_retrieval_memory_artifacts(malformed_manifest)
 
 
 def test_typed_retrieval_reader_filters_stream_by_video(tmp_path: Path) -> None:
@@ -379,8 +481,7 @@ def test_event_projection_preserves_opaque_involved_entity_ids() -> None:
     event_record = next(
         record
         for record in memories
-        if record.geometry is not None
-        and record.geometry.get("record_type") == "event"
+        if record.geometry is not None and record.geometry.get("record_type") == "event"
     )
     question = QuestionRequest(
         question_id="q-opaque-event-last-seen",
@@ -411,9 +512,7 @@ def test_event_projection_preserves_opaque_involved_entity_ids() -> None:
         "entity/other opaque",
     ]
     assert not proof.answerable
-    assert proof.reason == (
-        "last-seen state is stale relative to a typed change event"
-    )
+    assert proof.reason == ("last-seen state is stale relative to a typed change event")
 
 
 def test_existing_relation_bundle_stays_relation_first() -> None:

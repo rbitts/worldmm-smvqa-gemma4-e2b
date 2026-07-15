@@ -137,8 +137,7 @@ class QAParseError(Exception):
     @override
     def __str__(self) -> str:
         return (
-            f"QAParseError: {self.question_id}: attempt {self.attempt}: "
-            f"{self.detail}"
+            f"QAParseError: {self.question_id}: attempt {self.attempt}: {self.detail}"
         )
 
 
@@ -579,8 +578,7 @@ def _proof_supports_choice(  # noqa: PLR0911
         return abs(chosen_value - float(proof.value)) <= tolerance
     normalized = " ".join(chosen_text.casefold().replace("_", " ").split())
     all_normalized = tuple(
-        " ".join(text.casefold().replace("_", " ").split())
-        for text in all_choice_texts
+        " ".join(text.casefold().replace("_", " ").split()) for text in all_choice_texts
     )
     if proof.operation == "last_location" and isinstance(proof.value, str):
         expected = " ".join(proof.value.casefold().replace("_", " ").split())
@@ -652,16 +650,13 @@ def _choice_seconds(text: str) -> float | None:  # noqa: PLR0911
             return None
         parts = tuple(int(part) for part in match.group().split(":"))
         if parts[-1] >= SECONDS_PER_MINUTE or (
-            len(parts) == CLOCK_WITH_HOURS_PARTS
-            and parts[-2] >= SECONDS_PER_MINUTE
+            len(parts) == CLOCK_WITH_HOURS_PARTS and parts[-2] >= SECONDS_PER_MINUTE
         ):
             return None
         if len(parts) == CLOCK_WITHOUT_HOURS_PARTS:
             return float((parts[0] * SECONDS_PER_MINUTE) + parts[1])
         return float(
-            (parts[0] * SECONDS_PER_HOUR)
-            + (parts[1] * SECONDS_PER_MINUTE)
-            + parts[2],
+            (parts[0] * SECONDS_PER_HOUR) + (parts[1] * SECONDS_PER_MINUTE) + parts[2],
         )
     if clock_matches or len(unit_matches) != 1:
         return None
@@ -720,13 +715,11 @@ def _supporting_evidence(
             question_id=question.question_id,
             attempt=1,
             detail=(
-                "supporting memory video_id is outside question scope: "
-                f"{invalid_video}"
+                f"supporting memory video_id is outside question scope: {invalid_video}"
             ),
         )
     return tuple(
-        _evidence_metadata(evidence_by_id[memory_id])
-        for memory_id in memory_ids
+        _evidence_metadata(evidence_by_id[memory_id]) for memory_id in memory_ids
     )
 
 
@@ -746,10 +739,7 @@ def evidence_pack_validation_error(  # noqa: PLR0911
             return f"duplicate evidence memory ID: {item.memory_id}"
         seen_memory_ids.add(item.memory_id)
         if item.video_id not in valid_video_ids:
-            return (
-                "evidence video_id is outside question scope: "
-                f"{item.memory_id}"
-            )
+            return f"evidence video_id is outside question scope: {item.memory_id}"
         if not isfinite(item.start_time) or not isfinite(item.end_time):
             return f"evidence time must be finite: {item.memory_id}"
         if item.start_time > item.end_time:

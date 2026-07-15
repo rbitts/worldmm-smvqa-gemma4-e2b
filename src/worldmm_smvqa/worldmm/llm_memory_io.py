@@ -260,11 +260,7 @@ def partition_by_video[RecordT: _VideoScoped](
         for index, video_id in enumerate(video_ids)
         if index % world_size == rank
     }
-    return tuple(
-        record
-        for record in records
-        if record.video_id in selected
-    )
+    return tuple(record for record in records if record.video_id in selected)
 
 
 def _episodic_summary(path: Path) -> EpisodicBuildSummary:
@@ -278,15 +274,11 @@ def _episodic_summary(path: Path) -> EpisodicBuildSummary:
         path=path,
         nodes=sum(1 for record in records if record.record_type == "node"),
         edges=len(edges),
-        contains_edges=sum(
-            1 for record in edges if record.edge_type == "contains"
-        ),
+        contains_edges=sum(1 for record in edges if record.edge_type == "contains"),
     )
 
 
 def _line_count(path: Path) -> int:
     return sum(
-        1
-        for line in path.read_text(encoding="utf-8").splitlines()
-        if line.strip()
+        1 for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
     )

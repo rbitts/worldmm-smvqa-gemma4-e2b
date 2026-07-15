@@ -9,7 +9,6 @@ from pydantic import ValidationError
 
 from worldmm_smvqa.worldmm.gcut3r_teacher import (
     EMPTY_PREFIX_SHA256,
-    CameraIntrinsics,
     Cut3RPaths,
     DepthGuidance,
     GCut3RTeacherAdapter,
@@ -34,6 +33,7 @@ from worldmm_smvqa.worldmm.gcut3r_teacher import (
     validate_teacher_cache,
     write_teacher_cache,
 )
+from worldmm_smvqa.worldmm.spatial_sensor import CameraIntrinsics
 from worldmm_smvqa.worldmm.typed_memory import (
     NoWriteMemoryRecord,
     SpatialUncertainty,
@@ -186,6 +186,15 @@ def test_cache_digest_tampering_is_rejected() -> None:
 
     with pytest.raises(TeacherContractError, match="digest mismatch"):
         validate_teacher_cache((rows[0], tampered))
+
+
+def test_cache_rejects_same_video_sequence_zero_splice() -> None:
+    observations = _observations()
+    first = GCut3RTeacherAdapter(_MockProvider()).run(observations[:1])
+    second = GCut3RTeacherAdapter(_MockProvider()).run(observations[1:])
+
+    with pytest.raises(TeacherContractError, match="sequence_index must be 1"):
+        validate_teacher_cache((*first, *second))
 
 
 def test_cache_supports_independent_video_prefixes() -> None:

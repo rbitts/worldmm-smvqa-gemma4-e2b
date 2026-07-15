@@ -397,7 +397,7 @@ def _sha(path: Path) -> str:
 
 def _fixture_digest(root: Path) -> str:
     digest = hashlib.sha256()
-    for name in ("sources.jsonl", "questions.jsonl", "labels.jsonl"):
+    for name in ("sources.jsonl", "questions.jsonl"):
         digest.update(name.encode() + b"\0")
         digest.update((root / name).read_bytes())
     return digest.hexdigest()

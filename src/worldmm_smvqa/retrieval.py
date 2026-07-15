@@ -61,6 +61,7 @@ from worldmm_smvqa.worldmm.typed_memory import (
     LandmarkMemoryRecord,
     NoWriteMemoryRecord,
     ObjectMemoryRecord,
+    ObjectPresenceMemoryRecord,
     PlaneMemoryRecord,
     PortalMemoryRecord,
 )
@@ -111,6 +112,7 @@ type SpatialRetrievalRecord = (
     | ObjectStateSnapshotRecord
     | WearerTrajectorySummaryRecord
     | ObjectMemoryRecord
+    | ObjectPresenceMemoryRecord
     | PlaneMemoryRecord
     | PortalMemoryRecord
     | FreeSpaceMemoryRecord
@@ -355,8 +357,7 @@ def read_typed_spatial_retrieval_records(
                 continue
             candidate = _spatial_candidate(_spatial_artifact_record(line))
             if candidate is not None and (
-                selected_video_ids is None
-                or candidate.video_id in selected_video_ids
+                selected_video_ids is None or candidate.video_id in selected_video_ids
             ):
                 candidates.append(candidate)
     return tuple(candidates)
@@ -400,10 +401,10 @@ def _read_projected_jsonl_records[RecordT](
                 if line_video_id is not None and line_video_id not in video_ids:
                     continue
             candidate = project(parse(line))
-            if candidate is not None and (
-                video_ids is None or candidate.video_id in video_ids
-            ) and (
-                memory_ids is None or candidate.memory_id in memory_ids
+            if (
+                candidate is not None
+                and (video_ids is None or candidate.video_id in video_ids)
+                and (memory_ids is None or candidate.memory_id in memory_ids)
             ):
                 records.append(candidate)
     return tuple(records)
@@ -412,9 +413,7 @@ def _read_projected_jsonl_records[RecordT](
 def _raw_record_video_id(line: str) -> str | None:
     scope = _RecordVideoScope.model_validate_json(line)
     return (
-        scope.source_video_id
-        if scope.source_video_id is not None
-        else scope.video_id
+        scope.source_video_id if scope.source_video_id is not None else scope.video_id
     )
 
 
@@ -464,6 +463,8 @@ def _spatial_artifact_record(  # noqa: PLR0911, PLR0912
             return WearerTrajectorySummaryRecord.model_validate_json(line)
         case "object":
             return ObjectMemoryRecord.model_validate_json(line)
+        case "object_presence_v1":
+            return ObjectPresenceMemoryRecord.model_validate_json(line)
         case "plane":
             return PlaneMemoryRecord.model_validate_json(line)
         case "portal":
@@ -626,6 +627,32 @@ def _spatial_candidate(  # noqa: PLR0911, PLR0912
                 snippet=record.snippet,
                 frame_refs=(),
                 base_score=record.base_score,
+            )
+        case ObjectPresenceMemoryRecord():
+            return RetrievalMemoryRecord(
+                memory_id=record.memory_id,
+                source_store="semantic",
+                video_id=record.source_video_id,
+                start_time=record.timestamp,
+                end_time=record.timestamp,
+                snippet=(
+                    f"{record.semantic_class} observed "
+                    f"observation_id={record.observation_id} "
+                    f"semantic_confidence={_format_float(record.semantic_confidence)} "
+                    f"semantic_provider_id={record.semantic_provider_id} "
+                    f"ontology_sha256={record.ontology_sha256} "
+                    f"mask_sha256={record.mask_sha256} "
+                    f"mask_schema_id={record.mask_schema_id} "
+                    f"mask_sealed_root_sha256={record.mask_sealed_root_sha256} "
+                    f"mask_manifest_sha256={record.mask_manifest_sha256} "
+                    f"mask_width_px={record.mask_width_px} "
+                    f"mask_height_px={record.mask_height_px} "
+                    f"mask_dtype={record.mask_dtype} "
+                    f"source_inventory_sha256={record.source_inventory_sha256} "
+                    f"timestamp_us={record.timestamp_us}"
+                ),
+                frame_refs=(record.frame_ref,),
+                base_score=record.semantic_confidence,
             )
         case ObjectMemoryRecord():
             x, y, z = record.geometry.centroid
@@ -865,9 +892,7 @@ def _anchor_geometry(record: SpatialAnchorRecord) -> dict[str, float | str]:
         "z": record.z,
         "coordinate_frame": record.coordinate_frame,
         "last_seen_time": (
-            record.end_time
-            if record.last_seen_time is None
-            else record.last_seen_time
+            record.end_time if record.last_seen_time is None else record.last_seen_time
         ),
         "provenance": record.provenance,
         "evidence_refs": "\n".join((record.memory_id, *record.frame_refs)),

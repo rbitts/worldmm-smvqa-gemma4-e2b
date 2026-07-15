@@ -159,8 +159,7 @@ def test_rejects_trace_shard_outside_question_video_scope() -> None:
 
     # When / Then: frame sampling does not cross the question's allowed video scope.
     assert (
-        sample_video_frames((source,), question, pack, frame_root=Path("/frames"))
-        == ()
+        sample_video_frames((source,), question, pack, frame_root=Path("/frames")) == ()
     )
 
 

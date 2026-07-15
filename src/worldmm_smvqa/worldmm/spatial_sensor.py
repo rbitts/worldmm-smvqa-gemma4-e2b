@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from decimal import ROUND_HALF_EVEN, Decimal, InvalidOperation
 from math import isclose, isfinite, sqrt
-from typing import Annotated, Self
+from typing import Annotated, Literal, Self
 
 from pydantic import Field, FiniteFloat, model_validator
 
@@ -9,6 +10,30 @@ from worldmm_smvqa.schema import FrozenModel, PoseSample
 
 type Vec3 = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
 type PositiveFiniteFloat = Annotated[FiniteFloat, Field(gt=0.0)]
+_CANONICAL_TIMESTAMP_SCALE = Decimal(1_000_000)
+_CANONICAL_TIMESTAMP_HALF_MICROSECOND = Decimal("0.5")
+
+
+def canonical_timestamp_us(value: Decimal | float | str) -> int:
+    """Map a finite non-negative timestamp to canonical integer microseconds."""
+    try:
+        timestamp = Decimal(str(value))
+    except (InvalidOperation, ValueError) as exc:
+        msg = "timestamp must be a finite decimal"
+        raise ValueError(msg) from exc
+    if not timestamp.is_finite() or timestamp < 0:
+        msg = "timestamp must be finite and non-negative"
+        raise ValueError(msg)
+    microseconds = timestamp * _CANONICAL_TIMESTAMP_SCALE
+    try:
+        rounded = microseconds.to_integral_value(rounding=ROUND_HALF_EVEN)
+    except InvalidOperation as exc:
+        msg = "timestamp cannot be represented in microseconds"
+        raise ValueError(msg) from exc
+    if abs(microseconds - rounded) > _CANONICAL_TIMESTAMP_HALF_MICROSECOND:
+        msg = "timestamp cannot be represented within 0.5 microseconds"
+        raise ValueError(msg)
+    return int(rounded)
 
 
 class CameraIntrinsics(FrozenModel):
@@ -21,8 +46,23 @@ class CameraIntrinsics(FrozenModel):
 
 
 class DepthObservation(FrozenModel):
+    """A native metric-depth asset bound to one RGB observation."""
+
     depth_ref: str = Field(min_length=1)
     depth_scale_m: PositiveFiniteFloat
+    depth_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    width_px: int = Field(gt=0)
+    height_px: int = Field(gt=0)
+    shape: tuple[int, int]
+    format: Literal["npy"]
+    provenance: str = Field(min_length=1, max_length=256)
+
+    @model_validator(mode="after")
+    def _require_image_shaped_depth(self) -> Self:
+        if self.shape != (self.height_px, self.width_px):
+            msg = "depth shape must be (height_px, width_px)"
+            raise ValueError(msg)
+        return self
 
 
 class GazeRay(FrozenModel):

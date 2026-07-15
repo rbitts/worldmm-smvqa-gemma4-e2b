@@ -179,8 +179,7 @@ def _require_known_videos(
             raise FixtureValidationError(
                 path=path,
                 detail=(
-                    f"{question.question_id}: unknown video_id(s): "
-                    f"{', '.join(missing)}"
+                    f"{question.question_id}: unknown video_id(s): {', '.join(missing)}"
                 ),
             )
         if question.video_id not in video_ids:

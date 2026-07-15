@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
 from math import floor, isclose, isfinite, sqrt
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Annotated, Final, Literal, Self
+from typing import TYPE_CHECKING, Annotated, Final, Literal, Self, TypedDict, Unpack
 
 from pydantic import Field, FiniteFloat, TypeAdapter, model_validator
 
@@ -22,6 +23,7 @@ type PositiveFiniteFloat = Annotated[FiniteFloat, Field(gt=0.0)]
 type Vec3 = tuple[FiniteFloat, FiniteFloat, FiniteFloat]
 type Quaternion = tuple[FiniteFloat, FiniteFloat, FiniteFloat, FiniteFloat]
 type Covariance3 = tuple[Vec3, Vec3, Vec3]
+type TypedMemoryBudgetScope = Literal["global", "per_source_window"]
 type MemoryProvenance = Literal[
     "observed",
     "multi_view_fused",
@@ -39,6 +41,7 @@ type EventKind = Literal[
 ]
 type WritableRecordType = Literal[
     "object",
+    "object_presence_v1",
     "plane",
     "portal",
     "free_space",
@@ -50,6 +53,7 @@ _COVARIANCE_TOLERANCE = 1e-9
 _EVIDENCE_TIMESTAMP_TOLERANCE = 1e-9
 DEFAULT_TYPED_MEMORY_WINDOW_SECONDS: Final = 30.0
 MAX_TYPED_MEMORY_RECORD_BYTES: Final = 1024 * 1024
+_TYPED_MEMORY_RECORD_COUNT_ERROR = "record_count must equal persisted_memory_ids length"
 
 
 class ValidityInterval(FrozenModel):
@@ -85,13 +89,8 @@ class SpatialUncertainty(FrozenModel):
             raise ValueError(msg)
 
         scale = max(1.0, *(abs(value) for row in covariance for value in row))
-        normalized = tuple(
-            tuple(value / scale for value in row) for row in covariance
-        )
-        if any(
-            normalized[index][index] < -_COVARIANCE_TOLERANCE
-            for index in range(3)
-        ):
+        normalized = tuple(tuple(value / scale for value in row) for row in covariance)
+        if any(normalized[index][index] < -_COVARIANCE_TOLERANCE for index in range(3)):
             msg = "covariance must be positive semidefinite"
             raise ValueError(msg)
         if any(
@@ -217,6 +216,15 @@ class ObjectMemoryRecord(TypedMemoryRecordBase):
     geometry: ObjectGeometry
     semantic_label: NonEmptyStr
     place_label: NonEmptyStr | None = None
+    oracle_observation_id: NonEmptyStr | None = None
+    oracle_assignment_sha256: Annotated[
+        str | None,
+        Field(default=None, pattern=r"^[0-9a-f]{64}$"),
+    ] = None
+    selected_payload_sha256: Annotated[
+        str | None,
+        Field(default=None, pattern=r"^[0-9a-f]{64}$"),
+    ] = None
 
 
 class PlaneMemoryRecord(TypedMemoryRecordBase):
@@ -263,6 +271,46 @@ class EventMemoryRecord(TypedMemoryRecordBase):
         return self
 
 
+class ObjectPresenceMemoryRecord(FrozenModel):
+    """Geometry-free E0 evidence preserving the complete shared semantic join."""
+
+    record_type: Literal["object_presence_v1"] = "object_presence_v1"
+    memory_id: NonEmptyStr
+    source_video_id: NonEmptyStr
+    observation_id: NonEmptyStr
+    frame_ref: NonEmptyStr
+    timestamp_us: int = Field(ge=0)
+    semantic_class: NonEmptyStr
+    semantic_confidence: Annotated[FiniteFloat, Field(ge=0.0, le=1.0)]
+    semantic_provider_id: NonEmptyStr
+    ontology_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    mask_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    mask_schema_id: NonEmptyStr
+    mask_sealed_root_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    mask_manifest_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    mask_width_px: int = Field(gt=0)
+    mask_height_px: int = Field(gt=0)
+    mask_dtype: Literal["bool", "uint8"]
+    source_inventory_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+    @property
+    def timestamp(self) -> float:
+        """Compatibility projection; persisted identity is timestamp_us."""
+        return self.timestamp_us / 1_000_000
+
+
+class SourceCompactMemoryRecord(FrozenModel):
+    """Legacy compatibility record; EXP-0005 must use ObjectPresenceMemoryRecord."""
+
+    record_type: Literal["source_compact"] = "source_compact"
+    memory_id: NonEmptyStr
+    source_video_id: NonEmptyStr
+    local_frame_id: NonEmptyStr
+    timestamp: NonNegativeFiniteFloat
+    source_inventory_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    source_compact_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+
+
 class NoWriteMemoryRecord(TypedMemoryRecordBase):
     record_type: Literal["no_write"] = "no_write"
     geometry: None = None
@@ -272,17 +320,23 @@ class NoWriteMemoryRecord(TypedMemoryRecordBase):
 
 type TypedMemoryRecord = Annotated[
     ObjectMemoryRecord
+    | ObjectPresenceMemoryRecord
     | PlaneMemoryRecord
     | PortalMemoryRecord
     | FreeSpaceMemoryRecord
     | LandmarkMemoryRecord
     | EventMemoryRecord
-    | NoWriteMemoryRecord,
+    | NoWriteMemoryRecord
+    | SourceCompactMemoryRecord,
     Field(discriminator="record_type"),
 ]
 
 
-def canonical_jsonl_bytes(record: TypedMemoryRecordBase) -> bytes:
+def canonical_jsonl_bytes(
+    record: (
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ),
+) -> bytes:
     payload = json.dumps(
         record.model_dump(mode="json"),
         allow_nan=False,
@@ -293,7 +347,11 @@ def canonical_jsonl_bytes(record: TypedMemoryRecordBase) -> bytes:
     return f"{payload}\n".encode()
 
 
-def serialized_byte_cost(record: TypedMemoryRecordBase) -> int:
+def serialized_byte_cost(
+    record: (
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ),
+) -> int:
     if isinstance(record, NoWriteMemoryRecord):
         return 0
     return len(canonical_jsonl_bytes(record))
@@ -313,7 +371,9 @@ class TypedMemoryWriteSummary(FrozenModel):
     selected_count: int = Field(ge=0)
     skipped_for_budget_count: int = Field(ge=0)
     actual_bytes: int = Field(ge=0)
+    budget_scope: TypedMemoryBudgetScope = "global"
     selected_memory_ids: tuple[NonEmptyStr, ...]
+    selected_candidate_timestamps_us: dict[str, int] = Field(default_factory=dict)
 
     @model_validator(mode="after")
     def _require_consistent_counts(self) -> Self:
@@ -329,7 +389,10 @@ class TypedMemoryWriteSummary(FrozenModel):
         if self.selected_count != len(self.selected_memory_ids):
             msg = "selected_count must equal selected_memory_ids length"
             raise ValueError(msg)
-        if self.actual_bytes > self.byte_budget:
+        if set(self.selected_candidate_timestamps_us) - set(self.selected_memory_ids):
+            msg = "selected candidate timestamps must belong to selected memory IDs"
+            raise ValueError(msg)
+        if self.budget_scope == "global" and self.actual_bytes > self.byte_budget:
             msg = "actual_bytes must not exceed byte_budget"
             raise ValueError(msg)
         return self
@@ -341,6 +404,13 @@ class TypedMemoryArtifactSummary(FrozenModel):
     window_count: int = Field(ge=0)
     max_window_bytes: int = Field(ge=0)
     window_seconds: PositiveFiniteFloat
+    persisted_memory_ids: tuple[NonEmptyStr, ...]
+
+    @model_validator(mode="after")
+    def _record_count_matches_ids(self) -> Self:
+        if self.record_count != len(self.persisted_memory_ids):
+            raise ValueError(_TYPED_MEMORY_RECORD_COUNT_ERROR)
+        return self
 
 
 class TypedMemoryWriterError(ValueError):
@@ -359,17 +429,9 @@ type SelectedFrameTimestamps = dict[str, dict[str, float]]
 type GroundingContext = tuple[SourceBounds, SelectedFrameTimestamps]
 
 
-def write_typed_memory_artifact(
+def _partition_writable_candidates(
     candidates: Sequence[ScoredMemoryCandidate],
-    *,
-    output: Path,
-    byte_budget: int,
-) -> TypedMemoryWriteSummary:
-    """Greedily persist decoded records by stable score-per-actual-byte rank."""
-    if byte_budget <= 0:
-        msg = "byte_budget must be positive"
-        raise TypedMemoryWriterError(msg)
-
+) -> tuple[list[tuple[ScoredMemoryCandidate, int]], int]:
     seen_ids: set[str] = set()
     writable: list[tuple[ScoredMemoryCandidate, int]] = []
     no_write_count = 0
@@ -379,30 +441,73 @@ def write_typed_memory_artifact(
             msg = f"duplicate memory_id: {memory_id}"
             raise TypedMemoryWriterError(msg)
         seen_ids.add(memory_id)
-        if not isfinite(candidate.score):
-            msg = f"{memory_id}: score must be finite"
+        if not isfinite(candidate.score) or candidate.score < 0.0:
+            msg = f"{memory_id}: score must be finite and nonnegative"
             raise TypedMemoryWriterError(msg)
         if isinstance(candidate.record, NoWriteMemoryRecord):
             no_write_count += 1
             continue
         writable.append((candidate, serialized_byte_cost(candidate.record)))
+    return writable, no_write_count
 
-    # Python's stable sort preserves decoder order for equal value-per-byte scores.
-    ranked = sorted(writable, key=lambda item: -(item[0].score / item[1]))
-    selected: list[TypedMemoryRecordBase] = []
-    actual_bytes = 0
-    for candidate, record_bytes in ranked:
-        if actual_bytes + record_bytes > byte_budget:
-            continue
-        selected.append(candidate.record)
-        actual_bytes += record_bytes
 
+@dataclass(frozen=True, slots=True)
+class TypedMemoryWriteOptions:
+    budget_scope: TypedMemoryBudgetScope = "global"
+    window_microseconds: int | None = None
+    cadence_origin_us: int = 0
+    candidate_timestamps_us: dict[str, int] | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class TypedMemoryArtifactValidationOptions:
+    byte_budget_per_window: int | None = None
+    window_seconds: float = DEFAULT_TYPED_MEMORY_WINDOW_SECONDS
+    window_microseconds: int | None = None
+    cadence_origin_us: int = 0
+    candidate_timestamps_us: Mapping[str, int] | None = None
+    sources: Sequence[SourceStreamExample] | None = None
+    sensor_records: Sequence[SensorFrameManifestRecord] | None = None
+
+
+class _ValidationOptionOverrides(TypedDict, total=False):
+    byte_budget_per_window: int | None
+    window_seconds: float
+    window_microseconds: int | None
+    cadence_origin_us: int
+    candidate_timestamps_us: Mapping[str, int] | None
+    sources: Sequence[SourceStreamExample] | None
+    sensor_records: Sequence[SensorFrameManifestRecord] | None
+
+
+def write_typed_memory_artifact(
+    candidates: Sequence[ScoredMemoryCandidate],
+    *,
+    output: Path,
+    byte_budget: int,
+    options: TypedMemoryWriteOptions | None = None,
+) -> TypedMemoryWriteSummary:
+    """Greedily persist decoded records globally or per window."""
+    if options is None:
+        options = TypedMemoryWriteOptions()
+    _validate_write_options(byte_budget, options)
+    writable, no_write_count = _partition_writable_candidates(candidates)
+    groups = _group_writable_candidates(writable, options)
+    selected = _select_candidates_within_budget(groups, byte_budget)
+    actual_bytes = sum(serialized_byte_cost(record) for record in selected)
     payload = b"".join(canonical_jsonl_bytes(record) for record in selected)
     if len(payload) != actual_bytes:
         msg = "selected record byte recount mismatch"
         raise TypedMemoryWriterError(msg)
     _write_verified_artifact_atomic(output, payload, selected)
-
+    selected_timestamps = {
+        record.memory_id: options.candidate_timestamps_us[record.memory_id]
+        for record in selected
+        if (
+            options.candidate_timestamps_us is not None
+            and record.memory_id in options.candidate_timestamps_us
+        )
+    }
     return TypedMemoryWriteSummary(
         output_path=output,
         byte_budget=byte_budget,
@@ -412,26 +517,149 @@ def write_typed_memory_artifact(
         selected_count=len(selected),
         skipped_for_budget_count=len(writable) - len(selected),
         actual_bytes=actual_bytes,
+        budget_scope=options.budget_scope,
         selected_memory_ids=tuple(record.memory_id for record in selected),
+        selected_candidate_timestamps_us=selected_timestamps,
     )
 
 
-def validate_typed_memory_artifact(  # noqa: PLR0912
+def _validate_write_options(
+    byte_budget: int,
+    options: TypedMemoryWriteOptions,
+) -> None:
+    if byte_budget <= 0:
+        msg = "byte_budget must be positive"
+        raise TypedMemoryWriterError(msg)
+    if options.budget_scope not in {"global", "per_source_window"}:
+        msg = f"unknown budget scope: {options.budget_scope!r}"
+        raise TypedMemoryWriterError(msg)
+    if options.window_microseconds is not None and (
+        options.window_microseconds <= 0 or options.cadence_origin_us < 0
+    ):
+        msg = "window microseconds must be positive and cadence origin nonnegative"
+        raise TypedMemoryWriterError(msg)
+
+
+def _group_writable_candidates(
+    writable: list[tuple[ScoredMemoryCandidate, int]],
+    options: TypedMemoryWriteOptions,
+) -> dict[tuple[str, int], list[tuple[ScoredMemoryCandidate, int]]]:
+    if options.budget_scope == "global":
+        return {("", 0): writable}
+    groups: dict[tuple[str, int], list[tuple[ScoredMemoryCandidate, int]]] = {}
+    for item in writable:
+        record = item[0].record
+        window = _candidate_window(record, options)
+        groups.setdefault((record.source_video_id, window), []).append(item)
+    return groups
+
+
+def _candidate_window(
+    record: TypedMemoryRecord,
+    options: TypedMemoryWriteOptions,
+) -> int:
+    if options.window_microseconds is None:
+        timestamp = (
+            record.timestamp
+            if isinstance(
+                record,
+                (ObjectPresenceMemoryRecord, SourceCompactMemoryRecord),
+            )
+            else record.first_seen_time
+        )
+        return floor(float(timestamp) / DEFAULT_TYPED_MEMORY_WINDOW_SECONDS)
+    timestamps = options.candidate_timestamps_us
+    if timestamps is None or record.memory_id not in timestamps:
+        msg = f"{record.memory_id}: exact integer timestamp is required"
+        raise TypedMemoryWriterError(msg)
+    timestamp_us = timestamps[record.memory_id]
+    if timestamp_us < options.cadence_origin_us:
+        msg = f"{record.memory_id}: timestamp predates cadence origin"
+        raise TypedMemoryWriterError(msg)
+    return (timestamp_us - options.cadence_origin_us) // options.window_microseconds
+
+
+def _select_candidates_within_budget(
+    groups: Mapping[tuple[str, int], Sequence[tuple[ScoredMemoryCandidate, int]]],
+    byte_budget: int,
+) -> list[
+    TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+]:
+    selected: list[
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ] = []
+    for group in groups.values():
+        group_bytes = 0
+        for candidate, record_bytes in sorted(
+            group,
+            key=lambda item: (
+                -item[0].score,
+                item[0].record.memory_id.encode("utf-8"),
+            ),
+        ):
+            if group_bytes + record_bytes > byte_budget:
+                continue
+            selected.append(candidate.record)
+            group_bytes += record_bytes
+    return selected
+
+
+def validate_typed_memory_artifact(
     path: Path,
-    *,
-    byte_budget_per_window: int | None = None,
-    window_seconds: float = DEFAULT_TYPED_MEMORY_WINDOW_SECONDS,
-    sources: Sequence[SourceStreamExample] | None = None,
-    sensor_records: Sequence[SensorFrameManifestRecord] | None = None,
+    options: TypedMemoryArtifactValidationOptions | None = None,
+    **legacy_options: Unpack[_ValidationOptionOverrides],
 ) -> TypedMemoryArtifactSummary:
     """Verify persisted typed records and recount canonical bytes per time window."""
-    if byte_budget_per_window is not None and byte_budget_per_window <= 0:
+    if options is not None and legacy_options:
+        msg = "validation options must be supplied once"
+        raise TypedMemoryWriterError(msg)
+    if options is None:
+        try:
+            options = TypedMemoryArtifactValidationOptions(**legacy_options)
+        except TypeError as exc:
+            raise TypedMemoryWriterError(str(exc)) from exc
+    _validate_artifact_options(options)
+    grounding_context = _build_grounding_context(
+        options.sources, options.sensor_records
+    )
+    persisted_memory_ids, window_bytes, actual_bytes = _read_typed_memory_artifact(
+        path, options, grounding_context
+    )
+    return TypedMemoryArtifactSummary(
+        record_count=len(persisted_memory_ids),
+        actual_bytes=actual_bytes,
+        window_count=len(window_bytes),
+        max_window_bytes=max(window_bytes.values(), default=0),
+        persisted_memory_ids=persisted_memory_ids,
+        window_seconds=options.window_seconds,
+    )
+
+
+def _validate_artifact_options(
+    options: TypedMemoryArtifactValidationOptions,
+) -> None:
+    if (
+        options.byte_budget_per_window is not None
+        and options.byte_budget_per_window <= 0
+    ):
         msg = "byte_budget_per_window must be positive"
         raise TypedMemoryWriterError(msg)
-    if not isfinite(window_seconds) or window_seconds <= 0.0:
+    if not isfinite(options.window_seconds) or options.window_seconds <= 0.0:
         msg = "window_seconds must be positive and finite"
         raise TypedMemoryWriterError(msg)
-    grounding_context = _build_grounding_context(sources, sensor_records)
+    if options.window_microseconds is not None and (
+        options.window_microseconds <= 0 or options.cadence_origin_us < 0
+    ):
+        msg = "window microseconds must be positive and cadence origin nonnegative"
+        raise TypedMemoryWriterError(msg)
+
+
+def _read_typed_memory_artifact(
+    path: Path,
+    options: TypedMemoryArtifactValidationOptions,
+    grounding_context: GroundingContext | None,
+) -> tuple[tuple[str, ...], dict[tuple[str, int], int], int]:
+    persisted_memory_ids: list[str] = []
     seen_ids: set[str] = set()
     window_bytes: dict[tuple[str, int], int] = {}
     actual_bytes = 0
@@ -442,63 +670,108 @@ def validate_typed_memory_artifact(  # noqa: PLR0912
                 start=1,
             ):
                 actual_bytes += len(raw_line)
-                if len(raw_line) > MAX_TYPED_MEMORY_RECORD_BYTES:
-                    msg = f"typed memory row exceeds 1 MiB: {line_number}"
-                    raise TypedMemoryWriterError(msg)
-                if not raw_line.endswith(b"\n"):
-                    msg = "JSONL artifact must end with a newline"
-                    raise TypedMemoryWriterError(msg)
-                line = raw_line[:-1]
-                if not line:
-                    msg = f"blank JSONL row: {line_number}"
-                    raise TypedMemoryWriterError(msg)
-                try:
-                    record: TypedMemoryRecord = _TYPED_MEMORY_ADAPTER.validate_json(
-                        line,
-                    )
-                except ValueError as exc:
-                    msg = f"invalid typed memory row {line_number}: {exc}"
-                    raise TypedMemoryWriterError(msg) from exc
-                if isinstance(record, NoWriteMemoryRecord):
-                    msg = "no_write record cannot be persisted"
-                    raise TypedMemoryWriterError(msg)
-                if record.memory_id in seen_ids:
-                    msg = f"duplicate memory_id: {record.memory_id}"
-                    raise TypedMemoryWriterError(msg)
-                seen_ids.add(record.memory_id)
-                canonical = canonical_jsonl_bytes(record)
-                if canonical != raw_line:
-                    msg = f"typed memory row is not canonical JSON: {line_number}"
-                    raise TypedMemoryWriterError(msg)
-                if grounding_context is not None:
-                    _validate_record_grounding(record, line_number, grounding_context)
-                window_key = (
-                    record.source_video_id,
-                    floor(float(record.first_seen_time) / window_seconds),
+                record, canonical = _validate_artifact_row(
+                    raw_line,
+                    line_number,
+                    seen_ids,
+                    persisted_memory_ids,
+                    grounding_context,
                 )
-                window_bytes[window_key] = window_bytes.get(window_key, 0) + len(
-                    canonical,
-                )
-                if (
-                    byte_budget_per_window is not None
-                    and window_bytes[window_key] > byte_budget_per_window
-                ):
-                    msg = (
-                        "typed memory window exceeds byte budget: "
-                        f"{window_key[0]}:{window_key[1]}"
-                    )
-                    raise TypedMemoryWriterError(msg)
+                _add_record_window_bytes(record, canonical, window_bytes, options)
     except OSError as exc:
         msg = f"cannot read typed memory artifact: {exc}"
         raise TypedMemoryWriterError(msg) from exc
+    return tuple(persisted_memory_ids), window_bytes, actual_bytes
 
-    return TypedMemoryArtifactSummary(
-        record_count=len(seen_ids),
-        actual_bytes=actual_bytes,
-        window_count=len(window_bytes),
-        max_window_bytes=max(window_bytes.values(), default=0),
-        window_seconds=window_seconds,
-    )
+
+def _validate_artifact_row(
+    raw_line: bytes,
+    line_number: int,
+    seen_ids: set[str],
+    persisted_memory_ids: list[str],
+    grounding_context: GroundingContext | None,
+) -> tuple[
+    TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord,
+    bytes,
+]:
+    record_bytes = len(raw_line) - 1 if raw_line.endswith(b"\n") else len(raw_line)
+    if record_bytes > MAX_TYPED_MEMORY_RECORD_BYTES:
+        msg = f"typed memory row exceeds 1 MiB: {line_number}"
+        raise TypedMemoryWriterError(msg)
+    if not raw_line.endswith(b"\n"):
+        msg = "JSONL artifact must end with a newline"
+        raise TypedMemoryWriterError(msg)
+    line = raw_line[:-1]
+    if not line:
+        msg = f"blank JSONL row: {line_number}"
+        raise TypedMemoryWriterError(msg)
+    try:
+        record: TypedMemoryRecord = _TYPED_MEMORY_ADAPTER.validate_json(line)
+    except ValueError as exc:
+        msg = f"invalid typed memory row {line_number}: {exc}"
+        raise TypedMemoryWriterError(msg) from exc
+    if isinstance(record, NoWriteMemoryRecord):
+        msg = "no_write record cannot be persisted"
+        raise TypedMemoryWriterError(msg)
+    if record.memory_id in seen_ids:
+        msg = f"duplicate memory_id: {record.memory_id}"
+        raise TypedMemoryWriterError(msg)
+    seen_ids.add(record.memory_id)
+    persisted_memory_ids.append(record.memory_id)
+    canonical = canonical_jsonl_bytes(record)
+    if canonical != raw_line:
+        msg = f"typed memory row is not canonical JSON: {line_number}"
+        raise TypedMemoryWriterError(msg)
+    if grounding_context is not None and not isinstance(
+        record,
+        (ObjectPresenceMemoryRecord, SourceCompactMemoryRecord),
+    ):
+        _validate_record_grounding(record, line_number, grounding_context)
+    return record, canonical
+
+
+def _add_record_window_bytes(
+    record: (
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ),
+    canonical: bytes,
+    window_bytes: dict[tuple[str, int], int],
+    options: TypedMemoryArtifactValidationOptions,
+) -> None:
+    if options.window_microseconds is not None:
+        timestamps = options.candidate_timestamps_us
+        if timestamps is None or record.memory_id not in timestamps:
+            msg = f"{record.memory_id}: exact integer timestamp is required"
+            raise TypedMemoryWriterError(msg)
+        timestamp_us = timestamps[record.memory_id]
+        if timestamp_us < options.cadence_origin_us:
+            msg = f"{record.memory_id}: timestamp predates cadence origin"
+            raise TypedMemoryWriterError(msg)
+        window_key = (
+            record.source_video_id,
+            (timestamp_us - options.cadence_origin_us) // options.window_microseconds,
+        )
+    else:
+        timestamp = (
+            record.timestamp
+            if isinstance(
+                record, (ObjectPresenceMemoryRecord, SourceCompactMemoryRecord)
+            )
+            else record.first_seen_time
+        )
+        window_key = (
+            record.source_video_id,
+            floor(float(timestamp) / options.window_seconds),
+        )
+    window_bytes[window_key] = window_bytes.get(window_key, 0) + len(canonical)
+    if (
+        options.byte_budget_per_window is not None
+        and window_bytes[window_key] > options.byte_budget_per_window
+    ):
+        msg = (
+            f"typed memory window exceeds byte budget: {window_key[0]}:{window_key[1]}"
+        )
+        raise TypedMemoryWriterError(msg)
 
 
 def _build_grounding_context(
@@ -561,10 +834,7 @@ def _validate_record_grounding(
             f"{record.source_video_id}"
         )
         raise TypedMemoryWriterError(msg)
-    if (
-        record.provenance in _EVIDENCE_REQUIRED_PROVENANCE
-        and not record.evidence_refs
-    ):
+    if record.provenance in _EVIDENCE_REQUIRED_PROVENANCE and not record.evidence_refs:
         msg = (
             f"typed memory row {line_number} provenance "
             f"{record.provenance} requires evidence_refs"
@@ -599,8 +869,7 @@ def _validate_record_grounding(
         raise TypedMemoryWriterError(msg)
     if record.provenance in _EVIDENCE_REQUIRED_PROVENANCE:
         evidence_times = tuple(
-            selected_frames[record.source_video_id][ref]
-            for ref in record.evidence_refs
+            selected_frames[record.source_video_id][ref] for ref in record.evidence_refs
         )
         if (
             not isclose(
@@ -627,7 +896,9 @@ def _validate_record_grounding(
 def _write_verified_artifact_atomic(
     output: Path,
     payload: bytes,
-    expected_records: Sequence[TypedMemoryRecordBase],
+    expected_records: Sequence[
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ],
 ) -> None:
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary_path: Path | None = None
@@ -651,7 +922,9 @@ def _write_verified_artifact_atomic(
 
 def _verify_persistent_artifact(
     path: Path,
-    expected_records: Sequence[TypedMemoryRecordBase],
+    expected_records: Sequence[
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ],
 ) -> None:
     payload = path.read_bytes()
     if path.stat().st_size != len(payload):
@@ -661,7 +934,9 @@ def _verify_persistent_artifact(
         msg = "JSONL artifact must end with a newline"
         raise ValueError(msg)
 
-    parsed: list[TypedMemoryRecordBase] = []
+    parsed: list[
+        TypedMemoryRecordBase | ObjectPresenceMemoryRecord | SourceCompactMemoryRecord
+    ] = []
     for line in payload.splitlines():
         record: TypedMemoryRecord = _TYPED_MEMORY_ADAPTER.validate_python(
             json.loads(line)

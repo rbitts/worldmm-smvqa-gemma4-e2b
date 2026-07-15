@@ -1,5 +1,7 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
+import hashlib
 from textwrap import dedent
 
 
@@ -22,7 +24,9 @@ def dag_submit_script_text() -> str:
         export WORLDMM_SMVQA_REMOTE_APPROVED
 
         SBATCH="${WORLDMM_SBATCH:-/opt/slurm/bin/sbatch}"
-        WORLDMM_REMOTE_REPO="${WORLDMM_REMOTE_REPO:-/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b}"
+        default_remote_repo=/repo/VTteam/bongh.park/
+        default_remote_repo+=worldmm-smvqa-gemma4-e2b
+        WORLDMM_REMOTE_REPO="${WORLDMM_REMOTE_REPO:-$default_remote_repo}"
         incoming_run_id="${WORLDMM_RUN_ID:-}"
         : "${WORLDMM_APPROVED_DATA_PREFIX:=/groups/VTteam/datasets}"
         : "${WORLDMM_APPROVED_REPO_PREFIX:=/repo/VTteam/bongh.park}"
@@ -103,6 +107,100 @@ def dag_submit_script_text() -> str:
             exit 1
             ;;
         esac
+        if [ "${1:-}" = "--reconcile-unknown-sbatch" ]; then
+          # This recovery surface intentionally runs before output-state and lock
+          # checks: its sole authority is the immutable pre-sbatch descriptor.
+          reconciliation_root="$WORLDMM_OUTPUT_ROOT/summary"
+          reconciliation_journal="$reconciliation_root/dag_submit.${WORLDMM_DAG_PHASE}.attempts"
+          reconciliation_lock="$reconciliation_root/dag_submit.${WORLDMM_DAG_PHASE}.lock"
+          [ -d "$reconciliation_root" ] && [ -f "$reconciliation_journal" ] || {
+            printf "unknown-sbatch reconciliation requires an attempt journal\n" >&2
+            exit 1
+          }
+          WORLDMM_RECONCILIATION_ROOT="$reconciliation_root" \
+            WORLDMM_RECONCILIATION_JOURNAL="$reconciliation_journal" \
+            WORLDMM_SQUEUE="${WORLDMM_SQUEUE:-/opt/slurm/bin/squeue}" \
+            WORLDMM_SACCT="${WORLDMM_SACCT:-/opt/slurm/bin/sacct}" \
+            "$WORLDMM_REMOTE_REPO/.venv/bin/python" - <<'PY'
+import hashlib
+import json
+import os
+import subprocess
+from pathlib import Path
+
+root = Path(os.environ["WORLDMM_RECONCILIATION_ROOT"])
+journal = Path(os.environ["WORLDMM_RECONCILIATION_JOURNAL"])
+unknown: dict[str, dict[str, object]] = {}
+resolved: set[str] = set()
+for line in journal.read_text(encoding="utf-8").splitlines():
+    value = json.loads(line)
+    if value.get("event") == "submission-unknown-before-sbatch":
+        identity = value.get("identity")
+        if isinstance(identity, str):
+            unknown[identity] = value
+    elif value.get("event") == "submission-reconciled":
+        identity = value.get("identity")
+        if isinstance(identity, str):
+            resolved.add(identity)
+pending = {key: value for key, value in unknown.items() if key not in resolved}
+rows: list[str] = []
+for command in (
+    [os.environ["WORLDMM_SQUEUE"], "--noheader", "--format=%i|%j|%k"],
+    [os.environ["WORLDMM_SACCT"], "--noheader", "--parsable2",
+     "--format=JobIDRaw,JobName,Comment"],
+):
+    try:
+        rows.extend(
+            subprocess.check_output(command, text=True, stderr=subprocess.DEVNULL)
+            .splitlines()
+        )
+    except (OSError, subprocess.CalledProcessError):
+        continue
+complete = True
+for identity, descriptor in pending.items():
+    stage = descriptor["stage"]
+    name = f"worldmm-{descriptor['run_id']}-{stage}"
+    matches = {
+        row.split("|", 1)[0].strip().split(".", 1)[0]
+        for row in rows
+        if len(row.split("|")) >= 3
+        and row.split("|", 1)[0].strip().split(".", 1)[0].isdigit()
+        and row.split("|", 2)[1].strip() == name
+        and row.split("|", 2)[2].strip() == identity
+    }
+    if len(matches) > 1:
+        raise SystemExit(f"ambiguous Slurm reconciliation for {identity}: {sorted(matches)}")
+    job_id = next(iter(matches), None)
+    payload = {
+        "schema_version": 1, "kind": "SubmissionReconciliationV1",
+        "descriptor": descriptor, "outcome": "unique-job" if job_id else "no-job",
+        "job_id": job_id,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    target = root / (
+        "reconciliation." + hashlib.sha256(identity.encode()).hexdigest() + ".json"
+    )
+    try:
+        fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    except FileExistsError:
+        complete = False
+        continue
+    try:
+        os.write(fd, encoded)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    with journal.open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps({
+            "schema_version": 1, "event": "submission-reconciled",
+            **descriptor, "job_id": job_id or "", "outcome": payload["outcome"],
+        }, sort_keys=True, separators=(",", ":")) + "\n")
+if not complete:
+    raise SystemExit("reconciliation descriptor already exists; lock retained")
+PY
+          rm -f "$reconciliation_lock"
+          exit 0
+        fi
         output_root_resolved="$(realpath -m "$WORLDMM_OUTPUT_ROOT")"
         output_prefix_resolved="$(realpath -e "$WORLDMM_APPROVED_OUTPUT_PREFIX")"
         case "$output_root_resolved" in
@@ -338,21 +436,24 @@ def dag_submit_script_text() -> str:
         export WORLDMM_APPROVED_OUTPUT_PREFIX
 
         verify_approved_python_runtime() {
-          local python_runtime_root python_runtime_files
+          local python_runtime_root python_runtime_files python_loader_inventory
           local python_runtime_inventory python_runtime_resolved
           local unsafe_link unsafe_pth runtime_link runtime_target
           local pth_file pth_dir pth_line pth_candidate pth_resolved
-          local inventory_current base_roots base_files base_inventory
-          local base_prefix base_executable stdlib platstdlib root
+          local inventory_current base_roots base_files base_inventory base_prefix
+          local base_executable stdlib platstdlib root
           python_runtime_root="$WORLDMM_REMOTE_REPO/.venv"
           python_runtime_files="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.sha256"
           python_runtime_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.files.sha256"
+          python_loader_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.loader.sha256"
           base_roots="$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_roots.tsv"
           base_files="$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_runtime.sha256"
-          base_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_runtime.files.sha256"
+          base_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/"
+          base_inventory+="python_base_runtime.files.sha256"
           if [ ! -d "$python_runtime_root" ] || [ -L "$python_runtime_root" ] || \
             [ ! -s "$python_runtime_files" ] || \
             [ ! -s "$python_runtime_inventory" ] || \
+            [ ! -s "$python_loader_inventory" ] || \
             [ ! -s "$base_roots" ] || [ ! -s "$base_files" ] || \
             [ ! -s "$base_inventory" ]; then
             printf "approved Python runtime or its manifests are missing\n" >&2
@@ -362,19 +463,9 @@ def dag_submit_script_text() -> str:
           unsafe_link="$(
             find "$python_runtime_root" -type l -print0 | \
               while IFS= read -r -d '' runtime_link; do
-                if [ ! -e "$runtime_link" ]; then
+                if [ ! -e "$runtime_link" ] || [ -d "$runtime_link" ]; then
                   printf "%s" "$runtime_link"
                   break
-                fi
-                if [ -d "$runtime_link" ]; then
-                  runtime_target="$(realpath -e "$runtime_link")"
-                  case "$runtime_target" in
-                    "$python_runtime_resolved"|"$python_runtime_resolved"/*) ;;
-                    *)
-                      printf "%s" "$runtime_link"
-                      break
-                      ;;
-                  esac
                 fi
               done
           )"
@@ -429,6 +520,16 @@ def dag_submit_script_text() -> str:
           if ! cmp -s "$python_runtime_inventory" "$inventory_current"; then
             rm -f "$inventory_current"
             printf "approved Python runtime file inventory changed\n" >&2
+            return 1
+          fi
+          rm -f "$inventory_current"
+          inventory_current="${python_loader_inventory}.verify.$$"
+          ldd "$python_runtime_root/bin/python" | while IFS= read -r loader; do
+            printf '%s\n' "${loader%% (*}"
+          done | LC_ALL=C sort | sha256sum > "$inventory_current"
+          if ! cmp -s "$python_loader_inventory" "$inventory_current"; then
+            rm -f "$inventory_current"
+            printf "approved Python interpreter loader/shared-library closure changed\n" >&2
             return 1
           fi
           rm -f "$inventory_current"
@@ -749,7 +850,8 @@ PY
             "$submit_lock" >&2
           exit 1
         fi
-        partial_jobs="$WORLDMM_OUTPUT_ROOT/summary/dag_jobs.${WORLDMM_DAG_PHASE}.partial"
+        partial_jobs="$WORLDMM_OUTPUT_ROOT/summary/"
+        partial_jobs+="dag_jobs.${WORLDMM_DAG_PHASE}.partial"
         : > "$partial_jobs"
         submission_attempts="$WORLDMM_OUTPUT_ROOT/summary"
         submission_attempts+="/dag_submit.${WORLDMM_DAG_PHASE}.attempts"
@@ -760,9 +862,55 @@ PY
           if [ "$status" -eq 0 ]; then
             return
           fi
-          mapfile -t submitted_job_ids < <(
-            cut -d= -f2 "$partial_jobs" | grep -E '^[0-9]+$' || true
-          )
+          mapfile -t submitted_rows < "$partial_jobs"
+          local row stage job intent
+          local -a submitted_job_ids=()
+          for row in "${submitted_rows[@]}"; do
+            stage="${row%%=*}"
+            job="${row#*=}"
+            case "$stage" in
+              preflight_ingest|teacher_extract|merge_materialize|train|build_memory|\
+              student_infer_retrieve|qa|metrics_report) ;;
+              *)
+                printf "cancellation is forbidden for gate or terminal stage: %s\n" \
+                  "$stage" >&2
+                return "$status"
+                ;;
+            esac
+            [[ "$job" =~ ^[0-9]+$ ]] || continue
+            submitted_job_ids+=("$job")
+            intent="$WORLDMM_OUTPUT_ROOT/summary/cancellation_intent.${WORLDMM_DAG_PHASE}.${stage}.${job}.json"
+            WORLDMM_CANCELLATION_INTENT="$intent" \
+              WORLDMM_CANCELLATION_STAGE="$stage" \
+              WORLDMM_CANCELLATION_JOB="$job" \
+              "$WORLDMM_REMOTE_REPO/.venv/bin/python" - <<'PY'
+import hashlib
+import json
+import os
+
+target = os.environ["WORLDMM_CANCELLATION_INTENT"]
+payload = {
+    "schema_version": 1,
+    "kind": "CancellationIntentV1",
+    "run_id": os.environ["WORLDMM_RUN_ID"],
+    "phase": os.environ["WORLDMM_DAG_PHASE"],
+    "stage": os.environ["WORLDMM_CANCELLATION_STAGE"],
+    "job_id": os.environ["WORLDMM_CANCELLATION_JOB"],
+    "attempt": os.environ["WORLDMM_CANCELLATION_JOB"],
+    "scope": "producer-only",
+}
+payload["payload_sha256"] = hashlib.sha256(
+    json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+).hexdigest()
+encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.write(fd, encoded)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+          done
           if [ "${#submitted_job_ids[@]}" -eq 0 ] && \
             [ ! -s "$submission_attempts" ]; then
             rm -f "$submit_lock"
@@ -772,6 +920,13 @@ PY
               "$submit_lock" >&2
           elif [ -x "$SCANCEL" ] && \
             "$SCANCEL" "${submitted_job_ids[@]}"; then
+            for row in "${submitted_rows[@]}"; do
+              stage="${row%%=*}"
+              job="${row#*=}"
+              [[ "$job" =~ ^[0-9]+$ ]] || continue
+              printf '{"schema_version":1,"event":"cancellation-accounting","run_id":"%s","stage":"%s","job_id":"%s","attempt":"%s","operational":"cancelled","scientific":"not_decidable"}\n' \
+                "$WORLDMM_RUN_ID" "$stage" "$job" "$job" >> "$submission_attempts"
+            done
             printf \
               "partial DAG jobs were cancelled; keeping lock, use a new run ID: %s\n" \
               "$submit_lock" >&2
@@ -787,6 +942,7 @@ PY
         submit_stage() {
           local stage="$1" partition="$2" nodes="$3" gpus="$4"
           local cpus="$5" mem="$6" time_limit="$7" dependency="$8"
+          local dependency_kind="${9:-afterok}"
           local raw_job_id job_id stage_exports export_name export_value
           for export_name in \
             WORLDMM_REMOTE_REPO WORLDMM_RUN_ID WORLDMM_OUTPUT_ROOT \
@@ -831,7 +987,8 @@ PY
           stage_exports+=",WORLDMM_EXECUTION_PROFILE=$WORLDMM_EXECUTION_PROFILE"
           stage_exports+=",WORLDMM_APPROVED_DATA_PREFIX=$WORLDMM_APPROVED_DATA_PREFIX"
           stage_exports+=",WORLDMM_APPROVED_REPO_PREFIX=$WORLDMM_APPROVED_REPO_PREFIX"
-          stage_exports+=",WORLDMM_APPROVED_OUTPUT_PREFIX=$WORLDMM_APPROVED_OUTPUT_PREFIX"
+          stage_exports+=",WORLDMM_APPROVED_OUTPUT_PREFIX="
+          stage_exports+="$WORLDMM_APPROVED_OUTPUT_PREFIX"
           stage_exports+=",RUN_FIXTURE=$RUN_FIXTURE"
           stage_exports+=",SMVQA_DATA_ROOT=$SMVQA_DATA_ROOT"
           stage_exports+=",SMVQA_FRAME_ROOT=$SMVQA_FRAME_ROOT"
@@ -846,14 +1003,16 @@ PY
           stage_exports+=",WORLDMM_TRAIN_GPUS_PER_NODE=$WORLDMM_TRAIN_GPUS_PER_NODE"
           stage_exports+=",WORLDMM_TEACHER_NODES=$WORLDMM_TEACHER_NODES"
           stage_exports+=",WORLDMM_TEACHER_GPUS_PER_NODE=$WORLDMM_TEACHER_GPUS_PER_NODE"
-          stage_exports+=",WORLDMM_SPATIAL_BYTE_BUDGET_PER_WINDOW=$WORLDMM_SPATIAL_BYTE_BUDGET_PER_WINDOW"
+          stage_exports+=",WORLDMM_SPATIAL_BYTE_BUDGET_PER_WINDOW="
+          stage_exports+="$WORLDMM_SPATIAL_BYTE_BUDGET_PER_WINDOW"
           stage_exports+=",WORLDMM_APPROVAL_FILE=${WORLDMM_APPROVAL_FILE:-}"
           stage_exports+=",WORLDMM_APPROVER=${WORLDMM_APPROVER:-}"
           stage_exports+=",WORLDMM_APPROVAL_SHA256=$WORLDMM_APPROVAL_SHA256"
           stage_exports+=",WORLDMM_GCUT3R_EXTRACTOR=${WORLDMM_GCUT3R_EXTRACTOR:-}"
           stage_exports+=",WORLDMM_TEACHER_CACHE_INPUT=${WORLDMM_TEACHER_CACHE_INPUT:-}"
           stage_exports+=",WORLDMM_SPATIAL_INFER_EXE=${WORLDMM_SPATIAL_INFER_EXE:-}"
-          stage_exports+=",WORLDMM_STUDENT_SUPERVISION_INPUT=${WORLDMM_STUDENT_SUPERVISION_INPUT:-}"
+          stage_exports+=",WORLDMM_STUDENT_SUPERVISION_INPUT="
+          stage_exports+="${WORLDMM_STUDENT_SUPERVISION_INPUT:-}"
           for resource_name in \
             WORLDMM_CPU_PARTITION WORLDMM_GPU_PARTITION \
             WORLDMM_PREFLIGHT_NODES WORLDMM_PREFLIGHT_CPUS \
@@ -867,7 +1026,7 @@ PY
             stage_exports+=",${resource_name}=${!resource_name}"
           done
           local -a args=(
-            "$SBATCH" --parsable
+            "$SBATCH" --parsable --no-requeue
             "--job-name=worldmm-${WORLDMM_RUN_ID}-${stage}"
             "--partition=$partition"
             "--nodes=$nodes"
@@ -878,14 +1037,32 @@ PY
             "--output=$WORLDMM_OUTPUT_ROOT/logs/${stage}-%j.out"
             "--error=$WORLDMM_OUTPUT_ROOT/logs/${stage}-%j.err"
             "--export=$stage_exports"
+            "--comment=worldmm:${WORLDMM_RUN_ID}:${WORLDMM_DAG_PHASE}:${stage}"
           )
           if [ "$gpus" -gt 0 ]; then
             args+=("--gpus-per-node=$gpus")
           fi
           if [ -n "$dependency" ]; then
-            args+=(--kill-on-invalid-dep=yes "--dependency=afterok:$dependency")
+            case "$dependency_kind" in
+              afterok|afterany) ;;
+              *)
+                printf "unsupported Slurm dependency kind: %s\n" \
+                  "$dependency_kind" >&2
+                return 1
+                ;;
+            esac
+            args+=(
+              --kill-on-invalid-dep=yes
+              "--dependency=${dependency_kind}:$dependency"
+            )
           fi
-          printf "%s\n" "$stage" >> "$submission_attempts"
+          # Persist the deterministic Slurm identity before sbatch. A failed
+          # client response is therefore reconcilable without guessing.
+          local identity
+          identity="worldmm:${WORLDMM_RUN_ID}:${WORLDMM_DAG_PHASE}:${stage}"
+          printf '{"schema_version":1,"event":"submission-unknown-before-sbatch","run_id":"%s","phase":"%s","stage":"%s","identity":"%s"}\n' \
+            "$WORLDMM_RUN_ID" "$WORLDMM_DAG_PHASE" "$stage" "$identity" \
+            >> "$submission_attempts"
           raw_job_id="$("${args[@]}" "$stage_script")"
           job_id="${raw_job_id%%;*}"
           if [[ ! "$job_id" =~ ^[0-9]+$ ]]; then
@@ -893,6 +1070,9 @@ PY
             return 1
           fi
           printf "%s=%s\n" "$stage" "$job_id" >> "$partial_jobs"
+          printf '{"schema_version":1,"event":"submission-reconciled","run_id":"%s","phase":"%s","stage":"%s","job_id":"%s","attempt":"%s","identity":"%s"}\n' \
+            "$WORLDMM_RUN_ID" "$WORLDMM_DAG_PHASE" "$stage" "$job_id" "$job_id" \
+            "$identity" >> "$submission_attempts"
           printf "%s" "$job_id"
         }
 
@@ -1036,7 +1216,9 @@ def dag_stage_script_text() -> str:
             exit 1
             ;;
         esac
-        WORLDMM_REMOTE_REPO="${WORLDMM_REMOTE_REPO:-/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b}"
+        default_remote_repo=/repo/VTteam/bongh.park/
+        default_remote_repo+=worldmm-smvqa-gemma4-e2b
+        WORLDMM_REMOTE_REPO="${WORLDMM_REMOTE_REPO:-$default_remote_repo}"
         : "${SMVQA_DATA_ROOT:=/groups/VTteam/datasets/SuperMemory-VQA/ingested}"
         : "${SMVQA_FRAME_ROOT:=$SMVQA_DATA_ROOT/frames}"
         : "${GEMMA_MODEL_PATH:=/repo/VTteam/bongh.park/gemma-4-e2b-it}"
@@ -1222,6 +1404,7 @@ def dag_stage_script_text() -> str:
           local mode="$1" runtime_resolved unsafe_link unsafe_pth
           local runtime_link runtime_target pth_file pth_dir pth_line
           local pth_candidate pth_resolved runtime_files runtime_inventory
+          local runtime_loader_inventory
           local current base_roots base_files base_inventory base_prefix
           local base_executable stdlib platstdlib root
           if [ ! -d "$python_runtime_root" ] || [ -L "$python_runtime_root" ]; then
@@ -1233,16 +1416,9 @@ def dag_stage_script_text() -> str:
           unsafe_link="$(
             find "$python_runtime_root" -type l -print0 | \
               while IFS= read -r -d '' runtime_link; do
-                if [ ! -e "$runtime_link" ]; then
+                if [ ! -e "$runtime_link" ] || [ -d "$runtime_link" ]; then
                   printf "%s" "$runtime_link"
                   break
-                fi
-                if [ -d "$runtime_link" ]; then
-                  runtime_target="$(realpath -e "$runtime_link")"
-                  case "$runtime_target" in
-                    "$runtime_resolved"|"$runtime_resolved"/*) ;;
-                    *) printf "%s" "$runtime_link"; break ;;
-                  esac
                 fi
               done
           )"
@@ -1282,10 +1458,12 @@ def dag_stage_script_text() -> str:
           fi
           runtime_files="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.sha256"
           runtime_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.files.sha256"
+          runtime_loader_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.loader.sha256"
           base_roots="$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_roots.tsv"
           base_files="$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_runtime.sha256"
           base_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_runtime.files.sha256"
           if [ ! -s "$runtime_files" ] || [ ! -s "$runtime_inventory" ] || \
+            [ ! -s "$runtime_loader_inventory" ] || \
             [ ! -s "$base_roots" ] || [ ! -s "$base_files" ] || \
             [ ! -s "$base_inventory" ]; then
             printf "approved Python runtime manifests are missing\n" >&2
@@ -1305,6 +1483,16 @@ def dag_stage_script_text() -> str:
           if ! cmp -s "$runtime_inventory" "$current"; then
             rm -f "$current"
             printf "approved Python runtime file inventory changed\n" >&2
+            return 1
+          fi
+          rm -f "$current"
+          current="${runtime_loader_inventory}.stage.$$"
+          ldd "$python_runtime_root/bin/python" | while IFS= read -r loader; do
+            printf '%s\n' "${loader%% (*}"
+          done | LC_ALL=C sort | sha256sum > "$current"
+          if ! cmp -s "$runtime_loader_inventory" "$current"; then
+            rm -f "$current"
+            printf "approved Python interpreter loader/shared-library closure changed\n" >&2
             return 1
           fi
           rm -f "$current"
@@ -1393,8 +1581,10 @@ def dag_stage_script_text() -> str:
         export WORLDMM_EXECUTION_REPO
         export PYTHONPATH="$WORLDMM_EXECUTION_REPO/src"
         cd "$WORLDMM_EXECUTION_REPO"
-        mkdir -p "$WORLDMM_OUTPUT_ROOT"/\
-          {manifests,inference_inputs,teacher,training,checkpoints,memory,retrieval,qa,metrics,diagnostics,summary}
+        mkdir -p \
+          "$WORLDMM_OUTPUT_ROOT"/{manifests,inference_inputs,teacher,training,\
+          checkpoints,memory,retrieval} \
+          "$WORLDMM_OUTPUT_ROOT"/{qa,metrics,diagnostics,summary}
         WORLDMM_SENSOR_FRAME_MANIFEST="$WORLDMM_OUTPUT_ROOT/manifests"
         WORLDMM_SENSOR_FRAME_MANIFEST+="/sensor_frames.jsonl"
         export WORLDMM_SENSOR_FRAME_MANIFEST
@@ -2406,6 +2596,10 @@ PY
               find . \( -type f -o -type l \) -printf '%y %p %l\0' \
                 | sort -z | sha256sum
             ) > "$python_runtime_inventory"
+            python_loader_inventory="$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.loader.sha256"
+            ldd "$python_runtime_root/bin/python" | while IFS= read -r loader; do
+              printf '%s\n' "${loader%% (*}"
+            done | LC_ALL=C sort | sha256sum > "$python_loader_inventory"
             python_base_roots="$WORLDMM_OUTPUT_ROOT/diagnostics"
             python_base_roots+="/python_base_roots.tsv"
             python - "$python_base_roots" <<'PY'
@@ -2477,6 +2671,7 @@ PY
               "$WORLDMM_OUTPUT_ROOT/diagnostics/frame_assets.files.sha256"
               "$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.sha256"
               "$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.files.sha256"
+              "$WORLDMM_OUTPUT_ROOT/diagnostics/python_runtime.loader.sha256"
               "$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_roots.tsv"
               "$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_runtime.sha256"
               "$WORLDMM_OUTPUT_ROOT/diagnostics/python_base_runtime.files.sha256"
@@ -3385,3 +3580,2358 @@ PY
         esac
         """,
     ).lstrip()
+
+
+def _teacher_oracle_submit_script_text(graph: object | None = None) -> str:
+    """Render the isolated, signed teacher-oracle DAG."""
+    graph_json = getattr(graph, "model_dump_json", lambda: "")()
+    graph_sha256 = hashlib.sha256(graph_json.encode("utf-8")).hexdigest()
+    return (
+        f"#!/usr/bin/env bash\n# graph_sha256={graph_sha256}\n"
+        r"""set -euo pipefail
+umask 077
+: "${WORLDMM_EXECUTION_PROFILE:?teacher-oracle profile required}"
+[ "$WORLDMM_EXECUTION_PROFILE" = teacher-oracle ] || {
+  echo "WORLDMM_EXECUTION_PROFILE must be teacher-oracle" >&2
+  exit 2
+}
+: "${WORLDMM_REMOTE_REPO:?}"
+: "${WORLDMM_ATTESTED_RUNTIME_ROOT:?}"
+[ -d "$WORLDMM_ATTESTED_RUNTIME_ROOT" ] && \
+  [ -x "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" ] || {
+  echo "attested runtime root is not an executable isolated runtime" >&2
+  exit 2
+}
+: "${WORLDMM_RUN_ID:?}"
+: "${WORLDMM_OUTPUT_ROOT:?}"
+: "${WORLDMM_EXPERIMENT_ID:=EXP-0005}"
+: "${WORLDMM_SENSOR_AUDIT_SHA256:?}"
+: "${WORLDMM_PROVIDER_SHA256:?}"
+: "${WORLDMM_SPLIT_SHA256:?}"
+: "${WORLDMM_CODE_SHA:?}"
+: "${WORLDMM_POLICY_SHA256:?}"
+: "${WORLDMM_TEACHER_ORACLE_VALIDATION_RECEIPT:?}"
+: "${WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256:?}"
+: "${WORLDMM_EXPERIMENT_CONFIG_SHA256:?}"
+: "${WORLDMM_SLURM_CLUSTER:?}"
+: "${WORLDMM_FRAME_ASSETS_SHA256:?}"
+: "${WORLDMM_BYTE_BUDGET_SHA256:?}"
+: "${WORLDMM_RESOURCE_CONFIG_SHA256:?}"
+: "${WORLDMM_PLAN_SHA256:?}"
+: "${WORLDMM_REMOTE_SNAPSHOT_SHA256:?}"
+: "${WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256:?}"
+: "${WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256:?}"
+: "${WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256:?}"
+: "${WORLDMM_DAG_STAGE_SCRIPT_SHA256:?}"
+: "${WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256:?}"
+: "${WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256:?}"
+: "${WORLDMM_ATTESTED_RUNTIME_MANIFEST:?runtime content manifest required}"
+: "${WORLDMM_ATTESTED_RUNTIME_MANIFEST_SHA256:?runtime content manifest digest required}"
+case "$(basename "$0")" in
+  submit_teacher_oracle_preflight.sh)
+    WORLDMM_DAG_PHASE=phase-a
+    WORLDMM_ORACLE_SUBMISSION_SURFACE=preflight
+    expected_submit_digest="$WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256"
+    ;;
+  submit_teacher_oracle_provider_gate.sh)
+    WORLDMM_DAG_PHASE=phase-a
+    WORLDMM_ORACLE_SUBMISSION_SURFACE=provider
+    expected_submit_digest="$WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256"
+    ;;
+  submit_teacher_oracle_downstream.sh)
+    WORLDMM_DAG_PHASE=phase-b
+    WORLDMM_ORACLE_SUBMISSION_SURFACE=downstream
+    expected_submit_digest="$WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256"
+    ;;
+  *) echo "unapproved teacher-oracle submitter name" >&2; exit 2 ;;
+esac
+if [ "$WORLDMM_ORACLE_SUBMISSION_SURFACE" != preflight ]; then
+  : "${WORLDMM_SMVQA_REMOTE_APPROVED:?explicit approval required}"
+  [ "$WORLDMM_SMVQA_REMOTE_APPROVED" = 1 ] || exit 2
+  : "${WORLDMM_APPROVAL_FILE:?}"
+  : "${WORLDMM_SIGNER_REGISTRY:?}"
+  : "${WORLDMM_SIGNER_REGISTRY_SHA256:?}"
+fi
+if [ "$WORLDMM_ORACLE_SUBMISSION_SURFACE" = provider ]; then
+  : "${WORLDMM_PREFLIGHT_SEAL_SHA256:?approval-bound preflight seal required}"
+  : "${WORLDMM_ACCOUNTING_SETTLE_SECONDS:?approval-bound accounting timeout required}"
+  : "${WORLDMM_ACCOUNTING_SETTLE_INTERVAL_SECONDS:?approval-bound accounting interval required}"
+  : "${WORLDMM_ORACLE_QUALITY_EVALUATOR:?approval-bound quality evaluator required}"
+  : "${WORLDMM_ORACLE_QUALITY_CONTRACT:?approval-bound quality contract required}"
+  : "${WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256:?approval-bound quality contract digest required}"
+  : "${WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256:?approval-bound quality evaluator digest required}"
+fi
+if [ "$WORLDMM_ORACLE_SUBMISSION_SURFACE" = downstream ]; then
+  : "${WORLDMM_QA_SHARD_MAP_SHA256:?approval-bound QA shard map required}"
+  : "${WORLDMM_QA_LINEAGE_SHA256:?approval-bound QA lineage required}"
+  : "${WORLDMM_QA_FINALIZATION_RECEIPT_SHA256:?approval-bound QA finalization receipt required}"
+  : "${WORLDMM_QA_PREDICTIONS_SHA256:?approval-bound QA prediction digest required}"
+  : "${WORLDMM_QA_SHARD_MAP:?approval-bound QA shard map path required}"
+  : "${WORLDMM_QA_LINEAGE:?approval-bound QA lineage path required}"
+  : "${WORLDMM_QA_FINALIZATION_RECEIPT:?approval-bound QA finalization receipt path required}"
+  : "${WORLDMM_QA_PREDICTIONS:?approval-bound QA predictions path required}"
+fi
+root="${WORLDMM_OUTPUT_ROOT%/}"
+case "$root" in */"$WORLDMM_RUN_ID") ;; *) exit 2;; esac
+case "$WORLDMM_DAG_PHASE" in phase-a|phase-b) ;; *) exit 2;; esac
+phase_lock="$root/summary/.teacher_oracle_${WORLDMM_DAG_PHASE}_${WORLDMM_ORACLE_SUBMISSION_SURFACE}.lock"
+attempt_journal="$root/summary/teacher_oracle_${WORLDMM_DAG_PHASE}_${WORLDMM_ORACLE_SUBMISSION_SURFACE}.attempts.jsonl"
+submitted_job_ids=()
+unknown_submission=0
+transaction_committed=0
+cleanup_submission() {
+  [ "$transaction_committed" = 1 ] && return
+  [ "$unknown_submission" = 0 ] || {
+    echo "untrustworthy sbatch result; retaining phase lock for reconciliation" >&2
+  }
+}
+trap cleanup_submission EXIT
+if [ "${1:-}" = --reconcile-unknown-sbatch ]; then
+  [ -f "$attempt_journal" ] || {
+    echo "unknown-sbatch reconciliation requires an immutable attempt journal" >&2
+    exit 1
+  }
+  WORLDMM_RECONCILIATION_JOURNAL="$attempt_journal" \
+    WORLDMM_SQUEUE="${WORLDMM_SQUEUE:-squeue}" \
+    WORLDMM_SACCT="${WORLDMM_SACCT:-sacct}" \
+    "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - <<'PY'
+import hashlib, json, os, stat, subprocess
+from pathlib import Path
+
+journal = Path(os.environ["WORLDMM_RECONCILIATION_JOURNAL"])
+artifact = journal.with_name(f"{journal.stem}.reconciliation.json")
+unknown, reconciled, base_lines = {}, set(), []
+for raw_line in journal.read_bytes().splitlines(keepends=True):
+    value = json.loads(raw_line)
+    identity = value.get("identity")
+    if not isinstance(identity, str):
+        base_lines.append(raw_line)
+        continue
+    if value.get("event") == "submission-unknown-before-sbatch":
+        unknown[identity] = value
+        base_lines.append(raw_line)
+    elif value.get("event") == "submission-reconciled":
+        reconciled.add(identity)
+    else:
+        base_lines.append(raw_line)
+base_journal = b"".join(base_lines)
+base_journal_sha256 = hashlib.sha256(base_journal).hexdigest()
+
+def stable_artifact():
+    fd = os.open(artifact, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(fd)
+        if (
+            not stat.S_ISREG(state.st_mode)
+            or state.st_uid != os.getuid()
+            or stat.S_IMODE(state.st_mode) != 0o600
+            or state.st_nlink != 1
+        ):
+            raise SystemExit("unsafe reconciliation artifact")
+        raw = os.read(fd, state.st_size + 1)
+        end = os.fstat(fd)
+        if (
+            len(raw) != state.st_size
+            or (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns)
+            != (end.st_dev, end.st_ino, end.st_size, end.st_mtime_ns)
+        ):
+            raise SystemExit("reconciliation artifact changed while read")
+        return json.loads(raw)
+    finally:
+        os.close(fd)
+
+if artifact.exists() or artifact.is_symlink():
+    recorded = stable_artifact()
+    queries = recorded.get("queries")
+    results = recorded.get("results")
+    if (
+        recorded.get("schema_version") != 1
+        or recorded.get("kind") != "UnknownSubmissionReconciliationV1"
+        or recorded.get("journal_sha256") != base_journal_sha256
+        or not isinstance(queries, list)
+        or not isinstance(results, list)
+        or any(not isinstance(result, dict) for result in results)
+        or recorded.get("query_evidence_sha256")
+        != hashlib.sha256(
+            json.dumps(queries, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        or {
+            result.get("identity")
+            for result in results
+            if isinstance(result, dict)
+        }
+        != set(unknown)
+    ):
+        raise SystemExit("reconciliation artifact does not bind retained state")
+else:
+    rows, queries = [], []
+    for command in (
+        [os.environ["WORLDMM_SQUEUE"], "--noheader", "--format=%i|%j|%k"],
+        [
+            os.environ["WORLDMM_SACCT"],
+            "--noheader",
+            "--parsable2",
+            "--format=JobIDRaw,JobName,Comment",
+        ],
+    ):
+        try:
+            completed = subprocess.run(
+                command,
+                text=True,
+                capture_output=True,
+                check=False,
+            )
+        except OSError as exc:
+            raise SystemExit(f"Slurm reconciliation query failed: {exc}") from exc
+        query = {
+            "argv": command,
+            "returncode": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+        }
+        queries.append(query)
+        if completed.returncode != 0:
+            raise SystemExit(
+                f"Slurm reconciliation query failed: {command!r}: "
+                f"{completed.stderr}"
+            )
+        rows.extend(completed.stdout.splitlines())
+    query_evidence_sha256 = hashlib.sha256(
+        json.dumps(queries, sort_keys=True, separators=(",", ":")).encode()
+    ).hexdigest()
+    results = []
+    for identity, descriptor in unknown.items():
+        name = f"worldmm-{descriptor['run_id']}-{descriptor['stage']}"
+        matches = {
+            row.split("|", 1)[0].strip().split(".", 1)[0]
+            for row in rows
+            if len(row.split("|")) >= 3
+            and row.split("|", 1)[0].strip().split(".", 1)[0].isdigit()
+            and row.split("|", 2)[1].strip() == name
+            and row.split("|", 2)[2].strip() == identity
+        }
+        if len(matches) > 1:
+            raise SystemExit(
+                f"ambiguous Slurm reconciliation for {identity}: "
+                f"{sorted(matches)}"
+            )
+        results.append({
+            "schema_version": 1,
+            "event": "submission-reconciled",
+            "identity": identity,
+            "outcome": "unique-job" if matches else "proven-no-job",
+            "job_id": next(iter(matches), ""),
+            "descriptor": descriptor,
+            "query_evidence_sha256": query_evidence_sha256,
+        })
+    payload = json.dumps(
+        {
+            "schema_version": 1,
+            "kind": "UnknownSubmissionReconciliationV1",
+            "journal_sha256": base_journal_sha256,
+            "query_evidence_sha256": query_evidence_sha256,
+            "queries": queries,
+            "results": results,
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode()
+    fd = os.open(artifact, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(fd, payload)
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+    parent_fd = os.open(artifact.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(parent_fd)
+    finally:
+        os.close(parent_fd)
+
+journal_fd = os.open(journal, os.O_WRONLY | os.O_APPEND)
+try:
+    for result in results:
+        identity = result.get("identity")
+        if identity in reconciled:
+            continue
+        os.write(
+            journal_fd,
+            json.dumps(result, sort_keys=True, separators=(",", ":")).encode()
+            + b"\n",
+        )
+    os.fsync(journal_fd)
+finally:
+    os.close(journal_fd)
+PY
+  [ ! -d "$phase_lock" ] || rmdir "$phase_lock"
+  transaction_committed=1
+  exit 0
+fi
+if [ "$WORLDMM_DAG_PHASE" = phase-a ]; then
+  case "$WORLDMM_ORACLE_SUBMISSION_SURFACE" in
+    preflight)
+      [ ! -e "$root" ] || {
+        echo "stale Phase A output namespace" >&2; exit 1; }
+      mkdir -p "$root/summary" "$root/logs" "$root/diagnostics"
+      ;;
+    provider)
+      [ -d "$root/summary" ] && \
+        [ -f "$root/summary/dag_jobs.preflight.env" ] && \
+        [ ! -e "$root/summary/dag_jobs.provider.env" ] || {
+        echo "invalid provider-gate output state" >&2; exit 1; }
+      ;;
+    *) echo "invalid teacher-oracle submission surface" >&2; exit 2 ;;
+  esac
+else
+  [ -d "$root/summary" ] && [ ! -e "$root/summary/dag_jobs.env" ] || {
+    echo "stale downstream output state" >&2; exit 1; }
+fi
+mkdir "$phase_lock" 2>/dev/null || {
+  echo "phase submission is already locked" >&2; exit 1; }
+printf '{"phase":"%s","event":"started"}\n' "$WORLDMM_DAG_PHASE" > "$attempt_journal"
+stage_script="$(dirname "$0")/run_teacher_oracle_stage.sh"
+WORLDMM_EXPERIMENT_GRAPH_FILE="${WORLDMM_EXPERIMENT_GRAPH_FILE:-$(dirname "$0")/experiment_graph.json}"
+export WORLDMM_EXPERIMENT_GRAPH_FILE
+SBATCH="${WORLDMM_SBATCH:-sbatch}"
+SCONTROL="${WORLDMM_SCONTROL:-scontrol}"
+verify() {
+  WORLDMM_APPROVAL_PATH="$1" WORLDMM_APPROVAL_PHASE="$2" \
+    "$stage_script" --verify-approval
+}
+prevalidate_submission() {
+  local sacct="${WORLDMM_SACCT:-sacct}"
+  EXPECTED_SUBMIT_DIGEST="$expected_submit_digest" \
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$WORLDMM_REMOTE_REPO" "$0" "$stage_script" \
+    "$WORLDMM_EXPERIMENT_GRAPH_FILE" "$WORLDMM_ORACLE_PROVIDER_EXECUTABLE" \
+    "$WORLDMM_ORACLE_STAGE_EXECUTABLE" "$sacct" <<'PY'
+import hashlib, json, os, re, stat, subprocess, sys
+from pathlib import Path
+from worldmm_smvqa.slurm_accounting import preflight_capability
+root, submitter, stage_script, resources, provider, stage_executable, sacct = map(Path, sys.argv[1:8])
+def secure_digest(path, expected):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(descriptor)
+        if not stat.S_ISREG(state.st_mode) or state.st_mode & 0o022:
+            raise SystemExit(f"unsafe approved input: {path}")
+        digest = hashlib.file_digest(os.fdopen(os.dup(descriptor), "rb"), "sha256").hexdigest()
+    finally:
+        os.close(descriptor)
+    if digest != expected:
+        raise SystemExit(f"approved digest mismatch: {path}")
+def tree_digest(directory):
+    ignored = {
+        Path(os.environ["WORLDMM_OUTPUT_ROOT"]).resolve(),
+        Path(os.environ["WORLDMM_APPROVAL_FILE"]).resolve(),
+        Path(os.environ.get("WORLDMM_PHASE_B_APPROVAL_FILE", "/dev/null")).resolve(),
+    }
+    rows = []
+    for path in sorted(directory.rglob("*")):
+        resolved = path.resolve()
+        if any(resolved == ignored_path or ignored_path in resolved.parents for ignored_path in ignored):
+            continue
+        if path.is_symlink():
+            raise SystemExit("snapshot contains a symlink")
+        if path.is_file():
+            rows.append(f"{path.relative_to(directory)}\0{hashlib.sha256(path.read_bytes()).hexdigest()}\n")
+    return hashlib.sha256("".join(rows).encode()).hexdigest()
+secure_digest(submitter, os.environ["EXPECTED_SUBMIT_DIGEST"])
+secure_digest(stage_script, os.environ["WORLDMM_DAG_STAGE_SCRIPT_SHA256"])
+secure_digest(resources, os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"])
+secure_digest(provider, os.environ["WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256"])
+secure_digest(stage_executable, os.environ["WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256"])
+if tree_digest(root) != os.environ["WORLDMM_REMOTE_SNAPSHOT_SHA256"]:
+    raise SystemExit("remote snapshot digest mismatch")
+PY
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$WORLDMM_EXPERIMENT_GRAPH_FILE" "$sacct" <<'PY'
+import json, re, subprocess, sys
+from pathlib import Path
+from worldmm_smvqa.slurm_accounting import preflight_capability
+
+graph, sacct = sys.argv[1:]
+value = json.loads(Path(graph).read_text(encoding="utf-8"))
+stages = value.get("stage_specs")
+if value.get("experiment_id") != "EXP-0005" or not isinstance(stages, list):
+    raise SystemExit("invalid frozen experiment graph")
+expected = (
+    "preflight", "geometry", "semantic", "place", "gate", "terminal",
+    "e0_materialize", "e0_retrieve", "e0_qa", "t0_materialize",
+    "t0_retrieve", "t0_qa", "t1_materialize", "t1_retrieve", "t1_qa",
+    "evaluator", "finalizer",
+)
+if tuple(stage.get("name") for stage in stages if isinstance(stage, dict)) != expected:
+    raise SystemExit("experiment graph stage topology is not canonical")
+for stage in stages:
+    entry = stage.get("resources") if isinstance(stage, dict) else None
+    if not isinstance(entry, dict) or set(entry) != {
+        "kind", "partition", "nodes", "cpus", "memory", "time", "gpus_per_node"
+    }:
+        raise SystemExit(f"invalid graph resource schema for {stage}")
+    memory, time = entry["memory"], entry["time"]
+    match = isinstance(memory, str) and re.fullmatch(r"([1-9][0-9]*)([MG])", memory)
+    duration_seconds = sum(value * multiplier for value, multiplier in zip(map(int, time.split(":")), (3600, 60, 1), strict=True)) if isinstance(time, str) and re.fullmatch(r"[0-9]{2}:[0-5][0-9]:[0-5][0-9]", time) else -1
+    if (not match or int(match.group(1)) * (1024 if match.group(2) == "G" else 1) > 2 * 1024 * 1024
+        or entry["partition"] not in {"cpu-prepro-queue", "gpu-vtt-queue"}
+        or not isinstance(entry["nodes"], int) or not 1 <= entry["nodes"] <= 10
+        or not isinstance(entry["cpus"], int) or not 1 <= entry["cpus"] <= 256
+        or not isinstance(entry["gpus_per_node"], int) or not 0 <= entry["gpus_per_node"] <= 8
+        or entry["gpus_per_node"] * entry["nodes"] > 80
+        or not 0 <= duration_seconds <= 48 * 3600
+        or (entry["gpus_per_node"] == 0) != (entry["partition"] == "cpu-prepro-queue")):
+        raise SystemExit("experiment graph resource exceeds company policy")
+try:
+    preflight_capability(
+        version_output=subprocess.check_output([sacct, "--version"], text=True),
+        helpformat_output=subprocess.check_output([sacct, "--helpformat"], text=True),
+    )
+except Exception as exc:
+    raise SystemExit(f"sacct capability preflight failed: {exc}") from exc
+PY
+}
+submit() {
+  local stage=$1 dependency=${2:-} dependency_kind=${3:-afterok} job
+  local stage_exports resource_file resource_line partition nodes cpus
+  local memory walltime gpus
+  resource_file="${WORLDMM_EXPERIMENT_GRAPH_FILE:?frozen experiment graph required}"
+  [ -s "$resource_file" ] && [ ! -L "$resource_file" ] || {
+    echo "frozen experiment graph is required" >&2; return 1; }
+  [ "$(sha256sum "$resource_file" | cut -d ' ' -f 1)" = \
+    "$WORLDMM_RESOURCE_CONFIG_SHA256" ] || {
+    echo "experiment graph digest mismatch" >&2; return 1; }
+  resource_line="$(
+    "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$resource_file" "$stage" <<'PY'
+import json, re, sys
+from pathlib import Path
+
+graph, runtime_stage = sys.argv[1:]
+name = {
+    "teacher_oracle_preflight": "preflight",
+    "teacher_oracle_geometry": "geometry",
+    "teacher_oracle_semantic": "semantic",
+    "teacher_oracle_place": "place",
+    "teacher_oracle_gate": "gate",
+    "teacher_oracle_finalizer": "terminal",
+    "teacher_oracle_evaluator": "evaluator",
+    "teacher_oracle_finalizer_phase_b": "finalizer",
+}.get(runtime_stage, runtime_stage.removeprefix("teacher_oracle_").replace("E0_", "e0_").replace("T0_", "t0_").replace("T1_", "t1_"))
+value = json.loads(Path(graph).read_text(encoding="utf-8"))
+entry = next((item.get("resources") for item in value.get("stage_specs", [])
+              if isinstance(item, dict) and item.get("name") == name), None)
+fields = ("partition", "nodes", "cpus", "memory", "time", "gpus_per_node")
+if not isinstance(entry, dict) or set(entry) != {"kind", *fields}:
+    raise SystemExit(f"missing graph resources for {runtime_stage}")
+if not isinstance(entry["memory"], str) or not re.fullmatch(r"[1-9][0-9]*[MG]", entry["memory"]):
+    raise SystemExit("invalid graph memory")
+if not isinstance(entry["time"], str) or not re.fullmatch(r"[0-9]{2}:[0-5][0-9]:[0-5][0-9]", entry["time"]):
+    raise SystemExit("invalid graph time")
+print("\t".join(str(entry[name]) for name in fields))
+PY
+  )" || return 1
+  IFS=$'\t' read -r partition nodes cpus memory walltime gpus <<<"$resource_line"
+  stage_exports="WORLDMM_STAGE=$stage,WORLDMM_EXECUTION_PROFILE=teacher-oracle"
+  for name in WORLDMM_REMOTE_REPO WORLDMM_OUTPUT_ROOT WORLDMM_RUN_ID \
+    WORLDMM_EXPERIMENT_ID WORLDMM_APPROVAL_FILE WORLDMM_PHASE_B_APPROVAL_FILE \
+    WORLDMM_CONTINUE_RECEIPT WORLDMM_SIGNER_REGISTRY \
+    WORLDMM_SIGNER_REGISTRY_SHA256 WORLDMM_SENSOR_AUDIT_SHA256 \
+    WORLDMM_PROVIDER_SHA256 WORLDMM_SPLIT_SHA256 WORLDMM_CODE_SHA \
+    WORLDMM_POLICY_SHA256 \
+    WORLDMM_FRAME_ASSETS_SHA256 WORLDMM_BYTE_BUDGET_SHA256 \
+    WORLDMM_RESOURCE_CONFIG_SHA256 WORLDMM_PLAN_SHA256 \
+    WORLDMM_REMOTE_SNAPSHOT_SHA256 WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256 \
+    WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256 \
+    WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256 \
+    WORLDMM_DAG_STAGE_SCRIPT_SHA256 WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256 \
+    WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256 WORLDMM_ATTESTED_RUNTIME_ROOT \
+    WORLDMM_ATTESTED_RUNTIME_MANIFEST WORLDMM_ATTESTED_RUNTIME_MANIFEST_SHA256 \
+    WORLDMM_TEACHER_ORACLE_VALIDATION_RECEIPT \
+    WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256 WORLDMM_EXPERIMENT_CONFIG_SHA256 \
+    WORLDMM_ORACLE_PROVIDER_EXECUTABLE WORLDMM_ORACLE_PROVIDER_CONFIG \
+    WORLDMM_ORACLE_PROVIDER_CONFIG_SHA256 WORLDMM_ORACLE_STAGE_EXECUTABLE \
+    WORLDMM_EXPERIMENT_GRAPH_FILE WORLDMM_SACCT \
+    WORLDMM_SLURM_CLUSTER WORLDMM_ACCOUNTING_SETTLE_SECONDS \
+    WORLDMM_ACCOUNTING_SETTLE_INTERVAL_SECONDS \
+    WORLDMM_ORACLE_QUALITY_EVALUATOR WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256 \
+    WORLDMM_ORACLE_QUALITY_CONTRACT WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256 \
+    WORLDMM_QA_SHARD_MAP WORLDMM_QA_LINEAGE WORLDMM_QA_FINALIZATION_RECEIPT \
+    WORLDMM_QA_PREDICTIONS WORLDMM_QA_SHARD_MAP_SHA256 WORLDMM_QA_LINEAGE_SHA256 \
+    WORLDMM_QA_FINALIZATION_RECEIPT_SHA256 WORLDMM_QA_PREDICTIONS_SHA256; do
+    [ -n "${!name:-}" ] || continue
+    case "${!name}" in
+      *[,[:cntrl:]]*)
+        echo "unsafe sbatch export: $name" >&2
+        return 1
+        ;;
+    esac
+    stage_exports+=",$name=${!name}"
+  done
+  if [ "$stage" = teacher_oracle_gate ]; then
+    for name in WORLDMM_CONTINUE_RECEIPT_KEY_ID \
+      WORLDMM_CONTINUE_RECEIPT_SIGNING_KEY; do
+      [ -n "${!name:-}" ] || {
+        echo "missing gate receipt signing input: $name" >&2
+        return 1
+      }
+      case "${!name}" in
+        *[,[:cntrl:]]*)
+          echo "unsafe gate receipt signing input: $name" >&2
+          return 1
+          ;;
+      esac
+      stage_exports+=",$name=${!name}"
+    done
+  fi
+  local args=(
+    "$SBATCH" --parsable --no-requeue --hold
+    "--job-name=worldmm-${WORLDMM_RUN_ID}-${stage}"
+    "--comment=${WORLDMM_RUN_ID}:${WORLDMM_DAG_PHASE}:${stage}"
+    "--output=$root/logs/${stage}-%j.out"
+    "--error=$root/logs/${stage}-%j.err"
+    "--partition=$partition" "--nodes=$nodes"
+    "--cpus-per-task=$cpus" "--mem=$memory" "--time=$walltime"
+    "--export=$stage_exports"
+  )
+  [ "$gpus" = 0 ] || args+=("--gpus-per-node=$gpus")
+  [ -z "$dependency" ] || args+=("--dependency=${dependency_kind}:$dependency")
+  # Persist uncertainty before invoking sbatch.  A shell interruption or a
+  # nonzero return can otherwise leave a real held job with no reconcilable ID.
+  unknown_submission=1
+  printf '{"run_id":"%s","stage":"%s","identity":"%s:%s:%s","event":"submission-unknown-before-sbatch"}\n' \
+    "$WORLDMM_RUN_ID" "$stage" "$WORLDMM_RUN_ID" "$WORLDMM_DAG_PHASE" "$stage" >> "$attempt_journal"
+  job="$("${args[@]}" "$stage_script")"
+  job="${job%%;*}"
+  if [[ ! "$job" =~ ^[1-9][0-9]*$ ]]; then
+    printf '{"stage":"%s","event":"unparseable-job-id"}\n' \
+      "$stage" >> "$attempt_journal"
+    echo "untrustworthy sbatch job id" >&2
+    return 1
+  fi
+  submitted_job_ids+=("$job")
+  printf '{"stage":"%s","identity":"%s:%s:%s","event":"submission-reconciled","job_id":"%s"}\n' \
+    "$stage" "$WORLDMM_RUN_ID" "$WORLDMM_DAG_PHASE" "$stage" "$job" >> "$attempt_journal"
+  unknown_submission=0
+  submitted_job_id="$job"
+  if [[ "$stage" =~ ^teacher_oracle_(geometry|semantic|place)$ ]]; then
+    WORLDMM_EXPECTATION_STAGE="$stage" WORLDMM_EXPECTATION_JOB_ID="$job" \
+      "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$root/summary" <<'PY'
+import hashlib, json, os
+from pathlib import Path
+
+summary = Path(os.sys.argv[1])
+payload = {
+    "schema_version": 1,
+    "kind": "ProviderAttemptExpectationV1",
+    "stage": os.environ["WORLDMM_EXPECTATION_STAGE"],
+    "job_id": os.environ["WORLDMM_EXPECTATION_JOB_ID"],
+    "attempt": os.environ["WORLDMM_EXPECTATION_JOB_ID"],
+    "input_sha256": os.environ["WORLDMM_PLAN_SHA256"],
+    "resource_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+    "code_sha256": os.environ["WORLDMM_CODE_SHA"],
+    "approval_sha256": hashlib.sha256(Path(os.environ["WORLDMM_APPROVAL_FILE"]).read_bytes()).hexdigest(),
+}
+target = summary / f"{payload['stage']}.expectation.json"
+encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    os.write(fd, encoded)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  fi
+}
+if [ "$WORLDMM_DAG_PHASE" = phase-a ]; then
+  if [ "$WORLDMM_ORACLE_SUBMISSION_SURFACE" = provider ]; then
+    verify "$WORLDMM_APPROVAL_FILE" phase_a
+  fi
+  prevalidate_submission
+  if [ "$WORLDMM_ORACLE_SUBMISSION_SURFACE" = preflight ]; then
+    submit teacher_oracle_preflight || exit 1
+    preflight="$submitted_job_id"
+    preflight_jobs="$root/summary/dag_jobs.preflight.env"
+    preflight_temporary="$root/summary/.dag_jobs.preflight.env.${BASHPID}.tmp"
+    printf '%s\n' "PREFLIGHT_JOB_ID=$preflight" > "$preflight_temporary"
+    mv -f "$preflight_temporary" "$preflight_jobs"
+    "$SCONTROL" release "$preflight" || {
+      unknown_submission=1
+      printf '{"phase":"phase-a","event":"release-failed","job_id":"%s"}\n' "$preflight" >> "$attempt_journal"
+      exit 1
+    }
+    transaction_committed=1
+    printf '{"phase":"phase-a","surface":"preflight","event":"submitted-and-released"}\n' >> "$attempt_journal"
+    exit 0
+  fi
+  [ "$WORLDMM_ORACLE_SUBMISSION_SURFACE" = provider ] || exit 2
+  preflight="$(
+    "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+      "$root/summary/dag_jobs.preflight.env" \
+      "$root/diagnostics/teacher_oracle_preflight.seal" \
+      "$WORLDMM_PREFLIGHT_SEAL_SHA256" "$WORLDMM_SLURM_CLUSTER" \
+      "${WORLDMM_SACCT:-sacct}" "$WORLDMM_ACCOUNTING_SETTLE_SECONDS" \
+      "$WORLDMM_ACCOUNTING_SETTLE_INTERVAL_SECONDS" <<'PY'
+import hashlib, json, subprocess, sys, time
+from pathlib import Path
+from worldmm_smvqa.slurm_accounting import (
+    decode_accounting, is_nonterminal, require_success, sacct_command,
+)
+
+manifest, seal = map(Path, sys.argv[1:3])
+expected, cluster, sacct, seconds, interval = sys.argv[3:]
+value = manifest.read_text(encoding="utf-8").strip()
+import re
+match = re.fullmatch(r"PREFLIGHT_JOB_ID=([1-9][0-9]*)", value)
+if match is None:
+    raise SystemExit("invalid preflight job manifest")
+raw = seal.read_bytes()
+if hashlib.sha256(raw).hexdigest() != expected:
+    raise SystemExit("preflight seal digest is not approval-bound")
+payload = json.loads(raw)
+job_id = match.group(1)
+if payload.get("kind") != "PreflightSealV1" or payload.get("job_id") != job_id:
+    raise SystemExit("preflight seal allocation identity mismatch")
+if set(payload) != {
+    "schema_version", "kind", "job_id", "measured_audit",
+    "measured_validation", "selected_sensor_inventory_digest",
+    "resource_config_sha256", "remote_snapshot_sha256",
+} or payload.get("schema_version") != 1:
+    raise SystemExit("preflight seal schema is not closed")
+for name in ("measured_audit", "measured_validation"):
+    descriptor = payload.get(name)
+    if not isinstance(descriptor, dict) or set(descriptor) != {
+        "sha256", "uid", "mode", "nlink", "device", "inode", "size", "mtime_ns"
+    } or not re.fullmatch(r"[0-9a-f]{64}", str(descriptor.get("sha256"))):
+        raise SystemExit("preflight seal measured descriptor is invalid")
+if not re.fullmatch(r"[0-9a-f]{64}", str(payload.get("selected_sensor_inventory_digest"))):
+    raise SystemExit("preflight seal inventory binding is invalid")
+try:
+    deadline = time.monotonic() + int(seconds)
+    poll = float(interval)
+except ValueError as exc:
+    raise SystemExit("invalid approval-bound preflight settle policy") from exc
+if poll <= 0 or deadline <= time.monotonic():
+    raise SystemExit("invalid approval-bound preflight settle policy")
+while True:
+    try:
+        record = decode_accounting(
+            subprocess.check_output(
+                sacct_command(sacct=sacct, cluster=cluster, job_id=job_id), text=True
+            ),
+            cluster=cluster,
+            job_id=job_id,
+        )
+        if is_nonterminal(record):
+            raise RuntimeError("preflight allocation is still nonterminal")
+        require_success(record)
+        break
+    except RuntimeError:
+        pass
+    except ValueError as exc:
+        # A missing row can legitimately lag Slurm completion; malformed or terminal
+        # records are permanent failures and must not admit producers.
+        if "expected exactly one allocation row, got 0" not in str(exc):
+            raise SystemExit(f"preflight accounting rejected: {exc}") from exc
+    except (OSError, subprocess.CalledProcessError):
+        pass
+    if time.monotonic() >= deadline:
+        raise SystemExit("preflight accounting did not settle before approved deadline")
+    time.sleep(min(poll, max(0.0, deadline - time.monotonic())))
+accounting = {
+    "schema_version": 1, "kind": "PreflightAccountingV1", "job_id": job_id,
+    "cluster": record.cluster, "sluid": record.sluid,
+    "original_sluid": record.original_sluid, "state": record.state,
+    "exit_code": record.exit_code, "restarts": record.restarts,
+    "preflight_seal_sha256": expected,
+}
+target = seal.with_name("teacher_oracle_preflight.accounting.json")
+temporary = target.with_name(f".{target.name}.{__import__('os').getpid()}.tmp")
+temporary.write_bytes(json.dumps(accounting, sort_keys=True, separators=(",", ":")).encode())
+temporary.chmod(0o600)
+temporary.replace(target)
+print(job_id)
+PY
+  )"
+  phase_a_jobs="$root/summary/dag_jobs.provider.env"
+  phase_a_manifest=()
+  producer_ids=(geometry semantic place)
+  producer_jobs=()
+  for producer in "${producer_ids[@]}"; do
+    submit "teacher_oracle_${producer}" "$preflight" || exit 1
+    job="$submitted_job_id"
+    producer_jobs+=("$job")
+    phase_a_manifest+=("PREFLIGHT_JOB_ID=$preflight" "PROVIDER_${producer^^}_JOB_ID=$job")
+    phase_a_manifest+=("PROVIDER_${producer^^}_EXPECTATION_SHA256=$(sha256sum "$root/summary/teacher_oracle_${producer}.expectation.json" | cut -d ' ' -f 1)")
+  done
+  dependency="$(IFS=:; printf '%s' "${producer_jobs[*]}")"
+  submit teacher_oracle_gate "$dependency" afterany || exit 1
+  gate="$submitted_job_id"
+  submit teacher_oracle_finalizer "$gate" afterany || exit 1
+  finalizer="$submitted_job_id"
+  phase_a_manifest+=(
+    "PROVIDER_GATE_JOB_ID=$gate"
+    "PROVIDER_GATE_TERMINAL_JOB_ID=$finalizer"
+  )
+  phase_a_temporary="$root/summary/.dag_jobs.provider.env.${BASHPID}.tmp"
+  printf '%s\n' "${phase_a_manifest[@]}" > "$phase_a_temporary"
+  mv -f "$phase_a_temporary" "$phase_a_jobs"
+  for job in "${submitted_job_ids[@]}"; do
+    "$SCONTROL" release "$job" || {
+      unknown_submission=1
+      printf '{"phase":"phase-a","event":"release-failed","job_id":"%s"}\n' "$job" >> "$attempt_journal"
+      exit 1
+    }
+  done
+  transaction_committed=1
+  printf '{"phase":"phase-a","event":"submitted-and-released"}\n' >> "$attempt_journal"
+  exit 0
+fi
+[ "$WORLDMM_DAG_PHASE" = phase-b ] || exit 2
+: "${WORLDMM_PHASE_B_APPROVAL_FILE:?second approval required}"
+receipt="$root/summary/teacher_oracle_continue.json"
+terminal="$root/summary/teacher_oracle_terminal.json"
+[ -s "$receipt" ] && [ -s "$terminal" ] || {
+  echo "sealed continue receipt and terminal are required" >&2; exit 1; }
+# Claim first. The hard link is the consumed immutable inode; do not unlink a
+# pathname after a same-owner replacement unless it still names that inode.
+used_receipt="$root/summary/.teacher_oracle_continue.used.json"
+used_terminal="$root/summary/.teacher_oracle_terminal.used.json"
+"$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+  "$receipt" "$terminal" "$used_receipt" "$used_terminal" <<'PY'
+import os
+import stat
+import sys
+from pathlib import Path
+
+receipt, terminal, used_receipt, used_terminal = map(Path, sys.argv[1:])
+def claim(source, destination, *, consume):
+    if destination.exists() or destination.is_symlink():
+        raise SystemExit("continuation was already consumed")
+    source_state = os.lstat(source)
+    if not stat.S_ISREG(source_state.st_mode):
+        raise SystemExit("continuation authority is not a regular file")
+    os.link(source, destination, follow_symlinks=False)
+    claimed = os.lstat(destination)
+    if (claimed.st_dev, claimed.st_ino) != (source_state.st_dev, source_state.st_ino):
+        raise SystemExit("continuation claim inode mismatch")
+    if consume:
+        current = os.lstat(source)
+        if (current.st_dev, current.st_ino) == (claimed.st_dev, claimed.st_ino):
+            os.unlink(source)
+claim(receipt, used_receipt, consume=True)
+try:
+    claim(terminal, used_terminal, consume=False)
+except Exception:
+    used_receipt.unlink(missing_ok=True)
+    raise
+PY
+"$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$root/summary" <<'PY'
+import hashlib, os, stat, sys
+from pathlib import Path
+
+for source_name, digest_name, target_name in (
+    ("WORLDMM_QA_SHARD_MAP", "WORLDMM_QA_SHARD_MAP_SHA256", "qa_shard_map"),
+    ("WORLDMM_QA_LINEAGE", "WORLDMM_QA_LINEAGE_SHA256", "qa_lineage"),
+    ("WORLDMM_QA_FINALIZATION_RECEIPT", "WORLDMM_QA_FINALIZATION_RECEIPT_SHA256", "qa_finalization_receipt"),
+    ("WORLDMM_QA_PREDICTIONS", "WORLDMM_QA_PREDICTIONS_SHA256", "qa_predictions"),
+):
+    source, target = Path(os.environ[source_name]), Path(sys.argv[1]) / f".{target_name}.used"
+    if target.exists() or target.is_symlink():
+        raise SystemExit(f"QA authority already consumed: {target_name}")
+    fd = os.open(source, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(fd)
+        if not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid() or state.st_nlink != 1:
+            raise SystemExit(f"unsafe QA authority: {target_name}")
+        raw = os.read(fd, state.st_size + 1)
+        if len(raw) != state.st_size or os.fstat(fd).st_size != state.st_size:
+            raise SystemExit(f"QA authority changed while claimed: {target_name}")
+        if hashlib.sha256(raw).hexdigest() != os.environ[digest_name]:
+            raise SystemExit(f"QA authority digest mismatch: {target_name}")
+        os.link(source, target, follow_symlinks=False)
+        claimed = os.lstat(target)
+        if (claimed.st_dev, claimed.st_ino) != (state.st_dev, state.st_ino):
+            raise SystemExit(f"QA authority inode mismatch: {target_name}")
+    finally:
+        os.close(fd)
+PY
+export WORLDMM_QA_SHARD_MAP="$root/summary/.qa_shard_map.used"
+export WORLDMM_QA_LINEAGE="$root/summary/.qa_lineage.used"
+export WORLDMM_QA_FINALIZATION_RECEIPT="$root/summary/.qa_finalization_receipt.used"
+export WORLDMM_QA_PREDICTIONS="$root/summary/.qa_predictions.used"
+WORLDMM_CONTINUE_RECEIPT="$used_receipt" \
+  WORLDMM_CONTINUE_TERMINAL="$used_terminal" \
+  verify "$WORLDMM_PHASE_B_APPROVAL_FILE" phase_b
+prevalidate_submission
+# verify_approval consumed and verified the claimed terminal descriptor.
+export WORLDMM_CONTINUE_RECEIPT="$used_receipt"
+phase_b_jobs="$root/summary/dag_jobs.env"
+phase_b_manifest=()
+qa_jobs=()
+for variant in E0 T0 T1; do
+  submit "teacher_oracle_${variant}_materialize" || exit 1
+  materialize="$submitted_job_id"
+  submit "teacher_oracle_${variant}_retrieve" "$materialize" || exit 1
+  retrieve="$submitted_job_id"
+  submit "teacher_oracle_${variant}_qa" "$retrieve" || exit 1
+  qa="$submitted_job_id"
+  qa_jobs+=("$qa")
+  phase_b_manifest+=(
+    "MATERIALIZE_${variant}_JOB_ID=$materialize"
+    "RETRIEVE_${variant}_JOB_ID=$retrieve"
+    "QA_${variant}_JOB_ID=$qa"
+  )
+done
+dependency="$(IFS=:; printf '%s' "${qa_jobs[*]}")"
+submit teacher_oracle_evaluator "$dependency" || exit 1
+evaluator="$submitted_job_id"
+submit teacher_oracle_finalizer_phase_b "$evaluator" || exit 1
+finalizer="$submitted_job_id"
+phase_b_manifest+=(
+  "EVALUATE_JOB_ID=$evaluator"
+  "FINALIZE_JOB_ID=$finalizer"
+)
+phase_b_temporary="$root/summary/.dag_jobs.env.${BASHPID}.tmp"
+printf '%s\n' "${phase_b_manifest[@]}" > "$phase_b_temporary"
+mv -f "$phase_b_temporary" "$phase_b_jobs"
+for job in "${submitted_job_ids[@]}"; do
+  "$SCONTROL" release "$job" || {
+    unknown_submission=1
+    printf '{"phase":"phase-b","event":"release-failed","job_id":"%s"}\n' "$job" >> "$attempt_journal"
+    exit 1
+  }
+done
+transaction_committed=1
+printf '{"phase":"phase-b","event":"submitted-and-released"}\n' >> "$attempt_journal"
+"""
+    )
+
+
+def teacher_oracle_preflight_submit_script_text(graph: object | None = None) -> str:
+    """Render the phase-fixed preflight submitter from the validated graph."""
+    return _teacher_oracle_submit_script_text(graph)
+
+
+def teacher_oracle_provider_gate_submit_script_text(graph: object | None = None) -> str:
+    """Render the phase-fixed provider/gate submitter from the validated graph."""
+    return _teacher_oracle_submit_script_text(graph)
+
+
+def teacher_oracle_downstream_submit_script_text(graph: object | None = None) -> str:
+    """Render the continuation-gated downstream submitter from the validated graph."""
+    return _teacher_oracle_submit_script_text(graph)
+
+
+def teacher_oracle_stage_script_text(graph: object | None = None) -> str:
+    """Render the label- and student-blind teacher-oracle stage runner from graph."""
+    return teacher_oracle_dag_stage_script_text(graph)
+
+
+def teacher_oracle_dag_stage_script_text(graph: object | None = None) -> str:
+    """Render the label- and student-blind teacher-oracle stage runner."""
+    graph_json = getattr(graph, "model_dump_json", lambda: "")()
+    graph_sha256 = hashlib.sha256(graph_json.encode("utf-8")).hexdigest()
+    return (
+        f"#!/usr/bin/env bash\n# graph_sha256={graph_sha256}\n"
+        r"""set -euo pipefail
+umask 077
+verify_approval() {
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$WORLDMM_APPROVAL_PATH" "$WORLDMM_SIGNER_REGISTRY" \
+    "${WORLDMM_APPROVAL_PHASE:?}" "${WORLDMM_CONTINUE_RECEIPT:-}" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from worldmm_smvqa.attestation import (
+    AttestationError, b64url_decode, loads_strict, require_payload_sha256,
+    signing_bytes,
+)
+approval_path = Path(sys.argv[1])
+registry_path = Path(sys.argv[2])
+phase = sys.argv[3]
+receipt_path = Path(sys.argv[4])
+
+def read_secure(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid()
+            or state.st_mode & 0o077
+        ):
+            raise SystemExit("unsafe signed input")
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            raw = stream.read()
+        end = os.fstat(descriptor)
+        if (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns) != (
+            end.st_dev, end.st_ino, end.st_size, end.st_mtime_ns
+        ):
+            raise SystemExit("signed input changed while read")
+        return raw
+    finally:
+        os.close(descriptor)
+approval_raw, registry_raw = (
+    read_secure(approval_path),
+    read_secure(registry_path),
+)
+registry_sha256 = hashlib.sha256(registry_raw).hexdigest()
+if registry_sha256 != os.environ["WORLDMM_SIGNER_REGISTRY_SHA256"]:
+    raise SystemExit("signer registry trust-root digest mismatch")
+approval, registry = loads_strict(approval_raw), loads_strict(registry_raw)
+keys = registry.get("keys")
+if (
+    registry.get("schema_version") != 1
+    or not isinstance(keys, list)
+    or any(not isinstance(entry, dict) or not isinstance(entry.get("key_id"), str)
+           for entry in keys)
+    or len({entry["key_id"] for entry in keys}) != len(keys)
+):
+    raise SystemExit("invalid or ambiguous signer registry")
+require_payload_sha256(approval)
+require_payload_sha256(registry)
+if approval.get("kind") != "SignedAttestationEnvelopeV1":
+    raise SystemExit("invalid signed attestation envelope")
+signature = approval.pop("signature", None)
+key_id = approval.get("key_id")
+key = next((entry for entry in keys if entry["key_id"] == key_id), None)
+valid_key = (
+    isinstance(key, dict)
+    and not key.get("revoked")
+    and f"{phase}_approval" in key.get("purposes", [])
+)
+if not valid_key:
+    raise SystemExit("unapproved signing key")
+try:
+    start = datetime.fromisoformat(key["valid_from"].replace("Z", "+00:00"))
+    end = datetime.fromisoformat(key["valid_until"].replace("Z", "+00:00"))
+    public = b64url_decode(key["public_key"])
+    signed = b64url_decode(signature)
+    Ed25519PublicKey.from_public_bytes(public).verify(
+        signed,
+        signing_bytes(approval, f"{phase}-approval"),
+    )
+except Exception as exc:
+    raise SystemExit("approval signature verification failed") from exc
+if not start <= datetime.now(UTC) <= end:
+    raise SystemExit("signer validity failure")
+expected = {
+    "schema_version": 1,
+    "experiment_id": os.environ["WORLDMM_EXPERIMENT_ID"],
+    "profile": "teacher-oracle",
+    "phase": phase,
+    "preflight_seal_sha256": os.environ.get("WORLDMM_PREFLIGHT_SEAL_SHA256", ""),
+    "quality_contract_sha256": os.environ.get(
+        "WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256", ""
+    ),
+    "quality_evaluator_sha256": os.environ.get(
+        "WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256", ""
+    ),
+    "sensor_audit_sha256": os.environ["WORLDMM_SENSOR_AUDIT_SHA256"],
+    "provider_sha256": os.environ["WORLDMM_PROVIDER_SHA256"],
+    "split_sha256": os.environ["WORLDMM_SPLIT_SHA256"],
+    "code_sha256": os.environ["WORLDMM_CODE_SHA"],
+    "policy_sha256": os.environ["WORLDMM_POLICY_SHA256"],
+    "validation_receipt_sha256": os.environ[
+        "WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256"
+    ],
+    "experiment_config_sha256": os.environ[
+        "WORLDMM_EXPERIMENT_CONFIG_SHA256"
+    ],
+    "run_id": os.environ["WORLDMM_RUN_ID"],
+    "output_root": os.environ["WORLDMM_OUTPUT_ROOT"],
+    "frame_assets_sha256": os.environ["WORLDMM_FRAME_ASSETS_SHA256"],
+    "byte_budget_sha256": os.environ["WORLDMM_BYTE_BUDGET_SHA256"],
+    "resource_config_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+    "plan_sha256": os.environ["WORLDMM_PLAN_SHA256"],
+    "remote_snapshot_sha256": os.environ["WORLDMM_REMOTE_SNAPSHOT_SHA256"],
+    "dag_preflight_submit_script_sha256": os.environ[
+        "WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256"
+    ],
+    "dag_provider_gate_submit_script_sha256": os.environ[
+        "WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256"
+    ],
+    "dag_downstream_submit_script_sha256": os.environ[
+        "WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256"
+    ],
+    "dag_stage_script_sha256": os.environ["WORLDMM_DAG_STAGE_SCRIPT_SHA256"],
+    "oracle_provider_executable_sha256": os.environ[
+        "WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256"
+    ],
+    "oracle_stage_executable_sha256": os.environ[
+        "WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256"
+    ],
+    "registry_sha256": registry_sha256,
+    "attested_runtime_root": os.environ["WORLDMM_ATTESTED_RUNTIME_ROOT"],
+    "attested_runtime_manifest_sha256": os.environ["WORLDMM_ATTESTED_RUNTIME_MANIFEST_SHA256"],
+    "purpose": f"teacher_oracle_{phase}_execution",
+    "slurm_cluster": os.environ["WORLDMM_SLURM_CLUSTER"],
+    "accounting_settle_seconds": os.environ.get("WORLDMM_ACCOUNTING_SETTLE_SECONDS", ""),
+    "accounting_settle_interval_seconds": os.environ.get(
+        "WORLDMM_ACCOUNTING_SETTLE_INTERVAL_SECONDS", ""
+    ),
+    "producer_tuple": ["geometry", "semantic", "place"],
+    "producer_stage_tuple": [
+        "teacher_oracle_geometry", "teacher_oracle_semantic", "teacher_oracle_place",
+    ],
+    "oracle_provider_config_sha256": os.environ.get(
+        "WORLDMM_ORACLE_PROVIDER_CONFIG_SHA256", ""
+    ),
+}
+if phase == "phase_b":
+    expected.update({
+        "qa_shard_map_sha256": os.environ["WORLDMM_QA_SHARD_MAP_SHA256"],
+        "qa_lineage_sha256": os.environ["WORLDMM_QA_LINEAGE_SHA256"],
+        "qa_finalization_receipt_sha256": os.environ[
+            "WORLDMM_QA_FINALIZATION_RECEIPT_SHA256"
+        ],
+        "qa_predictions_sha256": os.environ["WORLDMM_QA_PREDICTIONS_SHA256"],
+        "continue_receipt_sha256": approval.get("continue_receipt_sha256"),
+        "terminal_sha256": approval.get("terminal_sha256"),
+    })
+if any(approval.get(name) != value for name, value in expected.items()):
+    raise SystemExit("approval binding mismatch")
+if set(approval) != set(expected) | {"kind", "key_id", "payload_sha256"}:
+    raise SystemExit("approval schema is not closed")
+if phase == "phase_b":
+    terminal_path = Path(
+        os.environ.get(
+            "WORLDMM_CONTINUE_TERMINAL",
+            str(Path(os.environ["WORLDMM_OUTPUT_ROOT"]) / "summary" / "teacher_oracle_terminal.json"),
+        )
+    )
+    terminal_raw = read_secure(terminal_path)
+    terminal = loads_strict(terminal_raw)
+    if (
+        terminal.get("provider_gate_decision") != "go"
+        or approval.get("terminal_sha256")
+        != hashlib.sha256(terminal_raw).hexdigest()
+    ):
+        raise SystemExit("Phase B approval is not bound to terminal go truth")
+    raw = read_secure(receipt_path)
+    receipt = loads_strict(raw)
+    receipt_signature = receipt.pop("signature", None)
+    require_payload_sha256(receipt)
+    if receipt.get("kind") != "SignedAttestationEnvelopeV1":
+        raise SystemExit("invalid continue receipt envelope")
+    receipt_key = next(
+        (entry for entry in keys if entry["key_id"] == receipt.get("key_id")),
+        None,
+    )
+    required_receipt_bindings = {
+        name: value
+        for name, value in expected.items()
+        if name
+        not in {
+            "schema_version",
+            "profile",
+            "phase",
+            "qa_shard_map_sha256",
+            "qa_lineage_sha256",
+            "qa_finalization_receipt_sha256",
+            "qa_predictions_sha256",
+            "continue_receipt_sha256",
+            "terminal_sha256",
+        }
+    }
+    try:
+        if (
+            not isinstance(receipt_key, dict)
+            or receipt_key.get("revoked")
+            or "continue_receipt" not in receipt_key.get("purposes", [])
+        ):
+            raise ValueError("unapproved receipt key")
+        receipt_start = datetime.fromisoformat(
+            receipt_key["valid_from"].replace("Z", "+00:00")
+        )
+        receipt_end = datetime.fromisoformat(
+            receipt_key["valid_until"].replace("Z", "+00:00")
+        )
+        if not receipt_start <= datetime.now(UTC) <= receipt_end:
+            raise ValueError("receipt signer validity failure")
+        Ed25519PublicKey.from_public_bytes(
+            b64url_decode(receipt_key["public_key"])
+        ).verify(
+            b64url_decode(receipt_signature),
+            signing_bytes(receipt, "continue-receipt"),
+        )
+    except Exception as exc:
+        raise SystemExit("continue receipt signature verification failed") from exc
+    def revalidate_provider_manifest(producer):
+        marker_path = Path(os.environ["WORLDMM_OUTPUT_ROOT"]) / "summary" / (
+            f"teacher_oracle_{producer}.json"
+        )
+        marker_raw = read_secure(marker_path)
+        marker = loads_strict(marker_raw)
+        provider = (
+            Path(os.environ["WORLDMM_OUTPUT_ROOT"]) / "oracle" / "providers" / producer
+            / f"attempt-{receipt.get('producer_jobs', {}).get(producer, {}).get('job_id', '')}"
+        )
+        descriptors = marker.get("provider_descriptors")
+        if (
+            marker.get("kind") != "ProviderAttemptManifestV1"
+            or not isinstance(descriptors, dict)
+            or marker.get("attempt") != receipt.get("producer_jobs", {}).get(
+                producer, {}
+            ).get("job_id")
+        ):
+            raise SystemExit("continuation provider lineage mismatch")
+        for relative, expected_descriptor in descriptors.items():
+            if not isinstance(relative, str) or not isinstance(expected_descriptor, dict):
+                raise SystemExit("continuation provider descriptor is invalid")
+            payload_path = provider / relative
+            if provider not in payload_path.parents:
+                raise SystemExit("continuation provider payload escapes root")
+            descriptor = os.open(
+                payload_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+            )
+            try:
+                state = os.fstat(descriptor)
+                observed = {
+                    "uid": state.st_uid,
+                    "mode": stat.S_IMODE(state.st_mode),
+                    "nlink": state.st_nlink,
+                    "device": str(state.st_dev),
+                    "inode": str(state.st_ino),
+                    "size": state.st_size,
+                    "mtime_ns": str(state.st_mtime_ns),
+                }
+                if (
+                    not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid()
+                    or state.st_mode & 0o022 or state.st_nlink != 1
+                    or any(expected_descriptor.get(name) != value
+                           for name, value in observed.items())
+                ):
+                    raise SystemExit("continuation provider descriptor changed")
+                with os.fdopen(os.dup(descriptor), "rb") as stream:
+                    digest = hashlib.file_digest(stream, "sha256").hexdigest()
+                if (
+                    expected_descriptor.get("sha256") != digest
+                    or (
+                        os.fstat(descriptor).st_size,
+                        os.fstat(descriptor).st_mtime_ns,
+                    ) != (state.st_size, state.st_mtime_ns)
+                ):
+                    raise SystemExit("continuation provider payload changed")
+            finally:
+                os.close(descriptor)
+        return hashlib.sha256(marker_raw).hexdigest()
+    actual_provider_manifests = {
+        producer: revalidate_provider_manifest(producer)
+        for producer in ("geometry", "semantic", "place")
+    }
+    valid_receipt = (
+        receipt.get("decision") == "go"
+        and receipt.get("profile") == "teacher-oracle"
+        and receipt.get("bindings") == required_receipt_bindings
+        and receipt.get("provider_manifest_sha256") == actual_provider_manifests
+        and approval.get("continue_receipt_sha256") == hashlib.sha256(raw).hexdigest()
+    )
+    if not valid_receipt:
+        raise SystemExit("Phase B approval is not bound to passing receipt")
+print(
+    json.dumps(
+        {
+            "approval_sha256": hashlib.sha256(approval_raw).hexdigest(),
+            "registry_sha256": hashlib.sha256(registry_raw).hexdigest(),
+            "key_id": key_id,
+        }
+    )
+)
+PY
+}
+[ "${1:-}" != --verify-approval ] || { verify_approval; exit 0; }
+: "${WORLDMM_STAGE:?}"
+: "${WORLDMM_REMOTE_REPO:?}"
+: "${WORLDMM_OUTPUT_ROOT:?}"
+[ "${WORLDMM_EXECUTION_PROFILE:?}" = teacher-oracle ] || exit 2
+root="${WORLDMM_OUTPUT_ROOT%/}"
+mkdir -p "$root/summary" "$root/diagnostics"
+WORLDMM_EXPERIMENT_GRAPH_FILE="${WORLDMM_EXPERIMENT_GRAPH_FILE:-$(dirname "$0")/experiment_graph.json}"
+export WORLDMM_EXPERIMENT_GRAPH_FILE
+verify_stage_allocation() {
+  local expected expected_partition expected_nodes expected_cpus
+  local expected_memory expected_time expected_gpus
+  expected="$(
+    "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+      "$WORLDMM_EXPERIMENT_GRAPH_FILE" "$WORLDMM_STAGE" <<'PY'
+import json, sys
+from pathlib import Path
+
+graph, runtime_stage = sys.argv[1:]
+name = {
+    "teacher_oracle_preflight": "preflight", "teacher_oracle_geometry": "geometry",
+    "teacher_oracle_semantic": "semantic", "teacher_oracle_place": "place",
+    "teacher_oracle_gate": "gate", "teacher_oracle_finalizer": "terminal",
+    "teacher_oracle_evaluator": "evaluator",
+    "teacher_oracle_finalizer_phase_b": "finalizer",
+}.get(runtime_stage, runtime_stage.removeprefix("teacher_oracle_").replace("E0_", "e0_").replace("T0_", "t0_").replace("T1_", "t1_"))
+config = json.loads(Path(graph).read_text(encoding="utf-8"))
+stage = next((item.get("resources") for item in config.get("stage_specs", [])
+              if isinstance(item, dict) and item.get("name") == name), None)
+if not isinstance(stage, dict) or set(stage) != {
+    "kind", "partition", "nodes", "cpus", "memory", "time", "gpus_per_node"
+}:
+    raise SystemExit("invalid graph stage resource attestation")
+memory = stage["memory"]
+memory_mb = int(memory[:-1]) * (1024 if memory.endswith("G") else 1)
+print("\t".join(str(value) for value in (
+    stage["partition"], stage["nodes"], stage["cpus"], memory_mb,
+    stage["time"], stage["gpus_per_node"],
+)))
+PY
+  )"
+  IFS=$'\t' read -r expected_partition expected_nodes expected_cpus \
+    expected_memory expected_time expected_gpus <<<"$expected"
+  [ "${SLURM_JOB_NUM_NODES:-}" = "$expected_nodes" ] || {
+    echo "Slurm node allocation does not match approved resources" >&2; return 1; }
+  [ "${SLURM_CPUS_PER_TASK:-}" = "$expected_cpus" ] || {
+    echo "Slurm CPU allocation does not match approved resources" >&2; return 1; }
+  [ "${SLURM_JOB_PARTITION:-}" = "$expected_partition" ] || {
+    echo "Slurm partition does not match approved resources" >&2; return 1; }
+  [ "${SLURM_MEM_PER_NODE:-}" = "$expected_memory" ] || {
+    echo "Slurm memory allocation does not match approved resources" >&2; return 1; }
+  [ "${SLURM_TIMELIMIT:-}" = "$expected_time" ] || {
+    echo "Slurm time allocation does not match approved resources" >&2; return 1; }
+  if [ "$expected_gpus" -gt 0 ]; then
+    [ "${SLURM_GPUS_ON_NODE:-}" = "$expected_gpus" ] || {
+      echo "Slurm GPU allocation does not match approved resources" >&2; return 1; }
+  elif [ -n "${SLURM_GPUS_ON_NODE:-}" ] && [ "${SLURM_GPUS_ON_NODE}" != 0 ]; then
+    echo "CPU oracle stage received unexpected GPUs" >&2; return 1
+  fi
+}
+run_phase_b_stage() {
+  local variant=$1 action=$2 previous output contract receipt
+  : "${WORLDMM_ORACLE_STAGE_EXECUTABLE:?approved oracle stage executable required}"
+  [ -x "$WORLDMM_ORACLE_STAGE_EXECUTABLE" ] && \
+    [ ! -L "$WORLDMM_ORACLE_STAGE_EXECUTABLE" ] || {
+    echo "oracle stage executable is unsafe" >&2; return 1; }
+  previous="$root/oracle/$variant"
+  case "$action" in
+    materialize)
+      output="$previous/typed_memory.jsonl"
+      contract="$previous/materialize.contract.json"
+      ;;
+    retrieve)
+      output="$previous/evidence_packs.jsonl"
+      contract="$previous/retrieve.contract.json"
+      ;;
+    qa)
+      output="$previous/predictions.jsonl"
+      contract="$previous/qa.contract.json"
+      ;;
+    evaluate)
+      output="$previous/metrics.json"
+      contract="$previous/evaluate.contract.json"
+      ;;
+    report) output="$previous/report.md"; contract="$previous/report.contract.json" ;;
+    *) return 2 ;;
+  esac
+  mkdir -p "$previous"
+  WORLDMM_APPROVAL_PATH="$WORLDMM_PHASE_B_APPROVAL_FILE" \
+    WORLDMM_APPROVAL_PHASE=phase_b verify_approval
+  verify_stage_allocation
+  predecessor_action=""
+  case "$action" in
+    retrieve) predecessor_action=materialize ;;
+    qa) predecessor_action=retrieve ;;
+    evaluate) predecessor_action=qa ;;
+    report) predecessor_action=evaluate ;;
+  esac
+  predecessor_receipt=""
+  if [ -n "$predecessor_action" ]; then
+    predecessor_receipt="$previous/$predecessor_action.receipt.json"
+    "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$predecessor_receipt" <<'PY'
+import hashlib, json, sys
+from pathlib import Path
+receipt = Path(sys.argv[1])
+payload = json.loads(receipt.read_text(encoding="utf-8"))
+output = Path(payload["output"])
+if not output.is_file() or payload.get("output_sha256") != hashlib.sha256(output.read_bytes()).hexdigest():
+    raise SystemExit("predecessor receipt or output digest mismatch")
+PY
+  fi
+  # The contract writer is deliberately separate from the executable: no labels,
+  # labels path, student checkpoint, or student-inference input is ever exported.
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$contract" "$variant" "$action" "$output" "$predecessor_receipt" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+contract = Path(sys.argv[1])
+variant, action, output, predecessor_receipt = sys.argv[2:]
+bindings = {name: os.environ[name] for name in (
+    "WORLDMM_EXPERIMENT_ID", "WORLDMM_SENSOR_AUDIT_SHA256",
+    "WORLDMM_PROVIDER_SHA256", "WORLDMM_SPLIT_SHA256", "WORLDMM_CODE_SHA",
+    "WORLDMM_POLICY_SHA256", "WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256",
+    "WORLDMM_EXPERIMENT_CONFIG_SHA256", "WORLDMM_RUN_ID", "WORLDMM_OUTPUT_ROOT",
+    "WORLDMM_FRAME_ASSETS_SHA256", "WORLDMM_BYTE_BUDGET_SHA256",
+    "WORLDMM_RESOURCE_CONFIG_SHA256", "WORLDMM_PLAN_SHA256",
+    "WORLDMM_SIGNER_REGISTRY_SHA256", "WORLDMM_REMOTE_SNAPSHOT_SHA256",
+    "WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256",
+    "WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256",
+    "WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256",
+    "WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256",
+    "WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256", "WORLDMM_ATTESTED_RUNTIME_ROOT",
+    "WORLDMM_QA_SHARD_MAP_SHA256", "WORLDMM_QA_LINEAGE_SHA256",
+    "WORLDMM_QA_FINALIZATION_RECEIPT_SHA256", "WORLDMM_QA_PREDICTIONS_SHA256")}
+payload = {
+    "schema_version": 1, "profile": "teacher-oracle", "result_class": "teacher_oracle",
+    "variant": variant, "stage": action, "output": output, "bindings": bindings,
+    "continue_receipt_sha256": hashlib.sha256(
+        Path(os.environ["WORLDMM_CONTINUE_RECEIPT"]).read_bytes()
+    ).hexdigest(),
+}
+if predecessor_receipt:
+    receipt = Path(predecessor_receipt)
+    payload["predecessor"] = {
+        "receipt_sha256": hashlib.sha256(receipt.read_bytes()).hexdigest(),
+        "output_sha256": json.loads(receipt.read_text(encoding="utf-8"))["output_sha256"],
+    }
+temporary = contract.with_name(f".{contract.name}.{os.getpid()}.tmp")
+temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+temporary.chmod(0o600)
+temporary.replace(contract)
+PY
+  stage_args=(
+    --stage "$action"
+    --variant "$variant"
+    --contract "$contract"
+    --out "$output"
+  )
+  if [ "$variant" = T1 ] && [ "$action" = report ]; then
+    stage_args+=(--all-variants "$root/oracle" \
+      --final-report "$root/summary/final_report.md" \
+      --manifest "$root/summary/remote_manifest.json")
+  fi
+  env -i PATH="$PATH" HOME="$HOME" \
+    WORLDMM_EXECUTION_PROFILE=teacher-oracle \
+    WORLDMM_EXPERIMENT_ID="$WORLDMM_EXPERIMENT_ID" \
+    WORLDMM_SENSOR_AUDIT_SHA256="$WORLDMM_SENSOR_AUDIT_SHA256" \
+    WORLDMM_PROVIDER_SHA256="$WORLDMM_PROVIDER_SHA256" \
+    WORLDMM_SPLIT_SHA256="$WORLDMM_SPLIT_SHA256" \
+    WORLDMM_CODE_SHA="$WORLDMM_CODE_SHA" \
+    WORLDMM_POLICY_SHA256="$WORLDMM_POLICY_SHA256" \
+    WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256="$WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256" \
+    WORLDMM_EXPERIMENT_CONFIG_SHA256="$WORLDMM_EXPERIMENT_CONFIG_SHA256" \
+    WORLDMM_RUN_ID="$WORLDMM_RUN_ID" \
+    WORLDMM_OUTPUT_ROOT="$WORLDMM_OUTPUT_ROOT" \
+    WORLDMM_FRAME_ASSETS_SHA256="$WORLDMM_FRAME_ASSETS_SHA256" \
+    WORLDMM_BYTE_BUDGET_SHA256="$WORLDMM_BYTE_BUDGET_SHA256" \
+    WORLDMM_RESOURCE_CONFIG_SHA256="$WORLDMM_RESOURCE_CONFIG_SHA256" \
+    WORLDMM_PLAN_SHA256="$WORLDMM_PLAN_SHA256" \
+    WORLDMM_SIGNER_REGISTRY_SHA256="$WORLDMM_SIGNER_REGISTRY_SHA256" \
+    WORLDMM_REMOTE_SNAPSHOT_SHA256="$WORLDMM_REMOTE_SNAPSHOT_SHA256" \
+    WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256="$WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256" \
+    WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256="$WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256" \
+    WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256="$WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256" \
+    WORLDMM_DAG_STAGE_SCRIPT_SHA256="$WORLDMM_DAG_STAGE_SCRIPT_SHA256" \
+    WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256="$WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256" \
+    WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256="$WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256" \
+    WORLDMM_ATTESTED_RUNTIME_ROOT="$WORLDMM_ATTESTED_RUNTIME_ROOT" \
+    WORLDMM_QA_SHARD_MAP_SHA256="$WORLDMM_QA_SHARD_MAP_SHA256" \
+    WORLDMM_QA_LINEAGE_SHA256="$WORLDMM_QA_LINEAGE_SHA256" \
+    WORLDMM_QA_FINALIZATION_RECEIPT_SHA256="$WORLDMM_QA_FINALIZATION_RECEIPT_SHA256" \
+    WORLDMM_QA_PREDICTIONS_SHA256="$WORLDMM_QA_PREDICTIONS_SHA256" \
+    "$WORLDMM_ORACLE_STAGE_EXECUTABLE" "${stage_args[@]}"
+  [ -s "$output" ] || {
+    echo "oracle $variant $action emitted no output" >&2
+    return 1
+  }
+  receipt="$previous/$action.receipt.json"
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$contract" "$output" "$receipt" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+contract, output, receipt = map(Path, sys.argv[1:])
+payload = json.loads(contract.read_text(encoding="utf-8"))
+payload["output_sha256"] = hashlib.sha256(output.read_bytes()).hexdigest()
+payload["contract_sha256"] = hashlib.sha256(contract.read_bytes()).hexdigest()
+temporary = receipt.with_name(f".{receipt.name}.{os.getpid()}.tmp")
+temporary.write_text(json.dumps(payload, sort_keys=True, separators=(",", ":")) + "\n")
+temporary.chmod(0o600)
+temporary.replace(receipt)
+PY
+  if [ "$variant" = T1 ] && [ "$action" = report ]; then
+    "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$root" <<'PY'
+import hashlib, json, os, sys
+from pathlib import Path
+from worldmm_smvqa.report import OracleRunManifest
+root = Path(sys.argv[1])
+receipts = []
+for variant in ("E0", "T0", "T1"):
+    for stage in ("materialize", "retrieve", "qa", "evaluate", "report"):
+        path = root / "oracle" / variant / f"{stage}.receipt.json"
+        if not path.is_file():
+            raise SystemExit(f"missing oracle receipt: {path}")
+        receipts.append(json.loads(path.read_text(encoding="utf-8")))
+identities = [value["bindings"] for value in receipts]
+if any(value != identities[0] for value in identities[1:]):
+    raise SystemExit(
+        "oracle variants have mismatched frame/byte/prompt/model/split identities"
+    )
+for variant in ("E0", "T0", "T1"):
+    metrics = json.loads(
+        (root / "oracle" / variant / "metrics.json").read_text(encoding="utf-8")
+    )
+    if metrics.get("risk_gate") != "pass" or not {
+        "Ans-F1",
+        "QA-Acc",
+        "QA-MRR",
+    } <= metrics.keys():
+        raise SystemExit(f"oracle risk or metric gate failed for {variant}")
+manifest = root / "summary/remote_manifest.json"
+if not manifest.is_file():
+    raise SystemExit("final oracle executable did not emit OracleRunManifest")
+OracleRunManifest.model_validate_json(manifest.read_text(encoding="utf-8"))
+report = root / "summary/final_report.md"
+if not report.is_file() or not report.read_text(encoding="utf-8").strip():
+    raise SystemExit("final oracle executable did not emit final report")
+PY
+  fi
+}
+verify_stage_allocation
+"$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - <<'PY'
+import hashlib, json, os, stat, subprocess, sys, sysconfig
+from pathlib import Path
+
+def descriptor(path):
+    state = os.lstat(path)
+    value = {
+        "st_dev": state.st_dev, "st_ino": state.st_ino, "st_mode": state.st_mode,
+        "st_uid": state.st_uid, "st_gid": state.st_gid, "st_size": state.st_size,
+        "st_mtime_ns": state.st_mtime_ns,
+    }
+    if stat.S_ISLNK(state.st_mode):
+        value["link_target"] = os.readlink(path)
+    return value
+
+def attest(path, expected=None, executable=False, require_safe_permissions=True):
+    before = descriptor(path)
+    if not stat.S_ISREG(before["st_mode"]) or (
+        require_safe_permissions and before["st_mode"] & 0o022
+    ):
+        raise SystemExit(f"unsafe allocation input: {path}")
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        with os.fdopen(os.dup(fd), "rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        if expected is not None and digest != expected:
+            raise SystemExit(f"allocation input digest mismatch: {path}")
+        if executable and not before["st_mode"] & 0o111:
+            raise SystemExit(f"allocation input is not executable: {path}")
+        if descriptor(path) != before or descriptor(path) != {
+            "st_dev": os.fstat(fd).st_dev, "st_ino": os.fstat(fd).st_ino,
+            "st_mode": os.fstat(fd).st_mode, "st_uid": os.fstat(fd).st_uid,
+            "st_gid": os.fstat(fd).st_gid, "st_size": os.fstat(fd).st_size,
+            "st_mtime_ns": os.fstat(fd).st_mtime_ns,
+        }:
+            raise SystemExit(f"allocation input changed: {path}")
+        return digest, before
+    finally:
+        os.close(fd)
+
+def seal_tree(root, allow_symlinks=True):
+    root = Path(root)
+    root_value = descriptor(root)
+    if not stat.S_ISDIR(root_value["st_mode"]) or root_value["st_mode"] & 0o022:
+        raise SystemExit(f"unsafe runtime closure root: {root}")
+    entries = {}
+    def visit(directory, relative=Path(".")):
+        with os.scandir(directory) as children:
+            for child in sorted(children, key=lambda item: item.name):
+                path = Path(child.path)
+                item_relative = (relative / child.name).as_posix()
+                value = descriptor(path)
+                mode = value["st_mode"]
+                if not (
+                    stat.S_ISREG(mode) or stat.S_ISDIR(mode) or stat.S_ISLNK(mode)
+                ):
+                    raise SystemExit(f"unsafe runtime closure entry: {path}")
+                if stat.S_ISLNK(mode) and not allow_symlinks:
+                    raise SystemExit(f"runtime root closure contains a forbidden symlink: {path}")
+                if stat.S_ISREG(mode):
+                    value["sha256"] = attest(path, require_safe_permissions=False)[0]
+                entries[item_relative] = value
+                if stat.S_ISDIR(mode):
+                    visit(path, relative / child.name)
+    visit(root)
+    encoded = json.dumps(entries, sort_keys=True, separators=(",", ":")).encode()
+    return root_value, entries, hashlib.sha256(encoded).hexdigest()
+
+def bind_tree(name, value):
+    if not isinstance(value, dict) or set(value) != {
+        "path", "descriptor", "entries", "inventory_sha256"
+    } or not isinstance(value["path"], str) or not Path(value["path"]).is_absolute():
+        raise SystemExit(f"runtime {name} closure schema is invalid")
+    observed_root, observed_entries, observed_digest = seal_tree(
+        value["path"], allow_symlinks=name != "root"
+    )
+    if (
+        value["descriptor"] != observed_root or value["entries"] != observed_entries
+        or value["inventory_sha256"] != observed_digest
+    ):
+        raise SystemExit(f"runtime {name} closure changed or is incomplete")
+
+def bind_binary(name, value, executable=False):
+    if not isinstance(value, dict) or set(value) != {"path", "sha256", "descriptor"}:
+        raise SystemExit(f"runtime {name} schema is invalid")
+    path = Path(value["path"])
+    if not path.is_absolute() or not isinstance(value["sha256"], str):
+        raise SystemExit(f"runtime {name} path is invalid")
+    digest, observed_descriptor = attest(path, value["sha256"], executable)
+    if value["descriptor"] != observed_descriptor:
+        raise SystemExit(f"runtime {name} descriptor changed")
+    return path, digest
+
+def ldd_closure(interpreter):
+    result = subprocess.run(["ldd", str(interpreter)], check=False, text=True,
+                            capture_output=True)
+    if result.returncode:
+        raise SystemExit("could not resolve interpreter shared-library closure")
+    paths = set()
+    for line in result.stdout.splitlines():
+        candidate = line.split("=>", 1)[-1].strip().split(" (", 1)[0]
+        if candidate.startswith("/"):
+            paths.add(Path(candidate).resolve(strict=True))
+    loaders = [path for path in paths if "ld-linux" in path.name or "ld-musl" in path.name]
+    if len(loaders) != 1:
+        raise SystemExit("interpreter dynamic loader closure is ambiguous")
+    loader = loaders[0]
+    return loader, sorted(paths - {loader})
+
+manifest_path = Path(os.environ["WORLDMM_ATTESTED_RUNTIME_MANIFEST"])
+manifest_fd = os.open(manifest_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    manifest_state = os.fstat(manifest_fd)
+    if not stat.S_ISREG(manifest_state.st_mode) or manifest_state.st_uid != os.getuid() or manifest_state.st_mode & 0o077:
+        raise SystemExit("unsafe runtime content manifest")
+    manifest_raw = os.read(manifest_fd, manifest_state.st_size + 1)
+    if len(manifest_raw) != manifest_state.st_size or os.fstat(manifest_fd).st_size != manifest_state.st_size:
+        raise SystemExit("runtime content manifest changed while read")
+finally:
+    os.close(manifest_fd)
+if hashlib.sha256(manifest_raw).hexdigest() != os.environ["WORLDMM_ATTESTED_RUNTIME_MANIFEST_SHA256"]:
+    raise SystemExit("runtime content manifest digest mismatch")
+manifest = json.loads(manifest_raw)
+if set(manifest) != {
+    "schema_version", "kind", "root", "entry", "interpreter", "base_prefix",
+    "stdlib", "loader", "shared_libraries"
+} or manifest["schema_version"] != 1 or manifest["kind"] != "RuntimeContentManifestV1":
+    raise SystemExit("runtime content manifest schema is invalid")
+
+runtime_root = Path(os.environ["WORLDMM_ATTESTED_RUNTIME_ROOT"])
+if (
+    not runtime_root.is_absolute() or stat.S_ISLNK(os.lstat(runtime_root).st_mode)
+    or not isinstance(manifest["root"], dict)
+    or manifest["root"].get("path") != str(runtime_root)
+):
+    raise SystemExit("runtime root is not manifest-bound")
+bind_tree("root", manifest["root"])
+entry = runtime_root / "bin" / "python"
+if not isinstance(manifest["entry"], dict) or manifest["entry"].get("path") != "bin/python":
+    raise SystemExit("runtime entry is invalid")
+entry_digest, entry_descriptor = attest(entry, manifest["entry"].get("sha256"), True)
+if manifest["entry"].get("descriptor") != entry_descriptor:
+    raise SystemExit("runtime entry descriptor changed")
+
+interpreter_path, _ = bind_binary("interpreter", manifest["interpreter"], True)
+actual_interpreter = Path(sys.executable).resolve(strict=True)
+if actual_interpreter != interpreter_path:
+    raise SystemExit("runtime entry exec target is not manifest-bound")
+bind_tree("base_prefix", manifest["base_prefix"])
+bind_tree("stdlib", manifest["stdlib"])
+if Path(manifest["base_prefix"]["path"]) != Path(sys.base_prefix).resolve(strict=True):
+    raise SystemExit("actual sys.base_prefix is not manifest-bound")
+if Path(manifest["stdlib"]["path"]) != Path(sysconfig.get_path("stdlib")).resolve(strict=True):
+    raise SystemExit("actual standard library is not manifest-bound")
+
+loader, libraries = ldd_closure(interpreter_path)
+loader_path, _ = bind_binary("loader", manifest["loader"])
+if loader_path != loader:
+    raise SystemExit("dynamic loader is not manifest-bound")
+if not isinstance(manifest["shared_libraries"], list):
+    raise SystemExit("shared-library closure schema is invalid")
+observed_libraries = []
+for value in manifest["shared_libraries"]:
+    path, _ = bind_binary("shared library", value)
+    observed_libraries.append(path)
+if observed_libraries != libraries:
+    raise SystemExit("interpreter shared-library closure changed or is incomplete")
+
+stage = os.environ.get("WORLDMM_ORACLE_STAGE_EXECUTABLE")
+if stage:
+    attest(Path(stage), os.environ["WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256"], True)
+provider = os.environ.get("WORLDMM_ORACLE_PROVIDER_EXECUTABLE")
+if provider:
+    attest(Path(provider), os.environ["WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256"], True)
+config = os.environ.get("WORLDMM_ORACLE_PROVIDER_CONFIG")
+config_digest = os.environ.get("WORLDMM_ORACLE_PROVIDER_CONFIG_SHA256")
+if config:
+    if not config_digest:
+        raise SystemExit("provider config is not approval-bound")
+    attest(Path(config), config_digest)
+attest(Path(os.environ["WORLDMM_EXPERIMENT_GRAPH_FILE"]),
+       os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"])
+PY
+case "$WORLDMM_STAGE" in
+teacher_oracle_preflight)
+  : "${WORLDMM_SENSOR_MANIFEST:?approved sensor manifest required}"
+  : "${WORLDMM_SENSOR_OBSERVATIONS:?approved sensor observations required}"
+  : "${WORLDMM_SENSOR_FRAME_ROOT:?approved sensor frame root required}"
+  measured_audit="$root/diagnostics/teacher_oracle_sensor_audit.measured.json"
+  measured_validation="$root/diagnostics/teacher_oracle_validation.measured.json"
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/worldmm-smvqa" audit-sensors \
+    --sensor-manifest "$WORLDMM_SENSOR_MANIFEST" \
+    --observations "$WORLDMM_SENSOR_OBSERVATIONS" \
+    --frame-root "$WORLDMM_SENSOR_FRAME_ROOT" --out "$measured_audit"
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/worldmm-smvqa" validate-teacher-oracle-inputs \
+    --sensor-audit "$measured_audit" \
+    --experiment-config "$WORLDMM_EXPERIMENT_GRAPH_FILE" --out "$measured_validation"
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$measured_audit" "$measured_validation" <<'PY'
+import hashlib
+import json
+import os
+import re
+import sys
+from pathlib import Path
+
+audit_raw, validation_raw = (Path(path).read_bytes() for path in sys.argv[1:])
+audit, value = (json.loads(raw) for raw in (audit_raw, validation_raw))
+if not isinstance(audit, dict) or not isinstance(value, dict):
+    raise SystemExit("measured preflight outputs must be objects")
+if value.get("status") != "pass" or value.get("blockers") != []:
+    raise SystemExit("measured validation is not a strict pass")
+if value.get("profile") != "teacher-oracle" or value.get(
+    "experiment_id"
+) != os.environ["WORLDMM_EXPERIMENT_ID"]:
+    raise SystemExit("measured validation identity mismatch")
+inventory = value.get("selected_sensor_inventory_digest")
+if not isinstance(inventory, str) or re.fullmatch(r"[0-9a-f]{64}", inventory) is None:
+    raise SystemExit("measured validation has invalid sensor inventory digest")
+if value.get("sensor_audit_digest") not in {
+    os.environ["WORLDMM_SENSOR_AUDIT_SHA256"], hashlib.sha256(audit_raw).hexdigest()
+}:
+    raise SystemExit("measured validation is not bound to measured audit")
+PY
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$root" "$measured_audit" "$measured_validation" <<'PY'
+import hashlib, json, os, stat, sys
+from pathlib import Path
+
+root, audit, validation = map(Path, sys.argv[1:])
+def sealed_descriptor(path):
+    fd = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(fd)
+        if not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid() or state.st_mode & 0o022:
+            raise SystemExit(f"unsafe measured preflight output: {path}")
+        raw = os.read(fd, state.st_size + 1)
+        if len(raw) != state.st_size:
+            raise SystemExit(f"measured preflight output changed: {path}")
+        return {
+            "sha256": hashlib.sha256(raw).hexdigest(), "uid": state.st_uid,
+            "mode": stat.S_IMODE(state.st_mode), "nlink": state.st_nlink,
+            "device": str(state.st_dev), "inode": str(state.st_ino),
+            "size": state.st_size, "mtime_ns": str(state.st_mtime_ns),
+        }, raw
+    finally:
+        os.close(fd)
+audit_descriptor, audit_raw = sealed_descriptor(audit)
+validation_descriptor, validation_raw = sealed_descriptor(validation)
+validation_value = json.loads(validation_raw)
+payload = {
+    "schema_version": 1, "kind": "PreflightSealV1",
+    "job_id": os.environ.get("SLURM_JOB_ID", ""),
+    "measured_audit": audit_descriptor,
+    "measured_validation": validation_descriptor,
+    "selected_sensor_inventory_digest": validation_value["selected_sensor_inventory_digest"],
+    "resource_config_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+    "remote_snapshot_sha256": os.environ["WORLDMM_REMOTE_SNAPSHOT_SHA256"],
+}
+if not payload["job_id"].isdigit():
+    raise SystemExit("preflight allocation identity is unavailable")
+target = root / "diagnostics/teacher_oracle_preflight.seal"
+fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+try:
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    os.write(fd, encoded)
+    os.fsync(fd)
+finally:
+    os.close(fd)
+PY
+  ;;
+teacher_oracle_geometry|teacher_oracle_semantic|teacher_oracle_place)
+  WORLDMM_APPROVAL_PATH="$WORLDMM_APPROVAL_FILE" \
+    WORLDMM_APPROVAL_PHASE=phase_a verify_approval
+  [ -f "$root/diagnostics/teacher_oracle_preflight.seal" ] || exit 1
+  producer="${WORLDMM_STAGE#teacher_oracle_}"
+  : "${WORLDMM_ORACLE_PROVIDER_EXECUTABLE:?}"
+  : "${WORLDMM_ORACLE_PROVIDER_CONFIG:?}"
+  attempt="${SLURM_JOB_ID:?provider attempt identity is unavailable}"
+  case "$attempt" in *[!0-9]*|'') exit 2 ;; esac
+  provider_out="$root/oracle/providers/$producer/attempt-$attempt"
+  mkdir -p "$root/oracle/providers/$producer"
+  mkdir "$provider_out" || {
+    echo "provider attempt root already exists" >&2; exit 1; }
+  env -i \
+    PATH="$PATH" \
+    WORLDMM_OUTPUT_ROOT="$root" \
+    WORLDMM_SENSOR_AUDIT_SHA256="$WORLDMM_SENSOR_AUDIT_SHA256" \
+    WORLDMM_ORACLE_PROVIDER_CONFIG="$WORLDMM_ORACLE_PROVIDER_CONFIG" \
+    WORLDMM_ORACLE_PRODUCER_ID="$producer" \
+    "$WORLDMM_ORACLE_PROVIDER_EXECUTABLE" \
+      --producer "$producer" \
+      --config "$WORLDMM_ORACLE_PROVIDER_CONFIG" \
+      --out "$provider_out"
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - \
+    "$provider_out" "$root" "$producer" <<'PY'
+import hashlib
+import json
+import os
+import stat
+import sys
+from pathlib import Path
+
+provider, root = map(Path, sys.argv[1:3])
+producer = sys.argv[3]
+def sealed_file(path):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid()
+            or state.st_mode & 0o022 or state.st_nlink != 1
+        ):
+            raise SystemExit(f"unsafe provider payload: {path}")
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            digest = hashlib.file_digest(stream, "sha256").hexdigest()
+        end = os.fstat(descriptor)
+        if (state.st_dev, state.st_ino, state.st_size, state.st_mtime_ns) != (
+            end.st_dev, end.st_ino, end.st_size, end.st_mtime_ns
+        ):
+            raise SystemExit(f"provider payload changed while sealed: {path}")
+        return {
+            "sha256": digest,
+            "uid": state.st_uid,
+            "mode": stat.S_IMODE(state.st_mode),
+            "nlink": state.st_nlink,
+            "device": str(state.st_dev),
+            "inode": str(state.st_ino),
+            "size": state.st_size,
+            "mtime_ns": str(state.st_mtime_ns),
+        }
+    finally:
+        os.close(descriptor)
+
+root_state = os.lstat(provider)
+if (
+    not stat.S_ISDIR(root_state.st_mode) or root_state.st_uid != os.getuid()
+    or root_state.st_mode & 0o022 or root_state.st_nlink < 2
+):
+    raise SystemExit("unsafe provider attempt root")
+files = sorted(path for path in provider.rglob("*") if path.is_file() and not path.is_symlink())
+if not files:
+    raise SystemExit("provider emitted no artifacts")
+descriptors = {str(path.relative_to(provider)): sealed_file(path) for path in files}
+expectation_path = root / "summary" / f"teacher_oracle_{producer}.expectation.json"
+expectation_fd = os.open(expectation_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+try:
+    expectation_state = os.fstat(expectation_fd)
+    expectation_raw = os.read(expectation_fd, expectation_state.st_size + 1)
+    if (
+        not stat.S_ISREG(expectation_state.st_mode)
+        or expectation_state.st_uid != os.getuid()
+        or stat.S_IMODE(expectation_state.st_mode) != 0o600
+        or expectation_state.st_nlink != 1
+        or len(expectation_raw) != expectation_state.st_size
+    ):
+        raise SystemExit("unsafe provider attempt expectation")
+finally:
+    os.close(expectation_fd)
+expectation = json.loads(expectation_raw)
+if expectation != {
+    "schema_version": 1, "kind": "ProviderAttemptExpectationV1",
+    "stage": f"teacher_oracle_{producer}", "job_id": os.environ["SLURM_JOB_ID"],
+    "attempt": os.environ["SLURM_JOB_ID"], "input_sha256": os.environ["WORLDMM_PLAN_SHA256"],
+    "resource_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+    "code_sha256": os.environ["WORLDMM_CODE_SHA"],
+    "approval_sha256": hashlib.sha256(
+        Path(os.environ["WORLDMM_APPROVAL_FILE"]).read_bytes()
+    ).hexdigest(),
+}:
+    raise SystemExit("provider attempt expectation mismatch")
+expectation_sha256 = hashlib.sha256(expectation_raw).hexdigest()
+payload = {
+    "schema_version": 1,
+    "kind": "ProviderAttemptManifestV1",
+    "producer_id": producer,
+    "stage": f"teacher_oracle_{producer}",
+    "attempt": os.environ.get("SLURM_JOB_ID", ""),
+    "attempt_root": str(provider),
+    "attempt_root_device": str(root_state.st_dev),
+    "attempt_root_inode": str(root_state.st_ino),
+    "success_marker": "teacher-oracle-producer-v1",
+    "provider_executable_sha256": os.environ["WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256"],
+    "provider_config_sha256": os.environ["WORLDMM_ORACLE_PROVIDER_CONFIG_SHA256"],
+    "resource_config_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+    "code_sha256": os.environ["WORLDMM_CODE_SHA"],
+    "input_bindings": {
+        "sensor_audit_sha256": os.environ["WORLDMM_SENSOR_AUDIT_SHA256"],
+        "provider_sha256": os.environ["WORLDMM_PROVIDER_SHA256"],
+        "split_sha256": os.environ["WORLDMM_SPLIT_SHA256"],
+    },
+    "provider_artifacts": {name: value["sha256"] for name, value in descriptors.items()},
+    "provider_descriptors": descriptors,
+    "coverage": sorted(descriptors),
+    "causality": "sensor-audit-bound",
+    "expectation_sha256": expectation_sha256,
+}
+if not payload["attempt"].isdigit():
+    raise SystemExit("provider attempt identity is unavailable")
+temporary = root / "summary" / f".teacher_oracle_{producer}.json.tmp"
+temporary.write_text(json.dumps(payload, sort_keys=True), encoding="utf-8")
+temporary.chmod(0o600)
+temporary.replace(root / "summary" / f"teacher_oracle_{producer}.json")
+PY
+  ;;
+teacher_oracle_gate)
+  WORLDMM_APPROVAL_PATH="$WORLDMM_APPROVAL_FILE" \
+    WORLDMM_APPROVAL_PHASE=phase_a verify_approval
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$root" <<'PY'
+import hashlib, json, os, re, stat, subprocess, sys, time
+from pathlib import Path
+
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
+from worldmm_smvqa.attestation import (
+    b64url_decode, b64url_encode, canonicalize, loads_strict,
+    require_payload_sha256, signing_bytes, with_payload_sha256,
+)
+from worldmm_smvqa.slurm_accounting import (
+    decode_accounting, is_nonterminal, require_success, sacct_command,
+)
+
+root = Path(sys.argv[1])
+producers = ("geometry", "semantic", "place")
+summary = root / "summary"
+result_target = summary / "provider_gate_result.json"
+_SHA256 = re.compile(r"^[0-9a-f]{64}$")
+def write_once(path, value):
+    encoded = canonicalize(value) + b"\n"
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+def inventory(jobs):
+    values = []
+    for producer in producers:
+        marker = summary / f"teacher_oracle_{producer}.json"
+        values.append({
+            "producer_id": producer,
+            "job_id": jobs.get(f"PROVIDER_{producer.upper()}_JOB_ID", ""),
+            "marker_sha256": (
+                hashlib.sha256(marker.read_bytes()).hexdigest()
+                if marker.is_file() else None
+            ),
+        })
+    return values
+
+def failure(kind, detail, jobs):
+    payload = {
+        "schema_version": 1,
+        "kind": "ProviderGateFailureV1",
+        "profile": "teacher-oracle",
+        "failure_kind": kind,
+        "detail": detail,
+        "producer_inventory": inventory(jobs),
+    }
+    write_once(result_target, payload)
+
+def digest(value):
+    return isinstance(value, str) and _SHA256.fullmatch(value) is not None
+
+def valid_number(value):
+    return isinstance(value, int | float) and not isinstance(value, bool)
+
+def validate_quality(value, manifests):
+    if not isinstance(value, dict):
+        raise ValueError("provider quality result is not an object")
+    outcome = value.get("outcome")
+    empirical = {
+        "empirical_pass", "empirical_no_go", "empirical_not_measurable",
+    }
+    diagnostic = {
+        "diagnostic_contract_eligible", "diagnostic_contract_ineligible",
+    }
+    common = {"schema_version", "kind", "profile", "outcome"}
+    if outcome in empirical:
+        required = common | {
+            "contract_sha256", "evaluator_sha256", "provider_manifest_sha256",
+            "denominator", "metrics", "thresholds", "confidence_interval",
+        }
+        if set(value) != required:
+            raise ValueError("ProviderGateResultV1 empirical discriminator has unexpected fields")
+        if (
+            value["schema_version"] != 1
+            or value["kind"] != "ProviderGateResultV1"
+            or value["profile"] != "teacher-oracle"
+            or not all(digest(value[name]) for name in ("contract_sha256", "evaluator_sha256"))
+            or value["contract_sha256"] != os.environ["WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256"]
+            or value["evaluator_sha256"] != os.environ["WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256"]
+            or value["provider_manifest_sha256"] != manifests
+            or not isinstance(value["denominator"], int) or isinstance(value["denominator"], bool)
+            or value["denominator"] <= 0
+            or not isinstance(value["metrics"], dict) or not value["metrics"]
+            or not isinstance(value["thresholds"], dict) or not value["thresholds"]
+            or not isinstance(value["confidence_interval"], dict)
+            or any(not isinstance(name, str) or not valid_number(metric)
+                   for name, metric in value["metrics"].items())
+            or any(not isinstance(name, str) or not valid_number(threshold)
+                   for name, threshold in value["thresholds"].items())
+        ):
+            raise ValueError("ProviderGateResultV1 empirical evidence is invalid")
+    elif outcome in diagnostic:
+        required = common | {
+            "contract_sha256", "evaluator_sha256", "provider_manifest_sha256",
+            "eligibility_evidence",
+        }
+        evidence = value.get("eligibility_evidence")
+        if (
+            set(value) != required
+            or value["schema_version"] != 1
+            or value["kind"] != "ProviderGateResultV1"
+            or value["profile"] != "teacher-oracle"
+            or not all(digest(value[name]) for name in ("contract_sha256", "evaluator_sha256"))
+            or value["contract_sha256"] != os.environ["WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256"]
+            or value["evaluator_sha256"] != os.environ["WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256"]
+            or value["provider_manifest_sha256"] != manifests
+            or not isinstance(evidence, dict)
+            or set(evidence) != {"eligible", "basis"}
+            or evidence["eligible"] != (outcome == "diagnostic_contract_eligible")
+            or not isinstance(evidence["basis"], str) or not evidence["basis"]
+        ):
+            raise ValueError("ProviderGateResultV1 diagnostic eligibility evidence is invalid")
+    else:
+        raise ValueError("ProviderGateResultV1 has unknown outcome")
+
+def verify_descriptor(path, expected):
+    descriptor = os.open(path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+    try:
+        state = os.fstat(descriptor)
+        required = {
+            "uid": state.st_uid,
+            "mode": stat.S_IMODE(state.st_mode),
+            "nlink": state.st_nlink,
+            "device": str(state.st_dev),
+            "inode": str(state.st_ino),
+            "size": state.st_size,
+            "mtime_ns": str(state.st_mtime_ns),
+        }
+        if (
+            not stat.S_ISREG(state.st_mode) or state.st_uid != os.getuid()
+            or state.st_mode & 0o022 or state.st_nlink != 1
+            or any(expected.get(name) != value for name, value in required.items())
+        ):
+            raise ValueError(f"provider descriptor mismatch: {path}")
+        with os.fdopen(os.dup(descriptor), "rb") as stream:
+            actual = hashlib.file_digest(stream, "sha256").hexdigest()
+        if (
+            expected.get("sha256") != actual
+            or (
+                os.fstat(descriptor).st_size,
+                os.fstat(descriptor).st_mtime_ns,
+            ) != (state.st_size, state.st_mtime_ns)
+        ):
+            raise ValueError(f"provider payload changed while consumed: {path}")
+    finally:
+        os.close(descriptor)
+
+jobs = {}
+failure_kind = "producer_admission"
+try:
+    jobs = dict(
+        line.split("=", 1) for line in
+        (summary / "dag_jobs.provider.env").read_text().splitlines() if "=" in line
+    )
+    ids = [jobs.get("PREFLIGHT_JOB_ID", "")] + [
+        jobs.get(f"PROVIDER_{producer.upper()}_JOB_ID") for producer in producers
+    ]
+    if not all(value.isdigit() for value in ids) or len(ids) != len(set(ids)):
+        raise ValueError("invalid or duplicate producer lineage")
+    manifests = {}
+    for producer in producers:
+        marker_path = summary / f"teacher_oracle_{producer}.json"
+        marker = loads_strict(marker_path.read_bytes())
+        provider = root / "oracle" / "providers" / producer / f"attempt-{jobs[f'PROVIDER_{producer.upper()}_JOB_ID']}"
+        root_state = os.lstat(provider)
+        descriptors = marker.get("provider_descriptors")
+        if (
+            marker.get("kind") != "ProviderAttemptManifestV1"
+            or marker.get("attempt_root") != str(provider)
+            or marker.get("attempt_root_device") != str(root_state.st_dev)
+            or marker.get("attempt_root_inode") != str(root_state.st_ino)
+            or not isinstance(descriptors, dict)
+        ):
+            raise ValueError(f"invalid provider attempt root: {producer}")
+        expectation_raw = (summary / f"teacher_oracle_{producer}.expectation.json").read_bytes()
+        expectation = loads_strict(expectation_raw)
+        expected_expectation = {
+            "schema_version": 1, "kind": "ProviderAttemptExpectationV1",
+            "stage": f"teacher_oracle_{producer}",
+            "job_id": jobs[f"PROVIDER_{producer.upper()}_JOB_ID"],
+            "attempt": jobs[f"PROVIDER_{producer.upper()}_JOB_ID"],
+            "input_sha256": os.environ["WORLDMM_PLAN_SHA256"],
+            "resource_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+            "code_sha256": os.environ["WORLDMM_CODE_SHA"],
+            "approval_sha256": hashlib.sha256(
+                Path(os.environ["WORLDMM_APPROVAL_FILE"]).read_bytes()
+            ).hexdigest(),
+        }
+        if (
+            expectation != expected_expectation
+            or jobs.get(f"PROVIDER_{producer.upper()}_EXPECTATION_SHA256")
+            != hashlib.sha256(expectation_raw).hexdigest()
+            or marker.get("expectation_sha256")
+            != hashlib.sha256(expectation_raw).hexdigest()
+        ):
+            raise ValueError(f"provider expectation mismatch: {producer}")
+        actual = {}
+        for relative, descriptor in descriptors.items():
+            if not isinstance(relative, str) or not isinstance(descriptor, dict):
+                raise ValueError(f"invalid provider descriptor: {producer}")
+            payload_path = provider / relative
+            if payload_path.parent != provider and provider not in payload_path.parents:
+                raise ValueError(f"provider payload escapes attempt root: {producer}")
+            verify_descriptor(payload_path, descriptor)
+            actual[relative] = descriptor["sha256"]
+        if (
+            marker_path.stat().st_size == 0
+            or marker.get("schema_version") != 1
+            or marker.get("producer_id") != producer
+            or marker.get("success_marker") != "teacher-oracle-producer-v1"
+            or marker.get("attempt") != jobs[f"PROVIDER_{producer.upper()}_JOB_ID"]
+            or marker.get("provider_artifacts") != actual
+            or marker.get("coverage") != sorted(actual)
+            or not actual
+            or marker.get("stage") != f"teacher_oracle_{producer}"
+            or marker.get("provider_executable_sha256") != os.environ["WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256"]
+            or marker.get("provider_config_sha256") != os.environ["WORLDMM_ORACLE_PROVIDER_CONFIG_SHA256"]
+            or marker.get("resource_config_sha256") != os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"]
+            or marker.get("code_sha256") != os.environ["WORLDMM_CODE_SHA"]
+            or marker.get("input_bindings") != {
+                "sensor_audit_sha256": os.environ["WORLDMM_SENSOR_AUDIT_SHA256"],
+                "provider_sha256": os.environ["WORLDMM_PROVIDER_SHA256"],
+                "split_sha256": os.environ["WORLDMM_SPLIT_SHA256"],
+            }
+        ):
+            raise ValueError(f"invalid producer admission: {producer}")
+        manifests[producer] = hashlib.sha256(marker_path.read_bytes()).hexdigest()
+
+    failure_kind = "accounting"
+    cluster = os.environ["WORLDMM_SLURM_CLUSTER"]
+    deadline = time.monotonic() + int(os.environ["WORLDMM_ACCOUNTING_SETTLE_SECONDS"])
+    interval = float(os.environ["WORLDMM_ACCOUNTING_SETTLE_INTERVAL_SECONDS"])
+    if deadline <= time.monotonic() or interval <= 0:
+        raise ValueError("invalid approval-bound accounting settle policy")
+    records = {}
+    while True:
+        records.clear()
+        waiting = False
+        for job in ids:
+            try:
+                record = decode_accounting(
+                    subprocess.check_output(
+                        sacct_command(
+                            sacct=os.environ.get("WORLDMM_SACCT", "sacct"),
+                            cluster=cluster, job_id=job,
+                        ), text=True,
+                    ),
+                    cluster=cluster, job_id=job,
+                )
+                if is_nonterminal(record):
+                    waiting = True
+                    break
+                records[job] = require_success(record)
+            except ValueError as exc:
+                if "expected exactly one allocation row, got 0" in str(exc):
+                    waiting = True
+                    break
+                raise ValueError(f"producer accounting rejected {job}: {exc}") from exc
+            except (OSError, subprocess.CalledProcessError):
+                waiting = True
+                break
+        if records and not waiting:
+            break
+        if time.monotonic() >= deadline:
+            raise ValueError("producer accounting did not settle before approved deadline")
+        time.sleep(min(interval, max(0.0, deadline - time.monotonic())))
+
+    failure_kind = "evaluator"
+    evaluator = Path(os.environ["WORLDMM_ORACLE_QUALITY_EVALUATOR"])
+    contract = Path(os.environ["WORLDMM_ORACLE_QUALITY_CONTRACT"])
+    if (
+        not evaluator.is_file() or not contract.is_file()
+        or hashlib.sha256(evaluator.read_bytes()).hexdigest()
+           != os.environ["WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256"]
+        or hashlib.sha256(contract.read_bytes()).hexdigest()
+           != os.environ["WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256"]
+    ):
+        raise ValueError("approval-bound provider quality evaluator or contract digest mismatch")
+    temporary = result_target.with_name(f".{result_target.name}.{os.getpid()}.tmp")
+    subprocess.run(
+        [str(evaluator), "--contract", str(contract), "--out", str(temporary)],
+        check=True, env={"PATH": os.environ.get("PATH", ""), "WORLDMM_OUTPUT_ROOT": str(root)},
+    )
+    failure_kind = "schema"
+    quality = loads_strict(temporary.read_bytes())
+    validate_quality(quality, manifests)
+    temporary.unlink(missing_ok=True)
+    if quality["outcome"] in {
+        "empirical_pass", "diagnostic_contract_eligible",
+    }:
+        bindings = {
+            "preflight_seal_sha256": os.environ["WORLDMM_PREFLIGHT_SEAL_SHA256"],
+            "quality_contract_sha256": os.environ["WORLDMM_ORACLE_QUALITY_CONTRACT_SHA256"],
+            "quality_evaluator_sha256": os.environ["WORLDMM_ORACLE_QUALITY_EVALUATOR_SHA256"],
+            "experiment_id": os.environ["WORLDMM_EXPERIMENT_ID"],
+            "sensor_audit_sha256": os.environ["WORLDMM_SENSOR_AUDIT_SHA256"],
+            "provider_sha256": os.environ["WORLDMM_PROVIDER_SHA256"],
+            "split_sha256": os.environ["WORLDMM_SPLIT_SHA256"],
+            "code_sha256": os.environ["WORLDMM_CODE_SHA"],
+            "policy_sha256": os.environ["WORLDMM_POLICY_SHA256"],
+            "validation_receipt_sha256": os.environ["WORLDMM_TEACHER_ORACLE_VALIDATION_SHA256"],
+            "experiment_config_sha256": os.environ["WORLDMM_EXPERIMENT_CONFIG_SHA256"],
+            "run_id": os.environ["WORLDMM_RUN_ID"],
+            "output_root": os.environ["WORLDMM_OUTPUT_ROOT"],
+            "frame_assets_sha256": os.environ["WORLDMM_FRAME_ASSETS_SHA256"],
+            "byte_budget_sha256": os.environ["WORLDMM_BYTE_BUDGET_SHA256"],
+            "resource_config_sha256": os.environ["WORLDMM_RESOURCE_CONFIG_SHA256"],
+            "plan_sha256": os.environ["WORLDMM_PLAN_SHA256"],
+            "remote_snapshot_sha256": os.environ["WORLDMM_REMOTE_SNAPSHOT_SHA256"],
+            "dag_preflight_submit_script_sha256": os.environ["WORLDMM_DAG_PREFLIGHT_SUBMIT_SCRIPT_SHA256"],
+            "dag_provider_gate_submit_script_sha256": os.environ["WORLDMM_DAG_PROVIDER_GATE_SUBMIT_SCRIPT_SHA256"],
+            "dag_downstream_submit_script_sha256": os.environ["WORLDMM_DAG_DOWNSTREAM_SUBMIT_SCRIPT_SHA256"],
+            "dag_stage_script_sha256": os.environ["WORLDMM_DAG_STAGE_SCRIPT_SHA256"],
+            "oracle_provider_executable_sha256": os.environ["WORLDMM_ORACLE_PROVIDER_EXECUTABLE_SHA256"],
+            "oracle_stage_executable_sha256": os.environ["WORLDMM_ORACLE_STAGE_EXECUTABLE_SHA256"],
+            "registry_sha256": hashlib.sha256(Path(os.environ["WORLDMM_SIGNER_REGISTRY"]).read_bytes()).hexdigest(),
+            "attested_runtime_root": os.environ["WORLDMM_ATTESTED_RUNTIME_ROOT"],
+            "attested_runtime_manifest_sha256": os.environ["WORLDMM_ATTESTED_RUNTIME_MANIFEST_SHA256"],
+            "purpose": "teacher_oracle_phase_b_execution",
+            "slurm_cluster": os.environ["WORLDMM_SLURM_CLUSTER"],
+            "accounting_settle_seconds": os.environ["WORLDMM_ACCOUNTING_SETTLE_SECONDS"],
+            "accounting_settle_interval_seconds": os.environ["WORLDMM_ACCOUNTING_SETTLE_INTERVAL_SECONDS"],
+            "producer_tuple": list(producers),
+            "producer_stage_tuple": [f"teacher_oracle_{producer}" for producer in producers],
+            "oracle_provider_config_sha256": os.environ["WORLDMM_ORACLE_PROVIDER_CONFIG_SHA256"],
+        }
+        receipt = with_payload_sha256({
+            "schema_version": 1, "kind": "SignedAttestationEnvelopeV1",
+            "profile": "teacher-oracle", "decision": "go",
+            "producer_jobs": {
+                producer: {
+                    "job_id": jobs[f"PROVIDER_{producer.upper()}_JOB_ID"],
+                    "sluid": records[jobs[f"PROVIDER_{producer.upper()}_JOB_ID"]].sluid,
+                    "original_sluid": records[jobs[f"PROVIDER_{producer.upper()}_JOB_ID"]].original_sluid,
+                } for producer in producers
+            },
+            "provider_manifest_sha256": manifests, "bindings": bindings,
+            "key_id": os.environ["WORLDMM_CONTINUE_RECEIPT_KEY_ID"],
+        })
+        key_path = Path(os.environ["WORLDMM_CONTINUE_RECEIPT_SIGNING_KEY"])
+        key_fd = os.open(key_path, os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0))
+        try:
+            key_state = os.fstat(key_fd)
+            if (
+                not stat.S_ISREG(key_state.st_mode) or key_state.st_uid != os.getuid()
+                or stat.S_IMODE(key_state.st_mode) != 0o600 or key_state.st_nlink != 1
+                or key_state.st_size != 44
+            ):
+                raise ValueError("unsafe continue-receipt private-key file")
+            encoded_raw = os.read(key_fd, 45)
+            end_state = os.fstat(key_fd)
+            if (
+                len(encoded_raw) != 44 or not encoded_raw.endswith(b"\n")
+                or (key_state.st_dev, key_state.st_ino, key_state.st_size, key_state.st_mtime_ns)
+                != (end_state.st_dev, end_state.st_ino, end_state.st_size, end_state.st_mtime_ns)
+            ):
+                raise ValueError("continue-receipt private-key changed while read")
+            encoded = encoded_raw[:-1].decode("ascii")
+            private = b64url_decode(encoded)
+        finally:
+            os.close(key_fd)
+        if len(private) != 32:
+            raise ValueError("invalid continue-receipt private-key file format")
+        receipt["signature"] = b64url_encode(
+            Ed25519PrivateKey.from_private_bytes(private).sign(
+                signing_bytes(receipt, "continue-receipt")
+            )
+        )
+        write_once(summary / "teacher_oracle_continue.json", receipt)
+    write_once(result_target, quality)
+except Exception as exc:
+    try:
+        failure(failure_kind, str(exc), jobs)
+    except FileExistsError:
+        pass
+    raise SystemExit(f"provider gate emitted {failure_kind} failure: {exc}") from exc
+PY
+  ;;
+teacher_oracle_finalizer)
+  WORLDMM_APPROVAL_PATH="$WORLDMM_APPROVAL_FILE" \
+    WORLDMM_APPROVAL_PHASE=phase_a verify_approval
+  "$WORLDMM_ATTESTED_RUNTIME_ROOT/bin/python" - "$root" <<'PY'
+import hashlib, json, os, subprocess, sys
+from pathlib import Path
+
+from worldmm_smvqa.slurm_accounting import (
+    decode_accounting, is_cancelled, require_success, sacct_command,
+)
+
+root = Path(sys.argv[1])
+summary = root / "summary"
+producers = ("geometry", "semantic", "place")
+jobs = dict(
+    line.split("=", 1) for line in
+    (summary / "dag_jobs.provider.env").read_text().splitlines() if "=" in line
+)
+gate = jobs.get("PROVIDER_GATE_JOB_ID", "")
+continuation = summary / "teacher_oracle_continue.json"
+
+def producer_inventory():
+    return [
+        {
+            "producer_id": producer,
+            "job_id": jobs.get(f"PROVIDER_{producer.upper()}_JOB_ID", ""),
+            "marker_sha256": (
+                hashlib.sha256((summary / f"teacher_oracle_{producer}.json").read_bytes()).hexdigest()
+                if (summary / f"teacher_oracle_{producer}.json").is_file() else None
+            ),
+        }
+        for producer in producers
+    ]
+
+def write_terminal_once(path, payload):
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+    if path.exists():
+        if path.read_bytes() != encoded:
+            raise RuntimeError(f"conflicting terminal artifact: {path.name}")
+        return
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        os.write(descriptor, encoded)
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+operational, scientific, decision = "failed", "not_decidable", "gate_controller_failure"
+try:
+    record = decode_accounting(
+        subprocess.check_output(
+            sacct_command(
+                sacct=os.environ.get("WORLDMM_SACCT", "sacct"),
+                cluster=os.environ["WORLDMM_SLURM_CLUSTER"], job_id=gate,
+            ), text=True,
+        ),
+        cluster=os.environ["WORLDMM_SLURM_CLUSTER"], job_id=gate,
+    )
+    if is_cancelled(record):
+        decision = "gate_controller_failure"
+    else:
+        require_success(record)
+        quality = json.loads((summary / "provider_gate_result.json").read_bytes())
+        kind, outcome = quality.get("kind"), quality.get("outcome")
+        if kind == "ProviderGateFailureV1":
+            if (
+                set(quality) != {
+                    "schema_version", "kind", "profile", "failure_kind", "detail",
+                    "producer_inventory",
+                }
+                or quality.get("schema_version") != 1
+                or quality.get("profile") != "teacher-oracle"
+                or quality.get("failure_kind") not in {
+                    "producer_admission", "accounting", "evaluator", "schema",
+                }
+                or not isinstance(quality.get("detail"), str)
+                or quality.get("producer_inventory") != producer_inventory()
+            ):
+                raise ValueError("invalid ProviderGateFailureV1")
+            decision = "gate_failure"
+        elif kind == "ProviderGateResultV1" and quality.get("schema_version") == 1 and quality.get("profile") == "teacher-oracle":
+            eligible = outcome in {
+                "empirical_pass", "diagnostic_contract_eligible",
+            }
+            complete = {
+                "empirical_no_go": ("complete", "no_go"),
+                "empirical_not_measurable": ("complete", "not_measurable"),
+                "diagnostic_contract_ineligible": ("complete", "not_decidable"),
+            }
+            if eligible:
+                receipt = json.loads(continuation.read_bytes())
+                if (
+                    receipt.get("decision") != "go"
+                    or receipt.get("profile") != "teacher-oracle"
+                    or not isinstance(receipt.get("signature"), str)
+                    or not receipt["signature"]
+                ):
+                    raise ValueError("invalid continuation receipt")
+                operational, scientific, decision = (
+                    "authorized", "pending", "continuation_authorized",
+                )
+            elif outcome in complete:
+                operational, scientific = complete[outcome]
+                decision = outcome
+            else:
+                raise ValueError("invalid ProviderGateResultV1 outcome")
+        else:
+            raise ValueError("missing typed gate result")
+except Exception:
+    operational, scientific, decision = "failed", "not_decidable", "gate_controller_failure"
+
+if operational != "authorized":
+    continuation.unlink(missing_ok=True)
+terminal = {
+    "schema_version": 1,
+    "kind": "ProviderGateTerminalV1",
+    "profile": "teacher-oracle",
+    "provider_gate_decision": "go" if decision == "continuation_authorized" else decision,
+    "operational_state": operational,
+    "scientific_state": scientific,
+    "gate_job_id": gate,
+    "producer_inventory": producer_inventory(),
+}
+write_terminal_once(summary / "teacher_oracle_terminal.json", terminal)
+write_terminal_once(summary / "provider_gate_terminal_v1.json", terminal)
+PY
+  ;;
+teacher_oracle_E0_materialize|teacher_oracle_E0_retrieve|\
+teacher_oracle_E0_qa|teacher_oracle_E0_evaluate|teacher_oracle_E0_report|\
+teacher_oracle_T0_materialize|teacher_oracle_T0_retrieve|\
+teacher_oracle_T0_qa|teacher_oracle_T0_evaluate|teacher_oracle_T0_report|\
+teacher_oracle_T1_materialize|teacher_oracle_T1_retrieve|\
+teacher_oracle_T1_qa|teacher_oracle_T1_evaluate|teacher_oracle_T1_report)
+  phase_b="${WORLDMM_STAGE#teacher_oracle_}"
+  variant="${phase_b%%_*}"
+  action="${phase_b#*_}"
+  run_phase_b_stage "$variant" "$action"
+  ;;
+teacher_oracle_evaluator)
+  for variant in E0 T0 T1; do
+    run_phase_b_stage "$variant" evaluate
+  done
+  ;;
+teacher_oracle_finalizer_phase_b)
+  for variant in E0 T0 T1; do
+    run_phase_b_stage "$variant" report
+  done
+  ;;
+*) exit 2 ;;
+esac
+"""
+    )

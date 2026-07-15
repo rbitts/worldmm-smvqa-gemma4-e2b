@@ -434,8 +434,7 @@ def test_mock_backend_runs_fixture_predictions() -> None:
     assert all(isinstance(prediction, PredictionRecord) for prediction in predictions)
     assert all(len(prediction.ranked_choices) == 4 for prediction in predictions)
     assert all(
-        len(prediction.supporting_evidence)
-        == len(prediction.supporting_memory_ids)
+        len(prediction.supporting_evidence) == len(prediction.supporting_memory_ids)
         for prediction in predictions
     )
     assert {prediction.question_id for prediction in predictions} == {

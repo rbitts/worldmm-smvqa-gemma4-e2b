@@ -70,11 +70,47 @@ def test_sensor_observation_accepts_optional_metric_depth() -> None:
         frame_ref="frame-1.jpg",
         local_frame_id="room-1",
         intrinsics=_intrinsics(),
-        depth=DepthObservation(depth_ref="depth-1.npy", depth_scale_m=0.001),
+        depth=DepthObservation(
+            depth_ref="depth-1.npy",
+            depth_scale_m=0.001,
+            depth_sha256="0" * 64,
+            width_px=640,
+            height_px=480,
+            shape=(480, 640),
+            format="npy",
+            provenance="native_depth_sensor",
+        ),
     )
 
     assert observation.depth is not None
     assert observation.depth.depth_scale_m == pytest.approx(0.001)
+
+
+@pytest.mark.parametrize(
+    "updates",
+    [
+        {"depth_sha256": "not-a-digest"},
+        {"shape": (640, 480)},
+        {"provenance": ""},
+    ],
+)
+def test_depth_observation_requires_bound_asset_metadata(
+    updates: dict[str, object],
+) -> None:
+    payload: dict[str, object] = {
+        "depth_ref": "depth-1.npy",
+        "depth_scale_m": 0.001,
+        "depth_sha256": "0" * 64,
+        "width_px": 640,
+        "height_px": 480,
+        "shape": (480, 640),
+        "format": "npy",
+        "provenance": "native_depth_sensor",
+    }
+    payload.update(updates)
+
+    with pytest.raises(ValidationError):
+        _ = DepthObservation.model_validate(payload)
 
 
 @pytest.mark.parametrize(

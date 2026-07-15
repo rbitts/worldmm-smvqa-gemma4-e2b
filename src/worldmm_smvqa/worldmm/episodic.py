@@ -57,9 +57,7 @@ def write_fixture_episodic_memory(
 ) -> EpisodicBuildSummary:
     sources = read_source_streams(fixture_dir)
     chunks = build_chunks(sources)
-    clip_chunks = tuple(
-        chunk for chunk in chunks if chunk.granularity == "clip_30s"
-    )
+    clip_chunks = tuple(chunk for chunk in chunks if chunk.granularity == "clip_30s")
     memories = build_source_memories(clip_chunks)
     records = build_episodic_graph(chunks, memories)
     output.parent.mkdir(parents=True, exist_ok=True)
@@ -202,6 +200,7 @@ def _memories_by_chunk(
             grouped.setdefault(chunk_id, []).append(memory)
     return {chunk_id: tuple(memories) for chunk_id, memories in grouped.items()}
 
+
 def _source_modalities(memories: Sequence[MemoryRecord]) -> tuple[str, ...]:
     stores = {memory.store for memory in memories}
     ordered = tuple(store for store in MODALITY_ORDER if store in stores)
@@ -221,6 +220,7 @@ def _frame_refs(
             ),
         ),
     )
+
 
 def _node_id(chunk_id: str) -> str:
     return f"{EPISODIC_STORE}:{chunk_id}"

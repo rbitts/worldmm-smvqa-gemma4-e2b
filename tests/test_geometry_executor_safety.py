@@ -784,9 +784,7 @@ def test_last_seen_abstains_when_newer_change_event_outdates_object_state() -> N
     )[0]
 
     assert not proof.answerable
-    assert proof.reason == (
-        "last-seen state is stale relative to a typed change event"
-    )
+    assert proof.reason == ("last-seen state is stale relative to a typed change event")
     assert proof.subject_entity_id == "entity:mug"
 
 

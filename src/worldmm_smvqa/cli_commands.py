@@ -11,7 +11,12 @@ from worldmm_smvqa.chunking import (
     read_source_streams,
     write_fixture_chunks,
 )
-from worldmm_smvqa.cli_args import CliUsageError, CommandResult, ParsedArgs
+from worldmm_smvqa.cli_args import (
+    CliPublicationError,
+    CliUsageError,
+    CommandResult,
+    ParsedArgs,
+)
 from worldmm_smvqa.config import load_config, require_remote
 from worldmm_smvqa.fixture_cli import prepare_fixture_stdout, validate_schema_stdout
 from worldmm_smvqa.fixtures import read_fixture_questions
@@ -22,7 +27,10 @@ from worldmm_smvqa.metrics import (
     metrics_stdout,
     write_metrics,
 )
-from worldmm_smvqa.preflight import write_preflight_report
+from worldmm_smvqa.preflight import (
+    write_preflight_report,
+    write_teacher_oracle_preflight_report,
+)
 from worldmm_smvqa.qa import (
     Gemma4QABackend,
     MockQABackend,
@@ -40,6 +48,7 @@ from worldmm_smvqa.retrieval import (
     read_retrieval_memory_artifacts,
     retrieve_evidence,
 )
+from worldmm_smvqa.sensor_audit import write_sensor_audit_report
 from worldmm_smvqa.sensor_frames import write_sensor_frame_manifest
 from worldmm_smvqa.smoke import run_smoke_pipeline, smoke_stdout
 from worldmm_smvqa.worldmm.episodic import write_fixture_episodic_memory
@@ -107,6 +116,71 @@ def handle_preflight(args: ParsedArgs) -> CommandResult:
     )
 
 
+def handle_validate_teacher_oracle_inputs(args: ParsedArgs) -> CommandResult:
+    if args.sensor_audit is None:
+        raise CliUsageError(
+            detail="validate-teacher-oracle-inputs requires --sensor-audit"
+        )
+    if args.experiment_config is None:
+        raise CliUsageError(
+            detail="validate-teacher-oracle-inputs requires --experiment-config"
+        )
+    if args.out is None:
+        raise CliUsageError(detail="validate-teacher-oracle-inputs requires --out")
+    try:
+        report = write_teacher_oracle_preflight_report(
+            args.sensor_audit,
+            args.experiment_config,
+            args.out,
+        )
+    except OSError as exc:
+        raise CliPublicationError(
+            command="validate-teacher-oracle-inputs",
+            path=args.out,
+            reason=exc.strerror or type(exc).__name__,
+        ) from exc
+    return CommandResult(
+        stdout=(
+            f"wrote {args.out}\nstatus={report.status} "
+            f"blockers={len(report.blockers)}\n"
+        ),
+        exit_code=1 if report.blockers else 0,
+    )
+
+
+def handle_audit_sensors(args: ParsedArgs) -> CommandResult:
+    if args.sensor_manifest is None:
+        raise CliUsageError(detail="audit-sensors requires --sensor-manifest")
+    if args.observations is None:
+        raise CliUsageError(detail="audit-sensors requires --observations")
+    if args.frame_root is None:
+        raise CliUsageError(detail="audit-sensors requires --frame-root")
+    if args.out is None:
+        raise CliUsageError(detail="audit-sensors requires --out")
+    try:
+        report = write_sensor_audit_report(
+            args.sensor_manifest,
+            args.observations,
+            args.frame_root,
+            args.out,
+        )
+    except OSError as exc:
+        raise CliPublicationError(
+            command="audit-sensors",
+            path=args.out,
+            reason=exc.strerror or type(exc).__name__,
+        ) from exc
+    return CommandResult(
+        stdout=(
+            f"wrote {args.out}\n"
+            f"state={report.operational_state} "
+            f"decision={report.provider_gate_decision} "
+            f"errors={len(report.issues)}\n"
+        ),
+        exit_code=1 if report.issues else 0,
+    )
+
+
 def handle_build_memory(args: ParsedArgs) -> CommandResult:
     _config = load_config(args.config)
     if args.backend not in SUPPORTED_MEMORY_BACKENDS:
@@ -122,6 +196,10 @@ def handle_build_memory(args: ParsedArgs) -> CommandResult:
     if args.store is None:
         raise CliUsageError(detail="build-memory requires --stage or --store/--stores")
     stores = _requested_stores(args.store)
+    if not stores:
+        raise CliUsageError(
+            detail="build-memory requires at least one non-empty --store/--stores value"
+        )
     invalid_stores = stores - SUPPORTED_BUILD_STORES
     if invalid_stores:
         ordered = ",".join(sorted(invalid_stores))
@@ -338,16 +416,50 @@ def handle_smoke(args: ParsedArgs) -> CommandResult:
 
 
 def handle_launch_remote(args: ParsedArgs) -> CommandResult:
-    config = load_config(args.config)
     if args.out is None:
         raise CliUsageError(detail="launch-remote requires --out")
+    if args.profile != "teacher-oracle":
+        raise CliUsageError(detail="launch-remote requires --profile teacher-oracle")
+    if args.experiment_config is None:
+        raise CliUsageError(detail="launch-remote requires --experiment-config")
+    if args.sensor_audit is not None:
+        raise CliUsageError(
+            detail=(
+                "launch-remote does not accept --sensor-audit; "
+                "use the reviewed experiment config"
+            )
+        )
     if args.submit and args.dry_run:
         raise CliUsageError(
             detail="launch-remote accepts only one of --dry-run/--submit",
         )
     if not args.submit and not args.dry_run:
         raise CliUsageError(detail="launch-remote requires --dry-run or --submit")
-    result = write_remote_plan(config, args.out, os.environ, submit=args.submit)
+    config = load_config(args.config)
+    remote = config.values.get("remote")
+    configured_experiment = (
+        remote.get("experiment_config") if isinstance(remote, dict) else None
+    )
+    if not isinstance(configured_experiment, str) or args.experiment_config.resolve(
+        strict=False
+    ) != Path(configured_experiment).resolve(strict=False):
+        raise CliUsageError(
+            detail="--experiment-config must match remote.experiment_config"
+        )
+    try:
+        result = write_remote_plan(
+            config,
+            args.out,
+            os.environ,
+            submit=args.submit,
+            plan_profile="teacher-oracle",
+        )
+    except OSError as exc:
+        raise CliPublicationError(
+            command="launch-remote",
+            path=args.out,
+            reason=exc.strerror or type(exc).__name__,
+        ) from exc
     return CommandResult(stdout=plan_stdout(result))
 
 

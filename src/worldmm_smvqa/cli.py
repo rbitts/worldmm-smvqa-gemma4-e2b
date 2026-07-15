@@ -5,6 +5,7 @@ from collections.abc import Sequence
 
 from worldmm_smvqa.chunking import TemporalOrderError
 from worldmm_smvqa.cli_args import (
+    CliPublicationError,
     CliUsageError,
     CommandResult,
     CommandSpec,
@@ -12,6 +13,7 @@ from worldmm_smvqa.cli_args import (
     parse_args,
 )
 from worldmm_smvqa.cli_commands import (
+    handle_audit_sensors,
     handle_build_memory,
     handle_diagnose_spatial,
     handle_evaluate,
@@ -24,6 +26,7 @@ from worldmm_smvqa.cli_commands import (
     handle_retrieve_batch,
     handle_smoke,
     handle_validate_schema,
+    handle_validate_teacher_oracle_inputs,
 )
 from worldmm_smvqa.config import (
     ConfigNotFoundError,
@@ -36,7 +39,10 @@ from worldmm_smvqa.metrics import (
     InvalidPredictionError,
 )
 from worldmm_smvqa.qa import QABackendUnavailableError, QAParseError
-from worldmm_smvqa.remote_plan import ExplicitApprovalRequiredError
+from worldmm_smvqa.remote_plan import (
+    ExplicitApprovalRequiredError,
+    TeacherOraclePlanRequiredError,
+)
 from worldmm_smvqa.report import IncompleteRemoteManifestError
 from worldmm_smvqa.retrieval import (
     InvalidRetrievalStoreError,
@@ -61,6 +67,29 @@ def command_specs() -> tuple[CommandSpec, ...]:
         CommandSpec("validate-schema", "Validate schema.", handle_validate_schema),
         CommandSpec("preflight", "Inspect prepared dataset.", handle_preflight),
         CommandSpec(
+            "audit-sensors",
+            "Audit causal sensor coverage.",
+            handle_audit_sensors,
+            allowed_options=frozenset(
+                {"--sensor-manifest", "--observations", "--frame-root", "--out"}
+            ),
+            required_options=(
+                "--sensor-manifest",
+                "--observations",
+                "--frame-root",
+                "--out",
+            ),
+        ),
+        CommandSpec(
+            "validate-teacher-oracle-inputs",
+            "Validate teacher-oracle production inputs.",
+            handle_validate_teacher_oracle_inputs,
+            allowed_options=frozenset(
+                {"--sensor-audit", "--experiment-config", "--out"}
+            ),
+            required_options=("--sensor-audit", "--experiment-config", "--out"),
+        ),
+        CommandSpec(
             "build-memory",
             "Build benchmark memory artifacts.",
             handle_build_memory,
@@ -80,7 +109,23 @@ def command_specs() -> tuple[CommandSpec, ...]:
         ),
         CommandSpec("report", "Write a run handoff report.", handle_report),
         CommandSpec("smoke", "Run the tiny local pipeline.", handle_smoke),
-        CommandSpec("launch-remote", "Print remote commands.", handle_launch_remote),
+        CommandSpec(
+            "launch-remote",
+            "Print remote commands.",
+            handle_launch_remote,
+            allowed_options=frozenset(
+                {
+                    "--config",
+                    "--out",
+                    "--profile",
+                    "--experiment-config",
+                    "--dry-run",
+                    "--submit",
+                }
+            ),
+            required_options=("--out", "--profile", "--experiment-config"),
+            mutually_exclusive_options=(frozenset({"--dry-run", "--submit"}),),
+        ),
     )
 
 
@@ -101,34 +146,27 @@ def top_help() -> str:
 
 def command_help(command: str) -> str:
     spec = find_command(command, command_specs())
-    return "\n".join(
-        [
-            f"usage: worldmm-smvqa {spec.name} [--config CONFIG] [--help]",
-            "",
-            spec.help_text,
-            "",
-            "common options:",
-            "  --config CONFIG",
-            "  --out OUT",
-            "  --run-manifest RUN_MANIFEST",
-            "  --input INPUT",
-            "  --fixture FIXTURE",
-            "",
-            "command options:",
-            "  --stage STAGE",
-            "  --store STORE",
-            "  --stores STORES",
-            "  --question QUESTION",
-            "  --pred PRED",
-            "  --labels LABELS",
-            "  --real-model",
-            "  --backend BACKEND",
-            "  --local",
-            "  --dry-run",
-            "  --submit",
-            "  --inject-future-memory",
-        ],
-    ) + "\n"
+    usage_by_command = {
+        "audit-sensors": (
+            "worldmm-smvqa audit-sensors --sensor-manifest SENSOR_MANIFEST "
+            "--observations OBSERVATIONS --frame-root FRAME_ROOT --out OUT"
+        ),
+        "validate-teacher-oracle-inputs": (
+            "worldmm-smvqa validate-teacher-oracle-inputs "
+            "--sensor-audit SENSOR_AUDIT --experiment-config EXPERIMENT_CONFIG "
+            "--out OUT"
+        ),
+        "launch-remote": (
+            "worldmm-smvqa launch-remote [--config CONFIG] --out OUT "
+            "--profile PROFILE --experiment-config EXPERIMENT_CONFIG "
+            "(--dry-run | --submit)"
+        ),
+    }
+    usage = usage_by_command.get(
+        spec.name,
+        f"worldmm-smvqa {spec.name} [--config CONFIG] [--help]",
+    )
+    return "\n".join(["usage: " + usage, "", spec.help_text]) + "\n"
 
 
 def run(argv: Sequence[str]) -> CommandResult:
@@ -144,6 +182,7 @@ def main() -> int:
     try:
         result = run(sys.argv[1:])
     except (
+        CliPublicationError,
         CliUsageError,
         ConfigNotFoundError,
         FixtureValidationError,
@@ -155,6 +194,7 @@ def main() -> int:
         MissingGroundingError,
         MissingRemoteConfigError,
         ExplicitApprovalRequiredError,
+        TeacherOraclePlanRequiredError,
         MalformedConfigError,
         RemoteOnlyError,
         TemporalOrderError,

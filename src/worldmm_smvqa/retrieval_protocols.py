@@ -20,9 +20,9 @@ type WorldMMRouteReason = Literal[
     "visual",
     "balanced",
 ]
-type AvailableWorldMMStores = Sequence[WorldMMPolicyStore] | frozenset[
-    WorldMMPolicyStore
-]
+type AvailableWorldMMStores = (
+    Sequence[WorldMMPolicyStore] | frozenset[WorldMMPolicyStore]
+)
 
 LOCATION_TERMS: Final = (
     "where",
@@ -234,8 +234,7 @@ def coarse_to_fine_candidates(
     eligible_shards = tuple(
         shard
         for shard in hierarchy.shards
-        if shard.video_id in video_ids
-        and shard.start_time < question.question_time
+        if shard.video_id in video_ids and shard.start_time < question.question_time
     )
     eligible_records = _records_inside_shard_nodes(causal, eligible_shards)
     if not use_coarse_to_fine:

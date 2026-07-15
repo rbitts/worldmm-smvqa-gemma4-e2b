@@ -13,6 +13,7 @@ from worldmm_smvqa.worldmm.typed_memory import (
     ObjectMemoryRecord,
     ScoredMemoryCandidate,
     SpatialUncertainty,
+    TypedMemoryWriteOptions,
     TypedMemoryWriterError,
     ValidityInterval,
     canonical_jsonl_bytes,
@@ -51,7 +52,15 @@ def _object(memory_id: str, *, label: str = "mug") -> ObjectMemoryRecord:
 def _no_write(memory_id: str) -> NoWriteMemoryRecord:
     source = _object(memory_id)
     common = source.model_dump(
-        exclude={"geometry", "semantic_label", "place_label", "record_type"},
+        exclude={
+            "geometry",
+            "semantic_label",
+            "place_label",
+            "record_type",
+            "oracle_observation_id",
+            "oracle_assignment_sha256",
+            "selected_payload_sha256",
+        },
     )
     return NoWriteMemoryRecord.model_validate(
         {
@@ -87,6 +96,23 @@ def test_writer_uses_exact_utf8_jsonl_bytes_and_summary(tmp_path: Path) -> None:
     assert json.loads(output.read_text().strip())["semantic_label"] == "머그컵"
 
 
+def test_writer_accepts_typed_options(tmp_path: Path) -> None:
+    record = _object("memory")
+    summary = write_typed_memory_artifact(
+        (_scored(record, 1.0),),
+        output=tmp_path / "memory.jsonl",
+        byte_budget=serialized_byte_cost(record),
+        options=TypedMemoryWriteOptions(
+            budget_scope="per_source_window",
+            window_microseconds=1_000_000,
+            candidate_timestamps_us={"memory": 1_000_000},
+        ),
+    )
+
+    assert summary.budget_scope == "per_source_window"
+    assert summary.selected_memory_ids == ("memory",)
+
+
 def test_writer_skips_oversize_candidate_and_keeps_later_fit(tmp_path: Path) -> None:
     large = _object("large", label="x" * 200)
     small = _object("small")
@@ -118,6 +144,27 @@ def test_equal_value_per_byte_preserves_decoder_order(tmp_path: Path) -> None:
     )
 
     assert summary.selected_memory_ids == ("first", "other")
+
+
+def test_writer_prioritizes_higher_score_per_byte_under_one_record_budget(
+    tmp_path: Path,
+) -> None:
+    lower_value = _object("lower-value", label="x" * 200)
+    higher_value = _object("higher-value")
+    lower_value_bytes = serialized_byte_cost(lower_value)
+    higher_value_bytes = serialized_byte_cost(higher_value)
+
+    summary = write_typed_memory_artifact(
+        (
+            _scored(lower_value, float(lower_value_bytes)),
+            _scored(higher_value, float(higher_value_bytes) * 2),
+        ),
+        output=tmp_path / "memory.jsonl",
+        byte_budget=lower_value_bytes,
+    )
+
+    assert summary.selected_memory_ids == ("higher-value",)
+    assert summary.skipped_for_budget_count == 1
 
 
 def test_no_write_is_counted_but_never_persisted(tmp_path: Path) -> None:

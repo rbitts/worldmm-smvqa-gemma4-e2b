@@ -91,18 +91,10 @@ def tiny_fixture_examples() -> tuple[
                 ),
             ),
             pose_samples=(
-                PoseSample(
-                    timestamp=6.0, x=0.2, y=1.1, z=1.5, yaw_degrees=25.0
-                ),
-                PoseSample(
-                    timestamp=12.0, x=0.3, y=1.2, z=1.5, yaw_degrees=27.0
-                ),
-                PoseSample(
-                    timestamp=1800.0, x=1.0, y=2.0, z=1.5, yaw_degrees=90.0
-                ),
-                PoseSample(
-                    timestamp=1900.0, x=1.1, y=2.1, z=1.5, yaw_degrees=91.0
-                ),
+                PoseSample(timestamp=6.0, x=0.2, y=1.1, z=1.5, yaw_degrees=25.0),
+                PoseSample(timestamp=12.0, x=0.3, y=1.2, z=1.5, yaw_degrees=27.0),
+                PoseSample(timestamp=1800.0, x=1.0, y=2.0, z=1.5, yaw_degrees=90.0),
+                PoseSample(timestamp=1900.0, x=1.1, y=2.1, z=1.5, yaw_degrees=91.0),
             ),
             gaze_samples=(
                 GazeSample(timestamp=7.0, x=0.4, y=1.4, z=1.0),
@@ -185,18 +177,10 @@ def tiny_fixture_examples() -> tuple[
                 ),
             ),
             pose_samples=(
-                PoseSample(
-                    timestamp=21.0, x=0.1, y=0.7, z=1.5, yaw_degrees=10.0
-                ),
-                PoseSample(
-                    timestamp=27.0, x=0.2, y=0.8, z=1.5, yaw_degrees=12.0
-                ),
-                PoseSample(
-                    timestamp=132.0, x=2.0, y=1.0, z=1.5, yaw_degrees=55.0
-                ),
-                PoseSample(
-                    timestamp=137.0, x=2.1, y=1.1, z=1.5, yaw_degrees=56.0
-                ),
+                PoseSample(timestamp=21.0, x=0.1, y=0.7, z=1.5, yaw_degrees=10.0),
+                PoseSample(timestamp=27.0, x=0.2, y=0.8, z=1.5, yaw_degrees=12.0),
+                PoseSample(timestamp=132.0, x=2.0, y=1.0, z=1.5, yaw_degrees=55.0),
+                PoseSample(timestamp=137.0, x=2.1, y=1.1, z=1.5, yaw_degrees=56.0),
             ),
             gaze_samples=(
                 GazeSample(timestamp=22.0, x=0.3, y=0.9, z=1.0),
@@ -218,55 +202,67 @@ def tiny_fixture_examples() -> tuple[
         ),
     )
     labels = (
-        _label(LabelSeed(
-            question_id="q_fake_001",
-            video_id="fake_video_001",
-            question="Where is the fake mug placed?",
-            question_time=45.0,
-            answer="A",
-            evidence="fake_video_001:5:12:transcript",
-        )),
-        _label(LabelSeed(
-            question_id="q_fake_002",
-            video_id="fake_video_001",
-            question="Which object is switched on in the staged scene?",
-            question_time=100.0,
-            answer="C",
-            evidence="fake_video_001:70:79:transcript",
-        )),
-        _label(LabelSeed(
-            question_id="q_fake_003",
-            video_id="fake_video_002",
-            question="What fake label appears on the cereal box?",
-            question_time=60.0,
-            answer="B",
-            evidence="fake_video_002:22:23:ocr",
-        )),
-        _label(LabelSeed(
-            question_id="q_fake_004",
-            video_id="fake_video_002",
-            question="What color is the synthetic fridge magnet?",
-            question_time=160.0,
-            answer="D",
-            evidence="fake_video_002:130:138:transcript",
-        )),
-        _label(LabelSeed(
-            question_id="q_fake_005",
-            video_id="fake_video_001",
-            question="How far was mug-1 from notebook-1 during placement?",
-            question_time=1850.0,
-            answer="B",
-            evidence="fake_video_001:5:12:spatial",
-        )),
-        _label(LabelSeed(
-            question_id="q_fake_006",
-            video_id="fake_video_002",
-            question="What color is the magnet in the fridge zone?",
-            question_time=15.0,
-            answer="D",
-            evidence=None,
-            is_answerable=False,
-        )),
+        _label(
+            LabelSeed(
+                question_id="q_fake_001",
+                video_id="fake_video_001",
+                question="Where is the fake mug placed?",
+                question_time=45.0,
+                answer="A",
+                evidence="fake_video_001:5:12:transcript",
+            )
+        ),
+        _label(
+            LabelSeed(
+                question_id="q_fake_002",
+                video_id="fake_video_001",
+                question="Which object is switched on in the staged scene?",
+                question_time=100.0,
+                answer="C",
+                evidence="fake_video_001:70:79:transcript",
+            )
+        ),
+        _label(
+            LabelSeed(
+                question_id="q_fake_003",
+                video_id="fake_video_002",
+                question="What fake label appears on the cereal box?",
+                question_time=60.0,
+                answer="B",
+                evidence="fake_video_002:22:23:ocr",
+            )
+        ),
+        _label(
+            LabelSeed(
+                question_id="q_fake_004",
+                video_id="fake_video_002",
+                question="What color is the synthetic fridge magnet?",
+                question_time=160.0,
+                answer="D",
+                evidence="fake_video_002:130:138:transcript",
+            )
+        ),
+        _label(
+            LabelSeed(
+                question_id="q_fake_005",
+                video_id="fake_video_001",
+                question="How far was mug-1 from notebook-1 during placement?",
+                question_time=1850.0,
+                answer="B",
+                evidence="fake_video_001:5:12:spatial",
+            )
+        ),
+        _label(
+            LabelSeed(
+                question_id="q_fake_006",
+                video_id="fake_video_002",
+                question="What color is the magnet in the fridge zone?",
+                question_time=15.0,
+                answer="D",
+                evidence=None,
+                is_answerable=False,
+            )
+        ),
     )
     return sources, labels
 
@@ -299,9 +295,7 @@ def _label(seed: LabelSeed) -> QALabelExample:
                     else "lamp"
                 ),
                 choice_ltype=(
-                    "unanswerable"
-                    if seed.question_id == "q_fake_004"
-                    else "object"
+                    "unanswerable" if seed.question_id == "q_fake_004" else "object"
                 ),
             ),
             AnswerChoice(
@@ -312,9 +306,7 @@ def _label(seed: LabelSeed) -> QALabelExample:
                     else "This question cannot be answered."
                 ),
                 choice_ltype=(
-                    "attribute"
-                    if seed.question_id == "q_fake_004"
-                    else "unanswerable"
+                    "attribute" if seed.question_id == "q_fake_004" else "unanswerable"
                 ),
             ),
         )

@@ -6,3 +6,5 @@ remote:
   data_root: ${SMVQA_DATA_ROOT}
   model_path: ${GEMMA_MODEL_PATH}
   output_root: ${WORLDMM_OUTPUT_ROOT}
+  execution_profile: teacher-oracle
+  experiment_config: configs/spatial/exp_0005_teacher_oracle.example.json

@@ -4,107 +4,47 @@
 | --- | --- |
 | Page ID | SM-EXP-0005 |
 | Experiment ID | EXP-0005 |
-| Confluence parent | SM-EXPERIMENTS |
-| 상태 | Local contract 구현; company run 대기 |
-| 근거 수준 | Tiny contract tests only; benchmark 미실행 |
-| 최종 검토 | 2026-07-14 |
-| 선행 조건 | Sensor availability audit와 EXP-0004 provider validation |
+| 상태 | Local contract implemented; company execution unverified and not run |
+| Profile/lane/result | `teacher-oracle` / `teacher_oracle` / `teacher_oracle` |
+| Variants | `E0`, `T0`, `T1` |
+| Remote provenance | **No remote session, Slurm job ID, provider output, company artifact, or metric exists** |
 
-## 핵심 결론
+## Decision
 
-**대기.** Raw student를 학습하기 전에 offline teacher가 만든 causal
-object/place record가 동일 actual-byte budget에서 object/location QA를 개선하는지
-측정한다. 이 결과는 teacher-oracle ceiling이며 on-device 또는 student result가
-아니다.
+Measure whether an offline, evidence-bound teacher improves the object/location QA slice over E0. This is a bounded teacher-oracle ceiling, not a student, on-device, official benchmark, or G-CUT3R reproduction claim. Phase A and Phase B each require separate cryptographically signed approval.
 
-## 다음 결정
+`E0` is the shared semantic object-presence control: its persisted `object_presence_v1` contains no geometry, place, entity, or identity field. `T0` adds teacher selected geometry; `T1` adds geometry plus place. The checked-in EXP-0005 configuration literally uses `frame_bound_place`: only same-observation object→place is allowed, and cross-observation last-location/last-seen/count is forbidden. Identity is absent in this mode; a separately approved `stable_last_location` configuration must include the identity producer/capability/resource exactly once. All variants use the same split, causal selected-frame inventory, and QA backend/prompt. They have the same 4,096-byte serialized-byte **cap** per 30-second window; realized serialized bytes are measured per variant and must not be described as equal merely because caps are equal. The audit constant is exactly `30,000,000` microseconds.
 
-Go이면 useful target만 [EXP-0002](exp-0002-typed-memory-bridge.md)의 hybrid device
-student로 distill한다. No-go이면 raw encoder나 all-type decoder를 추가하지 않고
-object semantics, place assignment, association, source signal 중 실패 원인을 먼저
-분리한다.
+## Implemented local contract
 
-## 근거
+The repository implements independent camera intrinsics, optional depth/gaze, trusted causal IMU/raw or VIO/online-causal pose rules, selected teacher-point object targets, evidence/confidence gates, actual-byte validation, and `teacher_oracle` output manifests. Its local dry-run validates the profile/config and creates `operator_contract.json`; it neither contacts company systems nor produces remote evidence.
+The reviewed example config is structurally strict only after every `REPLACE_*` binding is replaced with reviewed data. It declares the exact nine capability contracts; RGB/intrinsics policy and approved roots; the fixed frame-bound geometry/semantic/place producer set; evaluator-only QA label roots; `afterany` gate and terminal dependencies; a complete per-stage resource map for preflight, all Phase-A jobs, terminal, materialize, retrieve, QA, evaluator, and finalizer; exact accounting query/settle policy; and signer, quality, and sealed-resolver declarations. It is not evidence and is not runnable while placeholders remain.
 
-미실행.
+## Required company evidence and stop gates
 
-Local code는 independent camera calibration, trusted causal pose, selected
-teacher-point object compiler, inferred evidence/confidence gate, semantic place projection,
-`last_location` proof를 검사한다. Real model, dataset frame, teacher output, QA metric은
-사용하지 않았다.
-
-## 의사결정 gate
-
-| Metric 또는 invariant | Scale | Go 조건 |
+| Gate | Required evidence | Stop condition |
 | --- | --- | --- |
-| Sensor audit | coverage | Selected RGB asset 100%; calibration/pose/depth availability를 실제 비율로 보고하고 누락 신호를 합성하지 않음 |
-| Object/location QA | QA-Acc, QA-MRR, Ans-F1 | Run 전 최소 개선폭과 confidence interval 고정 |
-| Selective risk | error/coverage | Unsupported·low-confidence place는 abstain; accepted proof error 상한 사전 고정 |
-| Typed validity | count | Invalid record, duplicate ID, persisted no-write 0 |
-| Grounding | count | Missing/off-scope evidence, future validity, unbound inferred proof 0 |
-| Actual serialized bytes | bytes | Variant별 동일 30초 window budget; 기본 4,096 byte 이하 |
-| Causal violations | count | 0 |
+| CPU preflight/sensor audit | Remote CPU preflight actually runs `sensor-audit-v1`, validates the audit with `validate-teacher-oracle-inputs`, and records audit/config digests in the strict teacher-only validation receipt | Missing/synthetic/leaking sensor fact or digest mismatch |
+| Input boundary | Closed allowlisted producer schema; reject question/choice/answer/label/evidence and all aliases; approved `SMVQA_FRAME_ROOT` is retained | Any student/QA input or unapproved frame root |
+| Provider readiness | Approved external executable/revision/checkpoint/config, semantic mask/place provider and ontology, signed provenance/capability evidence | Input absent, unapproved, or unverifiable |
+| Accounting readiness | Exact top-level `/opt/slurm/bin/sacct -X -n -P -j <IDs> --format=JobIDRaw,State,ExitCode` rows after the approval-bound settle policy | Missing, ambiguous, or unparsable accounting row |
+| Phase A approval | RFC 8785-compatible canonical-JSON Ed25519 approval verified using an allowlisted, unrevoked, valid key authorized for `phase_a_approval`; all run/digest/policy/capacity bindings match | Missing, altered, unsafe, unsigned, or mismatched approval |
+| Phase-B admission | Signed/sealed `summary/teacher_oracle_continue.json` plus a separate `phase_b_approval` that cryptographically binds its receipt SHA-256 | Receipt absent, invalid, or terminal state not Go |
 
-## 비교안
+Preflight validates the final immutable `.env.worldmm` *before sourcing*: it must be an operator-owned, regular, non-symlink mode-`0600` file whose SHA-256 equals the independently supplied expected digest. The same unchanged file is reused for both phases; approval paths and `WORLDMM_SMVQA_REMOTE_APPROVED=1` are command-scoped. Tracked source deployment is fixed to the approved SHA and verified through a remote content manifest, while the generated plan is transferred separately. Preflight staging and plan artifacts are outside the not-yet-created run root. The sensor manifest and observations are generated from approved production inputs; only after production are their generated audit/manifest digests verified. No approval, receipt, job, audit, manifest, provider output, or result is presently available.
 
-| Variant | 변경 요소 | 고정 input |
-| --- | --- | --- |
-| E0: Source-compact | 기존 heuristic spatial memory | Split, selected 1 Hz RGB, non-spatial stores, retrieval, QA backend, byte budget |
-| T0: Teacher object geometry | Offline teacher object centroid/extent/uncertainty | E0 고정 input과 exact byte budget |
-| T1: Teacher object + place | T0에 evidence-bound semantic `place_label`과 `last_location` 추가 | E0 고정 input과 exact byte budget |
+Phase A is the generated CPU preflight script followed, after separate approval, by the generated provider-gate script: fixed producers → `afterany` gate → `afterany` terminal. The gate admits each producer only after exact top-level `sacct` `JobIDRaw,State,ExitCode` success, marker, artifact rehash, and attempt lineage. Failure, OOM, node failure, timeout, corruption, or unintentional cancellation is canonical failure; intentional cancellation requires a sealed intent before `scancel`. No polling/manual fallback is allowed. The terminal produces either the sole continuation receipt or the early `provider_gate_terminal_v1` report; Phase-B IDs do not exist on the latter branch.
 
-Prebuilt answer text, question, choice, label, evidence annotation은 teacher target이나
-memory writer 입력으로 사용하지 않는다.
+Phase B is a separately approved generated downstream submission. Its approval binds the SHA-256 of the exact continuation and terminal file bytes, atomically consumes the continuation, and only then submits per-variant materialize/retrieve/label-blind QA followed by evaluator/finalizer. The full profile is `oracle_variants_terminal_v1`. The authoritative commands, script names, job manifests, monitoring, cancellation, recovery, and early/full lightweight copyback procedure are in `HANDOFF.md`; no company command is executed by default.
 
-## 가설
+## Scientific Go/No-Go
 
-동일 causal frame inventory와 serialized-byte budget에서 evidence-bound offline
-teacher object/place record는 source-compact baseline보다 object/location slice의
-QA utility를 높이며 unsupported case의 abstention을 유지한다.
+Before Phase B, freeze the object/location slice, utility/confidence-interval rule, selective-risk/error bound, seed, split/input digests, frame inventory, and byte cap. Scientific Go/No-Go is derived from the frozen per-variant byte, frame, metric, and risk evidence, not from operational status or an approver assertion. Phase B may run only `E0`, `T0`, and `T1`; teacher and memory construction remain blind to question, choice, answer, label, evidence, and aliases.
 
-## 실행 contract
+Scientific Go requires the predeclared utility and risk rules, valid provenance from audit through result manifests, no invalid/duplicate/persisted-no-write/future/off-scope evidence, and evidence-bound confidence/abstention. Scientific No-Go or not-measurable is a result, not a reason to relabel a legacy run as success.
 
-| 항목 | 고정값 |
-| --- | --- |
-| Execution location | 명시적 승인 후 company GPU/CPU resources |
-| Code revision | TBD |
-| Dataset과 split | TBD; official object/location slice를 실행 전 고정 |
-| Dataset, source, question, label digest | TBD |
-| Sensor-frame manifest와 frame-asset digest | TBD |
-| Camera intrinsics, pose, depth coverage report | TBD; available signal만 사용 |
-| Teacher provider, code, checkpoint, config digest | TBD |
-| Semantic mask/place provider와 ontology digest | TBD |
-| Random seed | TBD |
-| Byte-budget scope와 값 | 30초 source window당 기본 4,096 byte; run 전 고정 |
-| QA backend와 prompt schema | TBD |
-| Result class | `teacher_oracle`; `student`/`E1` 사용 금지 |
-| Run ID | TBD |
+## Boundaries after completion
 
-Prepared source에 camera calibration, readable RGB asset, 필요한 pose/depth가 없으면
-해당 modality를 추정값으로 채우지 않는다. Metric geometry가 측정 불가능하면 결과를
-No-Go 또는 not measurable로 기록한다.
+Allowed output claim: a run-scoped `teacher_oracle` EXP-0005 conclusion with reviewed evidence. Forbidden claims: student quality, target-device performance, official E1/E2/E3, generic benchmark improvement, or provider quality beyond the measured contract. Company data, frames, weights, checkpoints, provider cache/output, and large artifacts stay remote. Copy back only reviewed lightweight metrics, manifests, reports, terminal receipts, redacted logs/plots, and approved small samples.
 
-## 추적성
-
-| 유형 | Link | 관련성 |
-| --- | --- | --- |
-| Claim | [C-001: sparse geometry](../traceability.md) | Offline teacher geometry ceiling 측정 |
-| Claim | [C-003: verifiable geometry QA](../traceability.md) | Object/place record에서 deterministic proof 생성 |
-| Claim | [C-006: transient/persistent separation](../traceability.md) | Dense teacher output은 transient, typed record만 persistent |
-| Claim | [C-009: provenance and abstention](../traceability.md) | Inferred evidence/confidence/causality gate 검증 |
-| Decision | [ADR-0002: G-CUT3R teacher](../decisions/adr-0002-gcut3r-as-teacher.md) | Large model은 offline oracle로 제한 |
-| Decision | [ADR-0005: hybrid device compiler](../decisions/adr-0005-hybrid-on-device-compiler.md) | Student 투자 전 oracle utility gate |
-| Decision | [ADR-0006: inferred geometry](../decisions/adr-0006-evidence-bound-inferred-geometry.md) | Evidence-bound inferred proof admission |
-| Paper | [SuperMemory-VQA](../papers/supermemory-vqa.md) | Object/location long-horizon QA context |
-
-## 실행 provenance
-
-| 항목 | 값 |
-| --- | --- |
-| Run ID | 미할당 |
-| Code revision | 미기록 |
-| Slurm job ID 또는 process reference | 없음 |
-| Company artifact path | 없음 |
-| Metrics artifact | 없음 |
-| Log | 없음 |
-| 로컬 복사 | 없음 |
+`probe` and `full` are deferred legacy lanes: they emit `contract_probe`/`PROBE` and `student`/`E1`, respectively, and cannot satisfy EXP-0005.

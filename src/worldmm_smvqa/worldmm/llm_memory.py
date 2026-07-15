@@ -265,7 +265,5 @@ def _parse[ModelT: BaseModel](
 
 
 def _slug(value: str) -> str:
-    cleaned = "".join(
-        char if char.isalnum() else "_" for char in value.strip().lower()
-    )
+    cleaned = "".join(char if char.isalnum() else "_" for char in value.strip().lower())
     return "_".join(part for part in cleaned.split("_") if part)

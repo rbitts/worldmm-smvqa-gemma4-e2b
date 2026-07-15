@@ -440,9 +440,7 @@ def prediction(
     question_id: str,
     ranked_choices: tuple[str, ...],
     *,
-    supporting_memory_ids: tuple[str, ...] = (
-        "fake_video_001:5:12:transcript",
-    ),
+    supporting_memory_ids: tuple[str, ...] = ("fake_video_001:5:12:transcript",),
     supporting_evidence: tuple[SupportingEvidence, ...] = (),
     retrieved_evidence: tuple[SupportingEvidence, ...] = (),
 ) -> PredictionRecord:

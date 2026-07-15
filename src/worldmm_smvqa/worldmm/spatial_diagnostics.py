@@ -234,8 +234,7 @@ def memory_recall_at_k(
     return MemoryRecallAtK(
         k=k,
         recall_at_k={
-            store: _ratio(store_hits[store], store_totals[store])
-            for store in STORES
+            store: _ratio(store_hits[store], store_totals[store]) for store in STORES
         },
         protocol_recall_at_k={
             protocol: _ratio(protocol_hits[protocol], protocol_totals[protocol])
@@ -392,8 +391,7 @@ def write_spatial_retrieval_diagnostics(
     labels = _read_labels(label_path)
     labels_by_id = {label.question_id: label for label in labels}
     recall = {
-        str(k): memory_recall_at_k(packs, labels, k).model_dump()
-        for k in (1, 3, 5)
+        str(k): memory_recall_at_k(packs, labels, k).model_dump() for k in (1, 3, 5)
     }
     evidence = tuple(item for pack in packs for item in pack.evidence)
     payload = {

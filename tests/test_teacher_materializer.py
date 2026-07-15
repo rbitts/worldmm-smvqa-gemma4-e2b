@@ -157,7 +157,6 @@ def _write_jsonl(path: Path, rows: list[dict[str, object]]) -> None:
 
 def test_materializer_joins_in_causal_order_and_derives_trusted_targets(
     tmp_path: Path,
-    capsys: pytest.CaptureFixture[str],
 ) -> None:
     cache = tmp_path / "teacher-cache.jsonl"
     supervision = tmp_path / "supervision.jsonl"
@@ -165,19 +164,8 @@ def test_materializer_joins_in_causal_order_and_derives_trusted_targets(
     object_record, _ = _teacher_cache(cache)
     _write_jsonl(supervision, _supervision_rows())
 
-    assert (
-        main(
-            [
-                "--teacher-cache",
-                str(cache),
-                "--supervision",
-                str(supervision),
-                "--out",
-                str(out),
-            ],
-        )
-        == 0
-    )
+    rows = materialize_teacher_cache(cache, supervision, out)
+    assert len(rows) == 2
     loaded = TeacherCacheDataset(out)
     encoded = tuple(json.loads(line) for line in out.read_text().splitlines())
 
@@ -191,11 +179,18 @@ def test_materializer_joins_in_causal_order_and_derives_trusted_targets(
     assert encoded[0]["byte_cost"] == serialized_byte_cost(object_record)
     assert encoded[1]["type_label"] == "no_write"
     assert encoded[1]["byte_cost"] == 0
-    assert json.loads(capsys.readouterr().out)["splits"] == {
-        "train": 1,
-        "validation": 1,
-    }
     assert not tuple(tmp_path.glob(".*.tmp"))
+    with pytest.raises(SystemExit, match="2"):
+        _ = main(
+            [
+                "--teacher-cache",
+                str(cache),
+                "--supervision",
+                str(supervision),
+                "--out",
+                str(out),
+            ]
+        )
 
 
 @pytest.mark.parametrize(

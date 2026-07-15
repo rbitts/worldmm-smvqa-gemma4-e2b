@@ -250,9 +250,7 @@ def geometry_proofs_for_question(  # noqa: PLR0911,PLR0913
     facts, _invalid = _normalize(records)
     fact_frames = tuple(
         dict.fromkeys(
-            fact.coordinate_frame
-            for fact in facts
-            if fact.coordinate_frame is not None
+            fact.coordinate_frame for fact in facts if fact.coordinate_frame is not None
         ),
     )
     effective_frame = (
@@ -287,9 +285,7 @@ def geometry_proofs_for_question(  # noqa: PLR0911,PLR0913
                 count_query,
                 selected,
                 _Result(
-                    reason=(
-                        "dynamic count requires consolidated object state"
-                    ),
+                    reason=("dynamic count requires consolidated object state"),
                 ),
             ),
         )
@@ -349,8 +345,7 @@ def geometry_proofs_for_question(  # noqa: PLR0911,PLR0913
                     facts,
                     _Result(
                         reason=(
-                            "last-seen state is stale relative to a typed "
-                            "change event"
+                            "last-seen state is stale relative to a typed change event"
                         ),
                     ),
                     subject_entity_id=query.subject,
@@ -638,9 +633,7 @@ def _count(
         return _proof(
             query,
             selected,
-            _Result(
-                reason=f"conflicting latest records: {conflicting_ids}"
-            ),
+            _Result(reason=f"conflicting latest records: {conflicting_ids}"),
         )
     if not selected:
         return _proof(
@@ -1019,8 +1012,7 @@ def _operation(text: str) -> GeometryOperation | None:  # noqa: PLR0911
     if any(term in text for term in ("last seen", "last saw", "last observed")):
         return "last_location" if _last_seen_location_intent(text) else "last_seen"
     if _last_seen_location_intent(text) and any(
-        term in text
-        for term in ("did i leave", "did i put", "was left", "was placed")
+        term in text for term in ("did i leave", "did i put", "was left", "was placed")
     ):
         return "last_location"
     if any(term in text for term in ("how many", "number of", "count of")):
@@ -1046,15 +1038,13 @@ def _operation(text: str) -> GeometryOperation | None:  # noqa: PLR0911
 
 def _last_seen_time_intent(text: str) -> bool:
     return any(
-        term in text
-        for term in ("when", "what time", "at what time", "timestamp")
+        term in text for term in ("when", "what time", "at what time", "timestamp")
     )
 
 
 def _last_seen_location_intent(text: str) -> bool:
     return any(
-        term in text
-        for term in ("where", "which room", "what room", "location")
+        term in text for term in ("where", "which room", "what room", "location")
     )
 
 

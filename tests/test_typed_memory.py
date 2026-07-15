@@ -13,10 +13,12 @@ from worldmm_smvqa.worldmm.typed_memory import (
     NoWriteMemoryRecord,
     ObjectGeometry,
     ObjectMemoryRecord,
+    ObjectPresenceMemoryRecord,
     PlaneGeometry,
     PlaneMemoryRecord,
     PortalGeometry,
     PortalMemoryRecord,
+    SourceCompactMemoryRecord,
     SpatialUncertainty,
     TypedMemoryRecord,
     ValidityInterval,
@@ -128,7 +130,16 @@ def test_typed_memory_union_accepts_every_record_type() -> None:
         "event",
         "no_write",
     )
-    assert all(record.validity.end_time == 2.0 for record in parsed)
+    records_with_validity = tuple(
+        record
+        for record in parsed
+        if not isinstance(
+            record,
+            (ObjectPresenceMemoryRecord, SourceCompactMemoryRecord),
+        )
+    )
+    assert len(records_with_validity) == len(parsed)
+    assert all(record.validity.end_time == 2.0 for record in records_with_validity)
     assert serialized_byte_cost(records[-1]) == 0
 
 

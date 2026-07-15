@@ -163,8 +163,7 @@ def apply_sensor_frame_manifest(
     path: Path,
 ) -> tuple[SourceStreamExample, ...]:
     expected = {
-        record.video_id: record
-        for record in build_sensor_frame_manifest(sources)
+        record.video_id: record for record in build_sensor_frame_manifest(sources)
     }
     actual = _records_by_video(records, path)
     if actual.keys() != expected.keys():

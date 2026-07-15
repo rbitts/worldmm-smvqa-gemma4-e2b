@@ -538,9 +538,7 @@ def train_selector_model(
         training_rows,
     )
     fit_rows = tuple(row for row in training_rows if row.split == "train")
-    validation_rows = tuple(
-        row for row in training_rows if row.split == "validation"
-    )
+    validation_rows = tuple(row for row in training_rows if row.split == "validation")
     if not fit_rows or not validation_rows:
         raise SelectorTrainingError(
             detail="training requires non-empty train and validation splits",
@@ -695,9 +693,7 @@ def _read_labels(path: Path) -> tuple[QALabelExample, ...]:
         raise FixtureValidationError(path=path, detail=str(exc)) from exc
     try:
         return tuple(
-            QALabelExample.model_validate_json(line)
-            for line in lines
-            if line.strip()
+            QALabelExample.model_validate_json(line) for line in lines if line.strip()
         )
     except ValidationError as exc:
         raise FixtureValidationError(path=path, detail=str(exc)) from exc

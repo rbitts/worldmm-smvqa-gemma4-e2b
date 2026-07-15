@@ -343,9 +343,7 @@ def test_memory_recall_at_k_groups_hits_by_store_and_protocol() -> None:
 
 def test_memory_recall_uses_item_video_and_accepts_frame_points() -> None:
     # Given: primary-video pack with evidence from another allowed video.
-    labels = (
-        _label("q_cross_video", evidence_list=("fake_video_002:20:30:visual",)),
-    )
+    labels = (_label("q_cross_video", evidence_list=("fake_video_002:20:30:visual",)),)
     packs = (
         _pack(
             "q_cross_video",

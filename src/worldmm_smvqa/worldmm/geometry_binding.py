@@ -165,8 +165,12 @@ def _anchor_midpoint(anchor: SpatialAnchorRecord) -> float:
 
 
 def _primitive_time(primitive: GeometryPrimitive) -> float:
-    return primitive.timestamp if primitive.timestamp is not None else _frame_time(
-        primitive.frame_ref,
+    return (
+        primitive.timestamp
+        if primitive.timestamp is not None
+        else _frame_time(
+            primitive.frame_ref,
+        )
     )
 
 

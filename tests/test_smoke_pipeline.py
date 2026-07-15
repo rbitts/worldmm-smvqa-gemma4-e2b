@@ -174,8 +174,7 @@ def test_smoke_cli_writes_parseable_artifacts_and_replaces_rerun(
     assert diagnostics.relation_metric_accuracy["f1"] == 1.0
     assert "spatial" in diagnostics.recall_at_k
     assert all(
-        pack.retrieval_trace.protocols
-        == ("smvqa-video-rag", "egobutler", "worldmm")
+        pack.retrieval_trace.protocols == ("smvqa-video-rag", "egobutler", "worldmm")
         for pack in packs
     )
 
@@ -249,9 +248,7 @@ def test_smoke_retrieval_uses_current_worldmm_store_state(
     assert result.evidence_packs == 6
     assert result.manifest.counts_by_store.retrieval.spatial > 0
     assert any(
-        item.memory_id == injected_id
-        for pack in packs
-        for item in pack.evidence
+        item.memory_id == injected_id for pack in packs for item in pack.evidence
     )
 
 
@@ -261,9 +258,7 @@ def test_spatial_experiment_flows_through_combined_worldmm_qa(
     # Given: one explicit encoder/projection/decoder experiment configuration.
     out_dir = tmp_path / "smoke-spatial-experiment"
     env = {
-        "WORLDMM_SPATIAL_EXPERIMENT_CONFIG": (
-            "configs/spatial/source_compact_v1.json"
-        ),
+        "WORLDMM_SPATIAL_EXPERIMENT_CONFIG": ("configs/spatial/source_compact_v1.json"),
     }
 
     # When: smoke builds every memory store, retrieves, and runs QA.

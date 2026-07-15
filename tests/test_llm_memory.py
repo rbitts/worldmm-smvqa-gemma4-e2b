@@ -56,7 +56,7 @@ def _fake_generate(prompt: str) -> str:
     if "clip summaries" in prompt:
         return json.dumps({"summary": "shard: desk routine"})
     if "Observations" in prompt:
-        return f'```json\n{json.dumps({"summary": "clip event"})}\n```'
+        return f"```json\n{json.dumps({'summary': 'clip event'})}\n```"
     detail = f"unexpected prompt: {prompt[:80]}"
     raise AssertionError(detail)
 
@@ -137,9 +137,11 @@ def test_episodic_retrieval_snippet_prefers_llm_summary() -> None:
     # Then: episodic snippets lead with the LLM summary text.
     episodic = [item for item in candidates if item.source_store == "episodic"]
     assert episodic
-    assert all(item.snippet.startswith("clip event")
-               or item.snippet.startswith("shard: desk routine")
-               for item in episodic)
+    assert all(
+        item.snippet.startswith("clip event")
+        or item.snippet.startswith("shard: desk routine")
+        for item in episodic
+    )
 
 
 def _consolidating_generate(decision: str) -> tuple[list[str], TextGenerator]:
@@ -151,14 +153,22 @@ def _consolidating_generate(decision: str) -> tuple[list[str], TextGenerator]:
             return json.dumps({"action": decision})
         if "mug on shelf" in prompt:
             return json.dumps(
-                {"triplets": [
-                    {"subject": "mug", "predicate": "located_on", "object": "shelf"},
-                ]},
+                {
+                    "triplets": [
+                        {
+                            "subject": "mug",
+                            "predicate": "located_on",
+                            "object": "shelf",
+                        },
+                    ]
+                },
             )
         return json.dumps(
-            {"triplets": [
-                {"subject": "mug", "predicate": "located_on", "object": "desk"},
-            ]},
+            {
+                "triplets": [
+                    {"subject": "mug", "predicate": "located_on", "object": "desk"},
+                ]
+            },
         )
 
     return calls, generate
@@ -315,12 +325,21 @@ def test_build_memory_cli_rejects_local_qwen_backend(tmp_path: Path) -> None:
     # When: the LLM memory lane is requested locally.
     result = subprocess.run(
         [
-            "uv", "run", "--offline", "worldmm-smvqa", "build-memory",
-            "--config", "configs/remote.example.yaml",
-            "--store", "episodic",
-            "--fixture", "tests/fixtures/tiny_smvqa",
-            "--backend", "qwen",
-            "--out", str(tmp_path / "episodic.jsonl"),
+            "uv",
+            "run",
+            "--offline",
+            "worldmm-smvqa",
+            "build-memory",
+            "--config",
+            "configs/remote.example.yaml",
+            "--store",
+            "episodic",
+            "--fixture",
+            "tests/fixtures/tiny_smvqa",
+            "--backend",
+            "qwen",
+            "--out",
+            str(tmp_path / "episodic.jsonl"),
         ],
         cwd=ROOT,
         env=env,
@@ -346,12 +365,21 @@ def test_build_memory_cli_reports_missing_qwen_paths_without_traceback(
     # When: the Qwen backend is requested.
     result = subprocess.run(
         [
-            "uv", "run", "--offline", "worldmm-smvqa", "build-memory",
-            "--config", "configs/remote.example.yaml",
-            "--store", "episodic",
-            "--fixture", "tests/fixtures/tiny_smvqa",
-            "--backend", "qwen",
-            "--out", str(tmp_path / "episodic.jsonl"),
+            "uv",
+            "run",
+            "--offline",
+            "worldmm-smvqa",
+            "build-memory",
+            "--config",
+            "configs/remote.example.yaml",
+            "--store",
+            "episodic",
+            "--fixture",
+            "tests/fixtures/tiny_smvqa",
+            "--backend",
+            "qwen",
+            "--out",
+            str(tmp_path / "episodic.jsonl"),
         ],
         cwd=ROOT,
         env=env,

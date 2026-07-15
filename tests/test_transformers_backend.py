@@ -109,8 +109,7 @@ def test_generate_multimodal_reads_chat_message_output(
 
     # When / Then: assistant text is extracted from message content.
     assert (
-        generate_transformers_multimodal("prompt", "chat-model", ())
-        == '{"answer":"A"}'
+        generate_transformers_multimodal("prompt", "chat-model", ()) == '{"answer":"A"}'
     )
 
 

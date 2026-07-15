@@ -2,17 +2,28 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import importlib.metadata
 import json
 import math
 import os
 import sys
+import sysconfig
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, ClassVar, Final, Literal, Protocol, cast, override
+from typing import (
+    TYPE_CHECKING,
+    ClassVar,
+    Final,
+    Literal,
+    NoReturn,
+    Protocol,
+    cast,
+    override,
+)
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -23,14 +34,21 @@ from worldmm_smvqa.qa import evidence_pack_validation_error
 from worldmm_smvqa.qa_shards import (
     DistributedEnv,
     QAShardError,
+    QAShardLineage,
+    QuestionShardMap,
     checkpoint_rank,
     complete_rank,
     distributed_env,
     load_rank_progress,
+    merge_sealed_shards,
     merge_shards,
     packs_for_rank,
+    packs_for_rank_from_map,
     partial_output_path,
     rank_output_path,
+    sealed_checkpoint_rank,
+    sealed_complete_rank,
+    sealed_load_rank_progress,
     wait_for_shards,
 )
 from worldmm_smvqa.retrieval import read_retrieval_memory_artifacts
@@ -40,6 +58,11 @@ from worldmm_smvqa.retrieval_types import (
     EvidenceLane,
     EvidenceLineage,
     EvidencePack,
+    OracleQAPreEvaluationLineage,
+    OracleVariant,
+    SharedQALineage,
+    canonical_oracle_to_evidence_pack,
+    load_canonical_oracle_evidence_pack,
 )
 from worldmm_smvqa.sensor_frames import (
     SensorFrameManifestError,
@@ -198,9 +221,13 @@ class TransformersCliArgs:
     frame_assets_manifest: Path | None = None
     lineage_config: Path | None = None
     sensor_frame_manifest: Path | None = None
+    sensor_audit: Path | None = None
     memory_manifest: Path | None = None
     inference_sources: Path | None = None
     inference_producer: Path | None = None
+    approved_shard_map: Path | None = None
+    qa_shard_lineage: Path | None = None
+    expected_variant: OracleVariant | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -209,7 +236,7 @@ class TransformersCliResult:
     predictions: int
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(slots=True)
 class TransformersCliUsageError(Exception):
     detail: str
 
@@ -236,6 +263,8 @@ def run_transformers_cli(  # noqa: PLR0912,PLR0915
         geometry_proofs_for_question,
     )
 
+    if args.evidence_lane == "teacher_oracle" and args.backend == "mock":
+        raise TransformersCliUsageError(detail="teacher_oracle forbids MockQABackend")
     questions = _questions_by_id(args.fixture)
     sensor_manifest_path = args.sensor_frame_manifest
     if sensor_manifest_path is None:
@@ -248,8 +277,33 @@ def run_transformers_cli(  # noqa: PLR0912,PLR0915
             sensor_records,
             path=sensor_manifest_path,
         )
-    packs = _read_evidence_packs(args.evidence)
+    packs = _read_evidence_packs(
+        args.evidence,
+        canonical_oracle=args.evidence_lane == "teacher_oracle",
+        expected_variant=args.expected_variant,
+    )
     distributed = distributed_env(env)
+    sealed_shard_map: QuestionShardMap | None = None
+    sealed_lineage: QAShardLineage | None = None
+    if args.evidence_lane == "teacher_oracle":
+        sealed_shard_map, sealed_lineage = _read_sealed_qa_contract(
+            args.approved_shard_map,
+            args.qa_shard_lineage,
+        )
+        _validate_teacher_oracle_contract(
+            args,
+            env,
+            packs,
+            sealed_shard_map,
+            sealed_lineage,
+        )
+        if sealed_shard_map.world_size != distributed.world_size:
+            raise TransformersCliUsageError(
+                detail=(
+                    "approved teacher-oracle shard map world_size does not "
+                    "match runtime"
+                ),
+            )
     if args.evidence_lane == "student":
         if args.model_fingerprint is None:
             raise TransformersCliUsageError(
@@ -309,11 +363,16 @@ def run_transformers_cli(  # noqa: PLR0912,PLR0915
             distributed,
         )
         evidence_lineage = validation_seal.lineage
+    elif args.evidence_lane == "teacher_oracle":
+        evidence_lineage = None
     else:
         evidence_lineage = validate_lineage()
     validate_evidence_trace_lane(packs, args.evidence_lane)
     validate_external_evidence_packs(packs, questions)
-    rank_packs = packs_for_rank(packs, distributed)
+    if sealed_shard_map is None:
+        rank_packs = packs_for_rank(packs, distributed)
+    else:
+        rank_packs = packs_for_rank_from_map(packs, distributed, sealed_shard_map)
     rank_video_ids = frozenset(
         video_id
         for pack in rank_packs
@@ -378,16 +437,14 @@ def run_transformers_cli(  # noqa: PLR0912,PLR0915
             distributed,
         )
         typed_spatial_records = tuple(
-            record
-            for record in canonical_records
-            if record.source_store == "spatial"
+            record for record in canonical_records if record.source_store == "spatial"
         )
     typed_geometry_by_video: dict[str, list[RetrievalMemoryRecord]] = {}
     for record in typed_spatial_records:
-        if (
-            record.geometry is not None
-            and record.geometry.get("record_type") in {"event", "object"}
-        ):
+        if record.geometry is not None and record.geometry.get("record_type") in {
+            "event",
+            "object",
+        }:
             typed_geometry_by_video.setdefault(record.video_id, []).append(record)
     if validation_process_group is not None:
         try:
@@ -407,8 +464,18 @@ def run_transformers_cli(  # noqa: PLR0912,PLR0915
             backend = Gemma4QABackend(model_path=args.model)
 
     written = rank_output_path(args.out, distributed)
-    _bind_resume_manifest(args, written)
-    predictions = list(load_rank_progress(written))
+    if sealed_shard_map is None or sealed_lineage is None:
+        _bind_resume_manifest(args, written)
+        predictions = list(load_rank_progress(written))
+    else:
+        predictions = list(
+            sealed_load_rank_progress(
+                written,
+                sealed_shard_map,
+                distributed,
+                sealed_lineage,
+            )
+        )
     _validate_rank_progress(rank_packs, predictions, completed=written.exists())
     completed_by_question = {
         prediction.question_id: prediction for prediction in predictions
@@ -519,15 +586,36 @@ def run_transformers_cli(  # noqa: PLR0912,PLR0915
                     )
                 raise last_parse_error
             predictions.append(prediction)
-            checkpoint_rank(written, predictions)
+            if sealed_shard_map is None or sealed_lineage is None:
+                checkpoint_rank(written, predictions)
+            else:
+                sealed_checkpoint_rank(
+                    written,
+                    predictions,
+                    sealed_shard_map,
+                    distributed,
+                    sealed_lineage,
+                )
         except (QABackendUnavailableError, QAParseError) as exc:
             raise TransformersCliUsageError(detail=str(exc)) from exc
-    complete_rank(written, predictions)
-    if distributed.world_size == 1:
+    if sealed_shard_map is None or sealed_lineage is None:
+        complete_rank(written, predictions)
+        if distributed.world_size == 1:
+            return TransformersCliResult(written=written, predictions=len(predictions))
+        if distributed.rank == 0:
+            wait_for_shards(args.out, distributed.world_size, env)
+            merge_shards(args.out, packs, distributed.world_size)
+            return TransformersCliResult(written=args.out, predictions=len(packs))
         return TransformersCliResult(written=written, predictions=len(predictions))
+    sealed_complete_rank(
+        written,
+        predictions,
+        sealed_shard_map,
+        distributed,
+        sealed_lineage,
+    )
     if distributed.rank == 0:
-        wait_for_shards(args.out, distributed.world_size, env)
-        merge_shards(args.out, packs, distributed.world_size)
+        merge_sealed_shards(args.out, packs, sealed_shard_map, sealed_lineage)
         return TransformersCliResult(written=args.out, predictions=len(packs))
     return TransformersCliResult(written=written, predictions=len(predictions))
 
@@ -588,9 +676,13 @@ def parse_cli_args(argv: Sequence[str]) -> TransformersCliArgs:  # noqa: PLR0912
     frame_assets_manifest: Path | None = None
     lineage_config: Path | None = None
     sensor_frame_manifest: Path | None = None
+    sensor_audit: Path | None = None
     memory_manifest: Path | None = None
     inference_sources: Path | None = None
     inference_producer: Path | None = None
+    approved_shard_map: Path | None = None
+    qa_shard_lineage: Path | None = None
+    expected_variant: OracleVariant | None = None
     require_frames = False
     out: Path | None = None
     backend: TransformersBackendName = "gemma4"
@@ -614,9 +706,13 @@ def parse_cli_args(argv: Sequence[str]) -> TransformersCliArgs:  # noqa: PLR0912
             "--frame-assets-manifest",
             "--lineage-config",
             "--sensor-frame-manifest",
+            "--sensor-audit",
             "--memory-manifest",
             "--inference-sources",
             "--inference-producer",
+            "--approved-shard-map",
+            "--qa-shard-lineage",
+            "--expected-variant",
             "--out",
             "--backend",
         }:
@@ -647,12 +743,20 @@ def parse_cli_args(argv: Sequence[str]) -> TransformersCliArgs:  # noqa: PLR0912
                 lineage_config = Path(value)
             elif option == "--sensor-frame-manifest":
                 sensor_frame_manifest = Path(value)
+            elif option == "--sensor-audit":
+                sensor_audit = Path(value)
             elif option == "--memory-manifest":
                 memory_manifest = Path(value)
             elif option == "--inference-sources":
                 inference_sources = Path(value)
             elif option == "--inference-producer":
                 inference_producer = Path(value)
+            elif option == "--approved-shard-map":
+                approved_shard_map = Path(value)
+            elif option == "--qa-shard-lineage":
+                qa_shard_lineage = Path(value)
+            elif option == "--expected-variant":
+                expected_variant = _parse_oracle_variant(value)
             elif option == "--out":
                 out = Path(value)
             elif option == "--backend":
@@ -688,8 +792,12 @@ def parse_cli_args(argv: Sequence[str]) -> TransformersCliArgs:  # noqa: PLR0912
         frame_assets_manifest=frame_assets_manifest,
         lineage_config=lineage_config,
         sensor_frame_manifest=sensor_frame_manifest,
+        sensor_audit=sensor_audit,
         memory_manifest=memory_manifest,
         inference_sources=inference_sources,
+        approved_shard_map=approved_shard_map,
+        qa_shard_lineage=qa_shard_lineage,
+        expected_variant=expected_variant,
         inference_producer=inference_producer,
     )
 
@@ -729,18 +837,382 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-def _read_evidence_packs(path: Path) -> tuple[EvidencePack, ...]:
+def _read_evidence_packs(
+    path: Path,
+    *,
+    canonical_oracle: bool = False,
+    expected_variant: OracleVariant | None = None,
+) -> tuple[EvidencePack, ...]:
     packs: list[EvidencePack] = []
+    canonical_variants: set[OracleVariant] = set()
     lines = path.read_text(encoding="utf-8").splitlines()
     for line_number, line in enumerate(lines, start=1):
         if not line.strip():
             continue
         try:
-            packs.append(EvidencePack.model_validate_json(line))
-        except ValidationError as exc:
+            if canonical_oracle:
+                canonical = load_canonical_oracle_evidence_pack(line)
+                canonical_variants.add(canonical.variant)
+                packs.append(canonical_oracle_to_evidence_pack(canonical))
+            else:
+                packs.append(EvidencePack.model_validate_json(line))
+        except (ValidationError, ValueError, json.JSONDecodeError) as exc:
             detail = f"{path}: line {line_number}: {exc}"
             raise TransformersCliUsageError(detail=detail) from exc
+    if canonical_oracle:
+        if expected_variant is None:
+            raise TransformersCliUsageError(
+                detail="teacher_oracle requires --expected-variant"
+            )
+        if canonical_variants != {expected_variant}:
+            raise TransformersCliUsageError(
+                detail=(
+                    "teacher-oracle evidence must contain exactly the expected variant"
+                )
+            )
     return tuple(packs)
+
+
+def _read_sealed_qa_contract(
+    shard_map_path: Path | None,
+    lineage_path: Path | None,
+) -> tuple[QuestionShardMap, QAShardLineage]:
+    """Load the immutable EXP-0005 shard contract before any QA work begins."""
+    if shard_map_path is None:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires --approved-shard-map",
+        )
+    if lineage_path is None:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires --qa-shard-lineage",
+        )
+    try:
+        shard_map = QuestionShardMap.model_validate_json(
+            shard_map_path.read_text(encoding="utf-8"),
+        )
+        lineage = QAShardLineage.model_validate_json(
+            lineage_path.read_text(encoding="utf-8"),
+        )
+    except (OSError, ValidationError) as exc:
+        raise TransformersCliUsageError(
+            detail=f"invalid sealed teacher-oracle QA contract: {exc}",
+        ) from exc
+    if shard_map.world_size != lineage.world_size:
+        raise TransformersCliUsageError(
+            detail=(
+                "sealed teacher-oracle QA lineage world_size does not match shard map"
+            ),
+        )
+    if (
+        shard_map.approved_salt != lineage.approved_salt
+        or shard_map.sha256 != lineage.question_map_sha256
+    ):
+        raise TransformersCliUsageError(
+            detail="sealed teacher-oracle QA lineage does not match shard map",
+        )
+    return shard_map, lineage
+
+
+def read_teacher_oracle_pre_evaluation_lineage(
+    path: Path | None,
+) -> OracleQAPreEvaluationLineage:
+    """Read only the output-free contract required before teacher QA begins."""
+    if path is None:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires --evidence-lineage"
+        )
+    try:
+        return OracleQAPreEvaluationLineage.model_validate_json(
+            path.read_text(encoding="utf-8")
+        )
+    except (OSError, ValidationError) as exc:
+        raise TransformersCliUsageError(
+            detail=f"invalid teacher-oracle pre-evaluation lineage: {path}: {exc}"
+        ) from exc
+
+
+def _validate_teacher_oracle_contract(
+    args: TransformersCliArgs,
+    env: Mapping[str, str],
+    packs: Sequence[EvidencePack],
+    shard_map: QuestionShardMap,
+    shard_lineage: QAShardLineage,
+) -> None:
+    """Bind the live teacher QA invocation to approved evidence and runtime lineage."""
+    if args.expected_variant is None:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires --expected-variant"
+        )
+    oracle_lineage = read_teacher_oracle_pre_evaluation_lineage(args.evidence_lineage)
+    qa_input = next(
+        (
+            item
+            for item in oracle_lineage.qa_inputs
+            if item.variant == args.expected_variant
+        ),
+        None,
+    )
+    evidence_sha256 = _sha256_file(args.evidence)
+    if (
+        qa_input is None
+        or qa_input.evidence_sha256 != evidence_sha256
+        or shard_lineage.evidence_sha256 != evidence_sha256
+    ):
+        raise TransformersCliUsageError(
+            detail="teacher-oracle evidence bytes do not match approved QA inputs"
+        )
+    _validate_teacher_oracle_shard_lineage(
+        shard_map,
+        shard_lineage,
+        oracle_lineage.shared_qa_lineage,
+    )
+    validate_teacher_oracle_live_contract(args, env, oracle_lineage)
+    if qa_input.pre_evaluation_sha256 != oracle_lineage.shared_qa_lineage.sha256:
+        raise TransformersCliUsageError(
+            detail=(
+                "teacher-oracle QA inputs do not match approved pre-evaluation lineage"
+            )
+        )
+    if not packs:
+        raise TransformersCliUsageError(
+            detail="teacher-oracle evidence must not be empty"
+        )
+
+
+def _validate_teacher_oracle_shard_lineage(
+    shard_map: QuestionShardMap,
+    shard_lineage: QAShardLineage,
+    shared: SharedQALineage,
+) -> None:
+    if (
+        shard_lineage.approved_salt != shared.approved_salt
+        or shard_lineage.world_size != shared.world_size
+        or shard_lineage.question_map_sha256 != shared.question_map_sha256
+        or shard_lineage.model_sha256 != shared.model_sha256
+        or shard_lineage.prompt_sha256 != shared.prompt_sha256
+        or shard_lineage.decoding_sha256 != shared.decoding_sha256
+        or shard_lineage.runtime_sha256 != shared.runtime_sha256
+        or shard_lineage.seed != shared.seed
+    ):
+        raise TransformersCliUsageError(
+            detail=(
+                "teacher-oracle shard lineage does not match approved "
+                "QA runtime lineage"
+            )
+        )
+    if shard_map.sha256 != shared.question_map_sha256:
+        raise TransformersCliUsageError(
+            detail=(
+                "teacher-oracle shard map does not match approved QA runtime lineage"
+            )
+        )
+
+
+def validate_teacher_oracle_live_contract(
+    args: TransformersCliArgs,
+    env: Mapping[str, str],
+    oracle_lineage: OracleQAPreEvaluationLineage,
+) -> None:
+    shared = oracle_lineage.shared_qa_lineage
+    _validate_teacher_oracle_backend_and_frames(args, oracle_lineage, shared)
+    live_lineage = _live_teacher_oracle_lineage(args, env)
+    approved_inventories = (
+        shared.python_inventory_sha256,
+        shared.torch_inventory_sha256,
+        shared.transformers_inventory_sha256,
+    )
+    if any(inventory is None for inventory in approved_inventories):
+        raise TransformersCliUsageError(
+            detail="teacher-oracle approved runtime inventories are required"
+        )
+    if approved_inventories != live_lineage[4:]:
+        raise TransformersCliUsageError(
+            detail=(
+                "teacher-oracle live runtime inventories do not match approved contract"
+            )
+        )
+    if (
+        shared.prompt_sha256 != live_lineage[0]
+        or shared.decoding_sha256 != live_lineage[1]
+        or shared.runtime_sha256 != live_lineage[2]
+        or shared.seed != live_lineage[3]
+        or oracle_lineage.shared_input_sha256 != _fixture_data_sha256(args.fixture)
+    ):
+        raise TransformersCliUsageError(
+            detail="teacher-oracle live QA lineage does not match approved contract"
+        )
+
+
+def _validate_teacher_oracle_backend_and_frames(
+    args: TransformersCliArgs,
+    oracle_lineage: OracleQAPreEvaluationLineage,
+    shared: SharedQALineage,
+) -> None:
+    if args.backend == "mock":
+        raise TransformersCliUsageError(detail="teacher_oracle forbids MockQABackend")
+    if args.backend not in {"gemma4", "real"}:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires the live Gemma4 backend"
+        )
+    if args.model_fingerprint is None:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires --model-fingerprint"
+        )
+    if _sha256_file(args.model_fingerprint) != shared.model_sha256:
+        raise TransformersCliUsageError(
+            detail=(
+                "teacher-oracle model bytes do not match approved QA runtime lineage"
+            )
+        )
+    _verify_checksum_inventory(
+        args.model_fingerprint, Path(args.model), "teacher-oracle model"
+    )
+    if (
+        not args.require_frames
+        or args.sensor_frame_manifest is None
+        or args.sensor_audit is None
+    ):
+        raise TransformersCliUsageError(
+            detail=(
+                "teacher_oracle requires --require-frames, --sensor-audit, and "
+                "--sensor-frame-manifest"
+            )
+        )
+    if args.frame_assets_manifest is None:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires --frame-assets-manifest"
+        )
+    required = (
+        (args.sensor_audit, oracle_lineage.sensor_audit_sha256, "sensor audit"),
+        (
+            args.sensor_frame_manifest,
+            oracle_lineage.sensor_manifest_sha256,
+            "sensor manifest",
+        ),
+        (
+            args.frame_assets_manifest,
+            oracle_lineage.selected_frame_inventory_sha256,
+            "selected frame inventory",
+        ),
+    )
+    for path, approved, description in required:
+        if _sha256_file(path) != approved:
+            raise TransformersCliUsageError(
+                detail=f"teacher-oracle {description} does not match approved lineage"
+            )
+    _verify_checksum_inventory(
+        args.frame_assets_manifest, None, "teacher-oracle selected frame assets"
+    )
+    if _checksum_inventory_assets_sha256(args.frame_assets_manifest) != (
+        oracle_lineage.selected_frame_assets_sha256
+    ):
+        raise TransformersCliUsageError(
+            detail="teacher-oracle selected frame assets do not match approved lineage"
+        )
+
+
+def _live_teacher_oracle_lineage(
+    args: TransformersCliArgs, env: Mapping[str, str]
+) -> tuple[str, str, str, int, str, str, str]:
+    prompt_sha256 = _sha256_file(Path(__file__).with_name("qa_prompt.py"))
+    decoding_sha256 = hashlib.sha256(
+        json.dumps(
+            {
+                "backend": args.backend,
+                "parse_attempt_limit": 2,
+                "parser_sha256": _sha256_file(Path(__file__).with_name("qa.py")),
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    runtime_sha256 = hashlib.sha256(
+        json.dumps(
+            {
+                "python_executable": str(Path(sys.executable).resolve()),
+                "python_version": sys.version,
+                "python_prefix": sys.prefix,
+                "torch_version": _runtime_package_version("torch"),
+                "transformers_version": _runtime_package_version("transformers"),
+                "torch_module_sha256": _runtime_module_sha256("torch"),
+                "transformers_module_sha256": _runtime_module_sha256("transformers"),
+                "transformers_backend_sha256": _sha256_file(
+                    Path(__file__).with_name("transformers_backend.py")
+                ),
+                "qa_transformers_sha256": _sha256_file(Path(__file__)),
+                "frame_contract": "sample_video_frames-v1",
+                "require_frames": args.require_frames,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode()
+    ).hexdigest()
+    try:
+        seed = int(env["WORLDMM_QA_SEED"])
+    except (KeyError, ValueError) as exc:
+        raise TransformersCliUsageError(
+            detail="teacher_oracle requires integer WORLDMM_QA_SEED"
+        ) from exc
+    return (
+        prompt_sha256,
+        decoding_sha256,
+        runtime_sha256,
+        seed,
+        _runtime_inventory_sha256("python"),
+        _runtime_inventory_sha256("torch"),
+        _runtime_inventory_sha256("transformers"),
+    )
+
+
+def _runtime_package_version(package: str) -> str:
+    try:
+        return importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError as exc:
+        raise TransformersCliUsageError(
+            detail=f"teacher_oracle requires installed {package} runtime"
+        ) from exc
+
+
+def _runtime_module_sha256(package: str) -> str:
+    try:
+        module = importlib.import_module(package)
+        module_path = Path(module.__file__ or "").resolve(strict=True)
+    except (ImportError, OSError) as exc:
+        raise TransformersCliUsageError(
+            detail=f"teacher_oracle cannot bind {package} runtime bytes"
+        ) from exc
+    return _sha256_file(module_path)
+
+
+def _runtime_inventory_sha256(
+    runtime: Literal["python", "torch", "transformers"],
+) -> str:
+    """Hash every installed runtime file, not only package entry points."""
+    paths: tuple[Path, ...]
+    if runtime == "python":
+        stdlib = Path(sysconfig.get_path("stdlib") or "").resolve(strict=True)
+        paths = (Path(sys.executable).resolve(strict=True), *stdlib.rglob("*"))
+    else:
+        try:
+            distribution = importlib.metadata.distribution(runtime)
+        except importlib.metadata.PackageNotFoundError as exc:
+            raise TransformersCliUsageError(
+                detail=f"teacher_oracle requires installed {runtime} runtime"
+            ) from exc
+        located = (
+            Path(str(distribution.locate_file(file)))
+            for file in distribution.files or ()
+        )
+        paths = tuple(path.resolve(strict=True) for path in located if path.is_file())
+    digest = hashlib.sha256()
+    for path in sorted(set(paths)):
+        if not path.is_file():
+            continue
+        digest.update(str(path).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(_sha256_file(path).encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _questions_by_id(fixture: Path) -> dict[str, QuestionRequest]:
@@ -1150,9 +1622,7 @@ def _initialized_distributed_broadcaster(
             return None
     try:
         return (
-            explicit
-            if explicit.is_available() and explicit.is_initialized()
-            else None
+            explicit if explicit.is_available() and explicit.is_initialized() else None
         )
     except (AttributeError, RuntimeError):
         return None
@@ -1183,9 +1653,7 @@ def initialize_qa_validation_process_group(
         ) from exc
     if not 1 <= timeout_seconds <= QA_DISTRIBUTED_TIMEOUT_MAX_SECONDS:
         raise TransformersCliUsageError(
-            detail=(
-                "WORLDMM_QA_SHARD_TIMEOUT_SECONDS must be in [1, 86400]"
-            ),
+            detail=("WORLDMM_QA_SHARD_TIMEOUT_SECONDS must be in [1, 86400]"),
         )
     try:
         process_group.init_process_group(
@@ -1329,8 +1797,7 @@ def _validate_production_inference_manifest(  # noqa: PLR0912,PLR0913
         if not isinstance(value, int) or isinstance(value, bool) or value < 0:
             raise TransformersCliUsageError(
                 detail=(
-                    f"inference manifest {field} must be a non-negative integer: "
-                    f"{path}"
+                    f"inference manifest {field} must be a non-negative integer: {path}"
                 ),
             )
     byte_budget_per_window = cast("int", manifest["byte_budget_per_window"])
@@ -1383,7 +1850,7 @@ def validate_evidence_trace_lane(
     packs: Sequence[EvidencePack],
     expected_lane: EvidenceLane,
 ) -> None:
-    if expected_lane != "student":
+    if expected_lane not in {"student", "teacher_oracle"}:
         return
     for pack in packs:
         if pack.retrieval_trace.policy_route == "legacy-missing-trace":
@@ -1480,8 +1947,7 @@ def _validate_evidence_projections(
         record for record in records if record.source_store in validated_stores
     )
     index = {
-        (record.source_store, record.memory_id): record
-        for record in scoped_records
+        (record.source_store, record.memory_id): record for record in scoped_records
     }
     if len(index) != len(scoped_records):
         duplicate_detail = (
@@ -1503,19 +1969,17 @@ def _validate_evidence_projections(
             )
         if actual_frame_ref_count > max_frame_refs:
             raise TransformersCliUsageError(
-                detail=(
-                    "student evidence exceeds max_frame_refs: "
-                    f"{pack.question_id}"
-                ),
+                detail=(f"student evidence exceeds max_frame_refs: {pack.question_id}"),
             )
         remaining_frame_refs = max_frame_refs
         for item in pack.evidence:
             if item.source_store not in validated_stores:
-                remaining_frame_refs = max(
-                    0,
-                    remaining_frame_refs - len(item.frame_refs),
+                raise TransformersCliUsageError(
+                    detail=(
+                        "student evidence references store outside validated "
+                        f"projection set: {pack.question_id}:{item.source_store}"
+                    ),
                 )
-                continue
             expected = index.get((item.source_store, item.memory_id))
             if expected is None:
                 unknown_detail = (
@@ -1524,9 +1988,7 @@ def _validate_evidence_projections(
                     else "student evidence references unknown canonical memory"
                 )
                 raise TransformersCliUsageError(
-                    detail=(
-                        f"{unknown_detail}: {pack.question_id}:{item.memory_id}"
-                    ),
+                    detail=(f"{unknown_detail}: {pack.question_id}:{item.memory_id}"),
                 )
             actual_projection = (
                 item.video_id,
@@ -1551,9 +2013,7 @@ def _validate_evidence_projections(
                     else "student evidence differs from canonical memory"
                 )
                 raise TransformersCliUsageError(
-                    detail=(
-                        f"{mismatch_detail}: {pack.question_id}:{item.memory_id}"
-                    ),
+                    detail=(f"{mismatch_detail}: {pack.question_id}:{item.memory_id}"),
                 )
             remaining_frame_refs -= len(item.frame_refs)
 
@@ -1568,11 +2028,21 @@ def _parse_backend(value: str) -> TransformersBackendName:
 
 def _parse_evidence_lane(value: str) -> EvidenceLane:
     match value:
-        case "heuristic" | "student":
+        case "heuristic" | "student" | "teacher_oracle":
             return value
         case other:
             raise TransformersCliUsageError(
                 detail=f"unknown evidence lane: {other}",
+            )
+
+
+def _parse_oracle_variant(value: str) -> OracleVariant:
+    match value:
+        case "E0" | "T0" | "T1":
+            return value
+        case _:
+            raise TransformersCliUsageError(
+                detail="--expected-variant must be E0, T0, or T1"
             )
 
 
@@ -1635,6 +2105,7 @@ def qa_resume_manifest(args: TransformersCliArgs) -> dict[str, str]:
             if args.evidence_lineage is not None
             else ""
         ),
+        "expected_variant": args.expected_variant or "",
         "checkpoint_sha256": (
             _sha256_file(args.checkpoint) if args.checkpoint is not None else ""
         ),
@@ -1672,14 +2143,15 @@ def qa_resume_manifest(args: TransformersCliArgs) -> dict[str, str]:
             else ""
         ),
         "lineage_config_sha256": (
-            _sha256_file(args.lineage_config)
-            if args.lineage_config is not None
-            else ""
+            _sha256_file(args.lineage_config) if args.lineage_config is not None else ""
         ),
         "sensor_frame_manifest_sha256": (
             _sha256_file(args.sensor_frame_manifest)
             if args.sensor_frame_manifest is not None
             else ""
+        ),
+        "sensor_audit_sha256": (
+            _sha256_file(args.sensor_audit) if args.sensor_audit is not None else ""
         ),
         "memory_manifest_sha256": (
             _sha256_file(args.memory_manifest)
@@ -1691,7 +2163,7 @@ def qa_resume_manifest(args: TransformersCliArgs) -> dict[str, str]:
 
 def _fixture_data_sha256(root: Path) -> str:
     digest = hashlib.sha256()
-    for name in ("sources.jsonl", "questions.jsonl", "labels.jsonl"):
+    for name in ("sources.jsonl", "questions.jsonl"):
         digest.update(name.encode() + b"\0")
         with (root / name).open("rb") as stream:
             for chunk in iter(lambda: stream.read(1024 * 1024), b""):
@@ -1888,6 +2360,87 @@ def _validate_resume_manifest(
         raise QAShardError(
             detail=f"QA resume manifest mismatch ({fields}): {path}",
         )
+
+
+class _ChecksumInventoryError(ValueError):
+    """Raised when a checksum inventory is malformed or does not verify."""
+
+
+def _checksum_inventory_error(detail: str) -> NoReturn:
+    raise _ChecksumInventoryError(detail)
+
+
+def _read_checksum_inventory(inventory: Path) -> tuple[tuple[str, str], ...]:
+    lines = inventory.read_text(encoding="utf-8").splitlines()
+    if not lines:
+        _checksum_inventory_error("empty inventory")
+    return tuple(_parse_checksum_inventory_record(line) for line in lines)
+
+
+def _parse_checksum_inventory_record(line: str) -> tuple[str, str]:
+    digest, separator, filename = line.partition("  ")
+    if (
+        not separator
+        or len(digest) != SHA256_HEX_LENGTH
+        or any(character not in "0123456789abcdef" for character in digest)
+        or not filename
+    ):
+        _checksum_inventory_error("invalid checksum record")
+    return digest, filename
+
+
+def _validate_checksum_inventory(
+    checksums: Sequence[tuple[str, str]],
+    root: Path | None,
+) -> None:
+    resolved_root = root.resolve(strict=True) if root is not None else None
+    for digest, filename in checksums:
+        asset = Path(filename).resolve(strict=True)
+        if resolved_root is not None:
+            try:
+                _ = asset.relative_to(resolved_root)
+            except ValueError:
+                _checksum_inventory_error("inventory entry escapes model reference")
+        if _sha256_file(asset) != digest:
+            detail = f"checksum mismatch: {asset}"
+            _checksum_inventory_error(detail)
+
+
+def _verify_checksum_inventory(
+    inventory: Path, root: Path | None, description: str
+) -> None:
+    try:
+        checksums = _read_checksum_inventory(inventory)
+        _validate_checksum_inventory(checksums, root)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise TransformersCliUsageError(
+            detail=f"invalid {description} inventory: {inventory}: {exc}"
+        ) from exc
+
+
+def _checksum_inventory_assets_sha256(inventory: Path) -> str:
+    """Hash verified selected-frame assets separately from their inventory file."""
+    try:
+        checksums = _read_checksum_inventory(inventory)
+    except (OSError, UnicodeDecodeError, ValueError) as exc:
+        raise TransformersCliUsageError(
+            detail=(
+                f"invalid teacher-oracle selected frame inventory: {inventory}: {exc}"
+            )
+        ) from exc
+    digest = hashlib.sha256()
+    for expected, filename in checksums:
+        asset = Path(filename).resolve(strict=True)
+        actual = _sha256_file(asset)
+        if actual != expected:
+            raise TransformersCliUsageError(
+                detail=f"teacher-oracle selected frame asset changed: {asset}"
+            )
+        digest.update(str(asset).encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(actual.encode("ascii"))
+        digest.update(b"\n")
+    return digest.hexdigest()
 
 
 def _sha256_file(path: Path) -> str:

@@ -419,9 +419,7 @@ def _trace_summary(packs: Sequence[EvidencePack]) -> SmokeAblationTraceSummary:
         pack_count=len(packs),
         evidence_count=sum(len(pack.evidence) for pack in packs),
         selected_stores=_ordered_stores(
-            frozenset(
-                store for pack in packs for store in pack.selected_stores
-            ),
+            frozenset(store for pack in packs for store in pack.selected_stores),
         ),
         protocols=tuple(
             dict.fromkeys(
@@ -431,9 +429,7 @@ def _trace_summary(packs: Sequence[EvidencePack]) -> SmokeAblationTraceSummary:
             ),
         ),
         causal_filtered_count=sum(pack.causal_filtered_count for pack in packs),
-        frame_ref_count=sum(
-            pack.retrieval_trace.frame_ref_count for pack in packs
-        ),
+        frame_ref_count=sum(pack.retrieval_trace.frame_ref_count for pack in packs),
     )
 
 

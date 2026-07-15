@@ -317,14 +317,14 @@ class PredictionRecord(FrozenModel):
 
     @model_validator(mode="after")
     def _require_matching_supporting_evidence(self) -> Self:
-        if self.supporting_evidence and tuple(
-            item.memory_id for item in self.supporting_evidence
-        ) != self.supporting_memory_ids:
+        if (
+            self.supporting_evidence
+            and tuple(item.memory_id for item in self.supporting_evidence)
+            != self.supporting_memory_ids
+        ):
             msg = "supporting_evidence must match supporting_memory_ids in order"
             raise ValueError(msg)
-        retrieved_ids = tuple(
-            item.memory_id for item in self.retrieved_evidence
-        )
+        retrieved_ids = tuple(item.memory_id for item in self.retrieved_evidence)
         if len(retrieved_ids) != len(set(retrieved_ids)):
             msg = "retrieved_evidence contains duplicate memory IDs"
             raise ValueError(msg)

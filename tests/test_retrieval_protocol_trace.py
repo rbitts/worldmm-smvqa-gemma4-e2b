@@ -89,12 +89,8 @@ def test_evidence_pack_round_trips_retrieval_trace() -> None:
         "egobutler",
         "worldmm",
     )
-    assert parsed.retrieval_trace.eligible_shard_ids == (
-        "fake_video_001_shard_0000",
-    )
-    assert parsed.retrieval_trace.selected_clip_ids == (
-        "fake_video_001_clip_0000",
-    )
+    assert parsed.retrieval_trace.eligible_shard_ids == ("fake_video_001_shard_0000",)
+    assert parsed.retrieval_trace.selected_clip_ids == ("fake_video_001_clip_0000",)
     assert parsed.retrieval_trace.policy_route == "balanced"
     assert parsed.retrieval_trace.store_order == (
         "episodic",

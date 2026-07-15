@@ -35,6 +35,12 @@ class ParsedArgs:
     dry_run: bool
     submit: bool
     inject_future_memory: bool
+    sensor_manifest: Path | None
+    observations: Path | None
+    frame_root: Path | None
+    sensor_audit: Path | None
+    experiment_config: Path | None
+    profile: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +60,12 @@ class ParsedValueArgs:
     max_frame_refs: int
     ablation_stores: str | None
     ablation_protocol: str | None
+    sensor_manifest: Path | None
+    observations: Path | None
+    frame_root: Path | None
+    sensor_audit: Path | None
+    experiment_config: Path | None
+    profile: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +73,9 @@ class CommandSpec:
     name: str
     help_text: str
     handler: Callable[[ParsedArgs], CommandResult]
+    allowed_options: frozenset[str] | None = None
+    required_options: tuple[str, ...] = ()
+    mutually_exclusive_options: tuple[frozenset[str], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +87,20 @@ class CliUsageError(Exception):
         return f"UsageError: {self.detail}"
 
 
+@dataclass(frozen=True, slots=True)
+class CliPublicationError(Exception):
+    command: str
+    path: Path
+    reason: str
+
+    @override
+    def __str__(self) -> str:
+        return (
+            f"CliPublicationError: {self.command} could not publish "
+            f"{self.path}: {self.reason}"
+        )
+
+
 def find_command(command: str, specs: Sequence[CommandSpec]) -> CommandSpec:
     for spec in specs:
         if spec.name == command:
@@ -79,7 +108,7 @@ def find_command(command: str, specs: Sequence[CommandSpec]) -> CommandSpec:
     raise CliUsageError(detail=f"unknown command: {command}")
 
 
-def parse_args(
+def parse_args(  # noqa: PLR0912, PLR0915
     argv: Sequence[str],
     specs: Sequence[CommandSpec],
 ) -> tuple[CommandSpec | None, ParsedArgs | None]:
@@ -89,8 +118,6 @@ def parse_args(
     command = argv[0]
     spec = find_command(command, specs)
     option_tokens = argv[1:]
-    if "-h" in option_tokens or "--help" in option_tokens:
-        return spec, None
 
     value_args = ParsedValueArgs(
         Path("configs/local.example.yaml"),
@@ -106,6 +133,12 @@ def parse_args(
         "mock",
         "worldmm-smvqa",
         32,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
         None,
         None,
     )
@@ -131,34 +164,75 @@ def parse_args(
         "--max-frame-refs",
         "--ablation-stores",
         "--ablation-protocol",
+        "--sensor-manifest",
+        "--observations",
+        "--frame-root",
+        "--sensor-audit",
+        "--experiment-config",
+        "--profile",
     }
 
+    provided_options: set[str] = set()
     index = 0
     while index < len(option_tokens):
         option_name = option_tokens[index]
         if option_name == "--real-model":
             real_model = True
+            provided_options.add(option_name)
             index += 1
         elif option_name == "--local":
             local = True
+            provided_options.add(option_name)
             index += 1
         elif option_name == "--dry-run":
             dry_run = True
+            provided_options.add(option_name)
             index += 1
         elif option_name == "--submit":
             submit = True
+            provided_options.add(option_name)
             index += 1
         elif option_name == "--inject-future-memory":
             inject_future_memory = True
+            provided_options.add(option_name)
             index += 1
+        elif option_name in {"-h", "--help"}:
+            return spec, None
         elif option_name in options_with_values:
-            if index + 1 >= len(option_tokens):
+            if index + 1 >= len(option_tokens) or option_tokens[index + 1].startswith(
+                "-"
+            ):
                 raise CliUsageError(detail=f"missing value for {option_name}")
+            provided_options.add(option_name)
             value = option_tokens[index + 1]
             value_args = parse_value_option(value_args, option_name, value)
             index += 2
         else:
             raise CliUsageError(detail=f"unknown option: {option_name}")
+
+    if spec.allowed_options is not None:
+        irrelevant_options = provided_options - spec.allowed_options
+        if irrelevant_options:
+            raise CliUsageError(
+                detail=(
+                    f"{spec.name} does not accept "
+                    f"{','.join(sorted(irrelevant_options))}"
+                )
+            )
+    for required_option in spec.required_options:
+        if required_option not in provided_options:
+            required_detail = required_option
+            if spec.name == "launch-remote" and required_option == "--profile":
+                required_detail = "--profile teacher-oracle"
+            raise CliUsageError(detail=f"{spec.name} requires {required_detail}")
+    for mutually_exclusive_options in spec.mutually_exclusive_options:
+        if mutually_exclusive_options <= provided_options:
+            raise CliUsageError(
+                detail=(
+                    f"{spec.name} accepts only one of "
+                    f"{'/'.join(sorted(mutually_exclusive_options))}"
+                )
+            )
 
     parsed = ParsedArgs(
         value_args.config,
@@ -181,6 +255,12 @@ def parse_args(
         dry_run,
         submit,
         inject_future_memory,
+        value_args.sensor_manifest,
+        value_args.observations,
+        value_args.frame_root,
+        value_args.sensor_audit,
+        value_args.experiment_config,
+        value_args.profile,
     )
     return spec, parsed
 
@@ -198,6 +278,11 @@ def parse_value_option(
         "--fixture",
         "--pred",
         "--labels",
+        "--sensor-manifest",
+        "--observations",
+        "--frame-root",
+        "--sensor-audit",
+        "--experiment-config",
     }
     text_options = {
         "--question",
@@ -207,6 +292,7 @@ def parse_value_option(
         "--backend",
         "--retrieval-protocol",
         "--ablation-stores",
+        "--profile",
         "--ablation-protocol",
     }
     if option in path_options:
@@ -239,6 +325,16 @@ def _parse_path_option(
         updated = replace(args, pred=path)
     elif option == "--labels":
         updated = replace(args, labels=path)
+    elif option == "--sensor-manifest":
+        updated = replace(args, sensor_manifest=path)
+    elif option == "--observations":
+        updated = replace(args, observations=path)
+    elif option == "--frame-root":
+        updated = replace(args, frame_root=path)
+    elif option == "--sensor-audit":
+        updated = replace(args, sensor_audit=path)
+    elif option == "--experiment-config":
+        updated = replace(args, experiment_config=path)
     return updated
 
 
@@ -262,6 +358,8 @@ def _parse_text_option(
         updated = replace(args, ablation_stores=value)
     elif option == "--ablation-protocol":
         updated = replace(args, ablation_protocol=value)
+    elif option == "--profile":
+        updated = replace(args, profile=value)
     return updated
 
 

@@ -8,6 +8,7 @@ from typing import cast
 import pytest
 from pydantic import ValidationError
 
+from worldmm_smvqa import qa_transformers
 from worldmm_smvqa.chunking import read_source_streams
 from worldmm_smvqa.fixtures import read_fixture_questions
 from worldmm_smvqa.qa import QAParseError, parse_qa_output
@@ -21,12 +22,14 @@ from worldmm_smvqa.qa_transformers import (
     causal_wearer_pose,
     memory_artifact_hashes,
     parse_cli_args,
+    read_teacher_oracle_pre_evaluation_lineage,
     run_transformers_cli,
     validate_evidence_lineage,
     validate_evidence_trace_lane,
     validate_external_evidence_packs,
     validate_spatial_evidence_against_typed_memory,
     validate_student_evidence_against_memory,
+    validate_teacher_oracle_live_contract,
 )
 from worldmm_smvqa.retrieval import (
     RetrievalOptions,
@@ -38,8 +41,13 @@ from worldmm_smvqa.retrieval_types import (
     EvidenceItem,
     EvidenceLineage,
     EvidencePack,
+    OracleEvidenceLineage,
+    OracleQAInputLineage,
+    OracleQAPreEvaluationLineage,
+    OracleVariantLineage,
     RetrievalMemoryRecord,
     RetrievalStore,
+    SharedQALineage,
 )
 from worldmm_smvqa.schema import (
     AnswerChoice,
@@ -298,6 +306,13 @@ def test_student_spatial_evidence_must_match_typed_projection(
         match="spatial evidence differs from typed memory",
     ):
         validate_spatial_evidence_against_typed_memory((pack,), (record,))
+    non_spatial_item = pack.evidence[0].model_copy(update={"source_store": "semantic"})
+    non_spatial_pack = pack.model_copy(update={"evidence": (non_spatial_item,)})
+    with pytest.raises(
+        TransformersCliUsageError,
+        match="outside validated projection set",
+    ):
+        validate_spatial_evidence_against_typed_memory((non_spatial_pack,), (record,))
 
 
 def test_student_spatial_evidence_matches_global_frame_ref_cap(
@@ -383,9 +398,7 @@ def test_student_evidence_must_match_every_canonical_store_projection(
 
     tampered = pack.model_copy(
         update={
-            "evidence": (
-                pack.evidence[0].model_copy(update={"snippet": "tampered"}),
-            ),
+            "evidence": (pack.evidence[0].model_copy(update={"snippet": "tampered"}),),
         },
     )
     with pytest.raises(
@@ -393,6 +406,34 @@ def test_student_evidence_must_match_every_canonical_store_projection(
         match="student evidence differs from canonical memory",
     ):
         validate_student_evidence_against_memory((tampered,), (record,))
+    mismatched_store: RetrievalStore = "spatial" if store != "spatial" else "semantic"
+    store_tampered = pack.model_copy(
+        update={
+            "evidence": (
+                pack.evidence[0].model_copy(update={"source_store": mismatched_store}),
+            ),
+        },
+    )
+    with pytest.raises(
+        TransformersCliUsageError,
+        match="unknown canonical memory",
+    ):
+        validate_student_evidence_against_memory((store_tampered,), (record,))
+
+    geometry_tampered = pack.model_copy(
+        update={
+            "evidence": (
+                pack.evidence[0].model_copy(
+                    update={"geometry": {"record_type": "bad"}}
+                ),
+            ),
+        },
+    )
+    with pytest.raises(
+        TransformersCliUsageError,
+        match="differs from canonical memory",
+    ):
+        validate_student_evidence_against_memory((geometry_tampered,), (record,))
 
 
 def test_explicit_qa_sensor_manifest_rejects_stale_source_inventory(
@@ -422,9 +463,7 @@ def test_explicit_qa_sensor_manifest_rejects_stale_source_inventory(
     fixture = tmp_path / "fixture"
     fixture.mkdir()
     _ = (fixture / "sources.jsonl").write_text(
-        "".join(
-            f"{source.model_dump_json()}\n" for source in (first, *sources[1:])
-        ),
+        "".join(f"{source.model_dump_json()}\n" for source in (first, *sources[1:])),
         encoding="utf-8",
     )
     _ = (fixture / "questions.jsonl").write_bytes(
@@ -498,7 +537,7 @@ def test_student_evidence_lineage_is_required_and_binds_evidence(  # noqa: PLR09
     sensor_records = read_sensor_frame_manifest(sensor)
     data_root = FIXTURE
     data_digest = hashlib.sha256()
-    for name in ("sources.jsonl", "questions.jsonl", "labels.jsonl"):
+    for name in ("sources.jsonl", "questions.jsonl"):
         path = data_root / name
         data_digest.update(name.encode() + b"\0")
         data_digest.update(path.read_bytes())
@@ -823,6 +862,202 @@ def test_legacy_evidence_is_allowed_only_in_explicit_heuristic_lane(
             producer="spatial-student",
             evidence_sha256=hashlib.sha256(evidence.read_bytes()).hexdigest(),
         )
+
+
+def test_teacher_oracle_qa_starts_from_an_output_free_pre_evaluation_lineage(
+    tmp_path: Path,
+) -> None:
+    digest = "a" * 64
+    shared = SharedQALineage(
+        approved_salt="approved",
+        world_size=1,
+        question_map_sha256=digest,
+        model_sha256=digest,
+        prompt_sha256=digest,
+        decoding_sha256=digest,
+        runtime_sha256=digest,
+        python_inventory_sha256=digest,
+        torch_inventory_sha256=digest,
+        transformers_inventory_sha256=digest,
+        seed=0,
+    )
+    inputs = tuple(
+        OracleQAInputLineage(
+            variant=variant,
+            memory_sha256=digest,
+            evidence_sha256=digest,
+            pre_evaluation_sha256=shared.sha256,
+        )
+        for variant in ("E0", "T0", "T1")
+    )
+    lineage = OracleQAPreEvaluationLineage(
+        producer="offline-teacher",
+        sensor_audit_sha256=digest,
+        object_semantic_sha256=digest,
+        geometry_sha256=digest,
+        place_sha256=digest,
+        typed_memory_sha256=digest,
+        shared_input_sha256=digest,
+        sensor_manifest_sha256=digest,
+        selected_frame_inventory_sha256=digest,
+        selected_frame_assets_sha256=digest,
+        qa_inputs=inputs,
+        shared_qa_lineage=shared,
+    )
+    path = tmp_path / "pre-evaluation-lineage.json"
+    _ = path.write_text(lineage.model_dump_json(), encoding="utf-8")
+
+    parsed = read_teacher_oracle_pre_evaluation_lineage(path)
+
+    assert parsed == lineage
+    assert "predictions_sha256" not in path.read_text(encoding="utf-8")
+    assert "metrics_sha256" not in path.read_text(encoding="utf-8")
+    assert "finalization_receipt_sha256" not in path.read_text(encoding="utf-8")
+
+
+def test_teacher_oracle_qa_rejects_post_evaluation_lineage_at_startup(
+    tmp_path: Path,
+) -> None:
+    digest = "a" * 64
+    shared = SharedQALineage(
+        approved_salt="approved",
+        world_size=1,
+        question_map_sha256=digest,
+        model_sha256=digest,
+        prompt_sha256=digest,
+        decoding_sha256=digest,
+        runtime_sha256=digest,
+        seed=0,
+    )
+    post_evaluation = OracleEvidenceLineage(
+        producer="offline-teacher",
+        sensor_audit_sha256=digest,
+        object_semantic_sha256=digest,
+        geometry_sha256=digest,
+        place_sha256=digest,
+        typed_memory_sha256=digest,
+        shared_input_sha256=digest,
+        variants=tuple(
+            OracleVariantLineage(
+                variant=variant,
+                memory_sha256=digest,
+                evidence_sha256=digest,
+                predictions_sha256=digest,
+                metrics_sha256=digest,
+                pre_evaluation_sha256=shared.sha256,
+                finalization_receipt_sha256=digest,
+                finalization_receipt_file_sha256=digest,
+            )
+            for variant in ("E0", "T0", "T1")
+        ),
+        shared_qa_lineage=shared,
+    )
+    path = tmp_path / "post-evaluation-lineage.json"
+    _ = path.write_text(post_evaluation.model_dump_json(), encoding="utf-8")
+
+    with pytest.raises(TransformersCliUsageError, match="pre-evaluation lineage"):
+        _ = read_teacher_oracle_pre_evaluation_lineage(path)
+
+
+def test_teacher_oracle_live_contract_accepts_matching_and_rejects_inventory_drift(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    digest = "a" * 64
+    shared = SharedQALineage(
+        approved_salt="approved",
+        world_size=1,
+        question_map_sha256=digest,
+        model_sha256=digest,
+        prompt_sha256=digest,
+        decoding_sha256=digest,
+        runtime_sha256=digest,
+        python_inventory_sha256=digest,
+        torch_inventory_sha256=digest,
+        transformers_inventory_sha256=digest,
+        seed=7,
+    )
+    lineage = OracleQAPreEvaluationLineage(
+        producer="offline-teacher",
+        sensor_audit_sha256=digest,
+        object_semantic_sha256=digest,
+        geometry_sha256=digest,
+        place_sha256=digest,
+        typed_memory_sha256=digest,
+        shared_input_sha256=digest,
+        sensor_manifest_sha256=digest,
+        selected_frame_inventory_sha256=digest,
+        selected_frame_assets_sha256=digest,
+        qa_inputs=tuple(
+            OracleQAInputLineage(
+                variant=variant,
+                memory_sha256=digest,
+                evidence_sha256=digest,
+                pre_evaluation_sha256=shared.sha256,
+            )
+            for variant in ("E0", "T0", "T1")
+        ),
+        shared_qa_lineage=shared,
+    )
+    args = TransformersCliArgs(
+        model="model",
+        fixture=tmp_path,
+        evidence=tmp_path / "evidence.jsonl",
+        evidence_lane="teacher_oracle",
+        evidence_lineage=tmp_path / "lineage.json",
+        checkpoint=None,
+        typed_memory=None,
+        inference_manifest=None,
+        require_frames=True,
+        out=tmp_path / "predictions.jsonl",
+        backend="gemma4",
+    )
+
+    def accept_backend_and_frames(*_args: object) -> None:
+        return None
+
+    def fixture_digest(_fixture: Path) -> str:
+        return digest
+
+    def matching_lineage(
+        *_args: object,
+    ) -> tuple[str, str, str, int, str, str, str]:
+        return (digest, digest, digest, 7, digest, digest, digest)
+
+    monkeypatch.setattr(
+        qa_transformers,
+        "_validate_teacher_oracle_backend_and_frames",
+        accept_backend_and_frames,
+    )
+    monkeypatch.setattr(
+        qa_transformers,
+        "_fixture_data_sha256",
+        fixture_digest,
+    )
+    matching = matching_lineage()
+    monkeypatch.setattr(
+        qa_transformers,
+        "_live_teacher_oracle_lineage",
+        matching_lineage,
+    )
+
+    validate_teacher_oracle_live_contract(args, {}, lineage)
+
+    def drifted_lineage(
+        *_args: object,
+    ) -> tuple[str, str, str, int, str, str, str]:
+        return (*matching[:6], "b" * 64)
+
+    monkeypatch.setattr(
+        qa_transformers,
+        "_live_teacher_oracle_lineage",
+        drifted_lineage,
+    )
+    with pytest.raises(
+        TransformersCliUsageError,
+        match="live runtime inventories do not match",
+    ):
+        validate_teacher_oracle_live_contract(args, {}, lineage)
 
 
 @pytest.mark.parametrize(
@@ -1170,8 +1405,9 @@ def test_causal_wearer_pose_requires_trusted_source_frame_and_covariance() -> No
     assert causal_wearer_pose((future_certificate,), question, pack) is None
 
 
-def test_source_pose_90_degrees_reaches_direction_proof_without_unit_conversion(
-) -> None:
+def test_source_pose_90_degrees_reaches_direction_proof_without_unit_conversion() -> (
+    None
+):
     covariance = (0.0,) * 36
     source = SourceStreamExample(
         video_id="video-direction",
@@ -1204,10 +1440,10 @@ def test_source_pose_90_degrees_reaches_direction_proof_without_unit_conversion(
     )
     evidence = tuple(
         EvidenceItem(
-                memory_id=entity_id,
-                video_id=source.video_id,
-                snippet=entity_id,
-                frame_refs=(f"frame-{entity_id}",),
+            memory_id=entity_id,
+            video_id=source.video_id,
+            snippet=entity_id,
+            frame_refs=(f"frame-{entity_id}",),
             source_store="spatial",
             start_time=1.0,
             end_time=1.0,

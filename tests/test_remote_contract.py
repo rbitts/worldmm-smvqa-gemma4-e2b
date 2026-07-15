@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 import os
-import shlex
 import subprocess
 from pathlib import Path
 
+from worldmm_smvqa.remote_plan import ExperimentGraphV1
 from worldmm_smvqa.schema import PredictionRecord
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,7 +75,11 @@ def test_qa_transformers_mock_cli_writes_predictions_from_evidence(
             "mock",
         ],
         cwd=ROOT,
-        env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1", "UV_NO_NETWORK": "1"},
+        env={
+            **os.environ,
+            "PYTHONDONTWRITEBYTECODE": "1",
+            "UV_NO_NETWORK": "1",
+        },
         text=True,
         capture_output=True,
         check=False,
@@ -112,7 +117,7 @@ def test_qa_transformers_mock_cli_shards_and_merges_ddp_predictions(
     assert smoke.returncode == 0, smoke.stderr
     predictions = tmp_path / "predictions.jsonl"
     triton_cache_root = tmp_path / "triton-cache"
-    command = [
+    command: list[str] = [
         "uv",
         "run",
         "--offline",
@@ -193,6 +198,10 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
     # When: launch-remote prints the copy/paste command.
     result = run_cli(
         "launch-remote",
+        "--profile",
+        "teacher-oracle",
+        "--experiment-config",
+        "configs/spatial/exp_0005_teacher_oracle.example.json",
         "--dry-run",
         "--config",
         "configs/remote.example.yaml",
@@ -200,42 +209,53 @@ def test_plan_stdout_shell_quotes_script_path(tmp_path: Path) -> None:
         str(out_dir),
     )
 
-    # Then: sync and launch commands parse to safe argv without eval.
+    # Then: the dry-run exposes absolute operator artifacts, not execution commands.
     assert result.returncode == 0, result.stderr
-    lines = result.stdout.splitlines()
-    plan_sync_argv = shlex.split(lines[-2])
-    assert plan_sync_argv[0] == "rsync"
-    assert plan_sync_argv[-2] == f"{out_dir}/"
-    argv = shlex.split(lines[-1])
-    assert argv[:4] == [
-        "ssh",
-        "-J",
-        "$BASTION_HOST",
-        "$HEAD_NODE",
-    ]
-    remote_argv = shlex.split(argv[4])
-    assert remote_argv == [
-        "cd",
-        ("${WORLDMM_REMOTE_REPO:-/repo/VTteam/bongh.park/worldmm-smvqa-gemma4-e2b}"),
-        "&&",
-        "mkdir",
-        "-p",
-        "remote-plan/logs",
-        "&&",
-        "WORLDMM_DAG_PHASE=preflight",
-        "bash",
-        "remote-plan/submit_worldmm_smvqa_dag.sh",
-    ]
-    assert str(out_dir) not in argv[4]
+    assert f"wrote {out_dir / 'operator_contract.json'}" in result.stdout
+    assert f"wrote {out_dir / 'approval_blockers.json'}" in result.stdout
+    assert "ssh -J" not in result.stdout
+    assert "WORLDMM_DAG_PHASE=" not in result.stdout
 
 
 def test_checked_in_remote_script_delegates_without_printing_paths() -> None:
     # Given: the checked-in remote helper is user-facing.
     script_text = (ROOT / "scripts/remote/run_worldmm_smvqa.sh").read_text(
-        encoding="utf-8",
+        encoding="utf-8"
     )
 
     # Then: it delegates to the generated plan and does not print sensitive paths.
     assert "worldmm-smvqa launch-remote --dry-run" in script_text
     assert "printf 'WORLDMM_OUTPUT_ROOT=%s" not in script_text
     assert "printf 'GEMMA_MODEL_PATH=%s" not in script_text
+
+
+def test_teacher_oracle_config_is_one_frozen_experiment_graph() -> None:
+    graph = ExperimentGraphV1.model_validate_json(
+        (ROOT / "configs/spatial/exp_0005_teacher_oracle.example.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert graph.model_config.get("frozen") is True
+    assert tuple(_stage.name for _stage in graph.stage_specs) == (
+        "preflight",
+        "geometry",
+        "semantic",
+        "place",
+        "gate",
+        "terminal",
+        "e0_materialize",
+        "e0_retrieve",
+        "e0_qa",
+        "t0_materialize",
+        "t0_retrieve",
+        "t0_qa",
+        "t1_materialize",
+        "t1_retrieve",
+        "t1_qa",
+        "evaluator",
+        "finalizer",
+    )
+    rendered = json.dumps(graph.model_dump(mode="json"), sort_keys=True)
+    for key in graph.manifest_job_keys:
+        assert key in rendered

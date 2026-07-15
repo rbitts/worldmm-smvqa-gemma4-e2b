@@ -303,9 +303,7 @@ def _qa_accuracy(rows: Sequence[ScoredPrediction]) -> float:
     if not rows:
         return 0.0
     correct = sum(
-        1
-        for row in rows
-        if row.prediction.ranked_choices[0] == row.label.answer
+        1 for row in rows if row.prediction.ranked_choices[0] == row.label.answer
     )
     return correct / len(rows)
 
@@ -314,9 +312,7 @@ def _qa_mrr(rows: Sequence[ScoredPrediction]) -> float:
     if not rows:
         return 0.0
     reciprocal_rank = sum(
-        1.0 / row.correct_rank
-        for row in rows
-        if row.correct_rank is not None
+        1.0 / row.correct_rank for row in rows if row.correct_rank is not None
     )
     return reciprocal_rank / len(rows)
 

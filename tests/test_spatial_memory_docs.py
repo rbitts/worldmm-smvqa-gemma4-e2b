@@ -29,11 +29,7 @@ SECTION_PARENT_IDS = {
 
 
 def _canonical_pages() -> tuple[Path, ...]:
-    tree_pages = (
-        path
-        for path in DOC_ROOT.rglob("*.md")
-        if path.name != "TEMPLATE.md"
-    )
+    tree_pages = (path for path in DOC_ROOT.rglob("*.md") if path.name != "TEMPLATE.md")
     return tuple(sorted((DOCS_INDEX, HANDOFF, *tree_pages)))
 
 
@@ -133,8 +129,11 @@ def test_spatial_memory_markdown_is_confluence_importable() -> None:
 
     import_manifest = (DOC_ROOT / "README.md").read_text(encoding="utf-8")
     assert "| `docs/README.md` | `SM-DOCS` | `SPACE-HOME` |" in import_manifest
-    assert f"""| Repository `{HANDOFF.name}` | `SM-OPERATIONS-HANDOFF` | \
-`SM-OPERATIONS` |""" in import_manifest
+    assert (
+        f"""| Repository `{HANDOFF.name}` | `SM-OPERATIONS-HANDOFF` | \
+`SM-OPERATIONS` |"""
+        in import_manifest
+    )
 
     paper_root = DOC_ROOT / "papers"
     paper_index = (paper_root / "README.md").read_text(encoding="utf-8")

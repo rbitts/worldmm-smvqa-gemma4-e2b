@@ -54,9 +54,7 @@ def sample_video_frames(
         return ()
     allowed_video_ids = frozenset(_question_video_ids(question))
     shards = tuple(
-        shard
-        for shard in _selected_shards(pack)
-        if shard.video_id in allowed_video_ids
+        shard for shard in _selected_shards(pack) if shard.video_id in allowed_video_ids
     )
     if not shards:
         return ()
@@ -160,8 +158,7 @@ def _uniform(
         return (ordered[0],)
     last = len(ordered) - 1
     return tuple(
-        ordered[round(index * last / (max_frames - 1))]
-        for index in range(max_frames)
+        ordered[round(index * last / (max_frames - 1))] for index in range(max_frames)
     )
 
 
