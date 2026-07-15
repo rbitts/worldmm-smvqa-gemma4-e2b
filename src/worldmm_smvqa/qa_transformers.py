@@ -90,8 +90,8 @@ if TYPE_CHECKING:
 
 type TransformersBackendName = Literal["gemma4", "real", "mock"]
 
-QA_RESUME_MANIFEST_VERSION: Final = "qa-resume-manifest-v5"
-# Bump whenever prompt serialization or parsed prediction schema changes.
+QA_RESUME_MANIFEST_VERSION: Final = "qa-resume-manifest-v6"
+# Bump whenever resume-bound inputs or prompt/prediction serialization changes.
 QA_PROMPT_SCHEMA_VERSION: Final = "qa-prompt-prediction-schema-v4"
 SHA256_HEX_LENGTH: Final = 64
 MEMORY_MANIFEST_MAX_BYTES: Final = 64 * 1024
@@ -1248,6 +1248,7 @@ def validate_evidence_lineage(  # noqa: PLR0912,PLR0913
     inference_producer_path: Path | None = None,
     sources: Sequence[SourceStreamExample] | None = None,
     sensor_records: Sequence[SensorFrameManifestRecord] | None = None,
+    expected_trust_digests: Mapping[str, str] | None = None,
 ) -> EvidenceLineage | None:
     """Bind student evidence to the exact artifacts that produced it."""
     if lineage_path is None:
@@ -1331,6 +1332,22 @@ def validate_evidence_lineage(  # noqa: PLR0912,PLR0913
         sources=sources,
         sensor_records=sensor_records,
     )
+    if expected_trust_digests is not None:
+        allowed = {
+            "model_contract_sha256",
+            "student_architecture_sha256",
+            "model_load_consensus_payload_sha256",
+            "model_load_consensus_file_sha256",
+        }
+        if unknown := tuple(sorted(set(expected_trust_digests) - allowed)):
+            raise TransformersCliUsageError(
+                detail=f"unknown student trust digest: {unknown[0]}",
+            )
+        for field, expected in expected_trust_digests.items():
+            if getattr(lineage, field) != expected:
+                raise TransformersCliUsageError(
+                    detail=f"evidence lineage does not match trusted {field}",
+                )
     required_context = {
         "--lineage-config": config_path,
         "--sensor-frame-manifest": sensor_path,
@@ -2094,7 +2111,36 @@ def _bind_resume_manifest(args: TransformersCliArgs, written: Path) -> None:
     _validate_resume_manifest(path, expected)
 
 
+def _qa_trust_digests(args: TransformersCliArgs) -> dict[str, str]:
+    if args.evidence_lane != "student" or args.evidence_lineage is None:
+        return {
+            "model_contract_sha256": "",
+            "student_architecture_sha256": "",
+            "model_load_consensus_payload_sha256": "",
+            "model_load_consensus_file_sha256": "",
+        }
+    try:
+        lineage = EvidenceLineage.model_validate_json(
+            args.evidence_lineage.read_text(encoding="utf-8"),
+        )
+    except (OSError, ValidationError) as exc:
+        raise QAShardError(
+            detail=f"invalid student evidence lineage for QA resume: {exc}",
+        ) from exc
+    return {
+        "model_contract_sha256": lineage.model_contract_sha256 or "",
+        "student_architecture_sha256": lineage.student_architecture_sha256 or "",
+        "model_load_consensus_payload_sha256": (
+            lineage.model_load_consensus_payload_sha256 or ""
+        ),
+        "model_load_consensus_file_sha256": (
+            lineage.model_load_consensus_file_sha256 or ""
+        ),
+    }
+
+
 def qa_resume_manifest(args: TransformersCliArgs) -> dict[str, str]:
+
     return {
         "manifest_version": QA_RESUME_MANIFEST_VERSION,
         "prompt_schema_version": QA_PROMPT_SCHEMA_VERSION,
@@ -2105,6 +2151,7 @@ def qa_resume_manifest(args: TransformersCliArgs) -> dict[str, str]:
             if args.evidence_lineage is not None
             else ""
         ),
+        **_qa_trust_digests(args),
         "expected_variant": args.expected_variant or "",
         "checkpoint_sha256": (
             _sha256_file(args.checkpoint) if args.checkpoint is not None else ""

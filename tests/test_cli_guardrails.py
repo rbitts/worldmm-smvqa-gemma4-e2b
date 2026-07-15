@@ -46,6 +46,7 @@ def test_help_lists_scaffold_commands() -> None:
         "evaluate",
         "diagnose-spatial",
         "report",
+        "mock-dag",
         "smoke",
         "launch-remote",
         "validate-teacher-oracle-inputs",
@@ -64,6 +65,11 @@ def test_command_help_lists_exact_guarded_contracts() -> None:
             "usage: worldmm-smvqa validate-teacher-oracle-inputs "
             "--sensor-audit SENSOR_AUDIT --experiment-config EXPERIMENT_CONFIG "
             "--out OUT\n\nValidate teacher-oracle production inputs.\n"
+        ),
+        "mock-dag": (
+            "usage: worldmm-smvqa mock-dag [--config CONFIG] --fixture FIXTURE "
+            "[--student-architecture STUDENT_ARCHITECTURE]\n\n"
+            "Validate the model-free production-consumer DAG.\n"
         ),
         "launch-remote": (
             "usage: worldmm-smvqa launch-remote [--config CONFIG] --out OUT "

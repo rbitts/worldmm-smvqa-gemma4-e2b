@@ -10,6 +10,25 @@
 
 This runbook is not approval to use company compute. Every `REPLACE_*` value is fail-closed: leave it unchanged to stop before remote submission. Expensive company CPU/GPU jobs require separate human approval for the exact phase; `WORLDMM_SMVQA_REMOTE_APPROVED=1` is an additional command-scoped guard, not approval itself. Do not manually invoke `sbatch`, alter dependencies, synthesize markers/reports, substitute job IDs, or submit Phase B early.
 
+## Student contract/load profile
+
+This runbook remains authoritative for EXP-0005. The separate `student` profile does
+not alter its graph, renderer, approval, or artifact bytes. Before any student remote
+operation, review the immutable model-boundary fixture, student architecture, accepted
+provider lock, submission manifest, and exact full/probe physical matrix. A pending or
+fake provider lock may generate test-only non-runnable plans but cannot authorize
+release.
+
+Every student `EvidenceLineage`, QA resume manifest, completion manifest, and report
+must agree on `model_contract_sha256`, `student_architecture_sha256`,
+`model_load_consensus_payload_sha256`, and
+`model_load_consensus_file_sha256`. Missing, stale, or mismatched identity is a no-go
+before optimizer construction. A failed attempt is diagnostic only and must be retried
+under a new `WORLDMM_RUN_ID`; never reuse or overwrite its output root. Copy back only
+approved lightweight metrics, reports, receipts, manifests, diagnostics, redacted logs,
+and plots—not datasets, weights, checkpoints, memory stores, predictions, or evidence
+packs.
+
 Set the reviewed run identity explicitly; never derive it from the clock:
 
 ```bash

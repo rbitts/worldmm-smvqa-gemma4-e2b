@@ -579,6 +579,10 @@ def test_student_evidence_lineage_is_required_and_binds_evidence(  # noqa: PLR09
         lane="student",
         producer="spatial-student",
         evidence_sha256=hashlib.sha256(evidence.read_bytes()).hexdigest(),
+        model_contract_sha256="a" * 64,
+        student_architecture_sha256="b" * 64,
+        model_load_consensus_payload_sha256="c" * 64,
+        model_load_consensus_file_sha256="d" * 64,
         checkpoint_sha256=checkpoint_sha256,
         inference_manifest_sha256=hashlib.sha256(
             inference_manifest.read_bytes(),
@@ -588,6 +592,16 @@ def test_student_evidence_lineage_is_required_and_binds_evidence(  # noqa: PLR09
         data_sha256=digest,
         **memory_artifact_hashes(memory_manifest),
     )
+    for field in (
+        "model_contract_sha256",
+        "student_architecture_sha256",
+        "model_load_consensus_payload_sha256",
+        "model_load_consensus_file_sha256",
+    ):
+        missing = lineage.model_dump()
+        del missing[field]
+        with pytest.raises(ValidationError, match=field):
+            _ = EvidenceLineage.model_validate(missing)
     lineage_path = tmp_path / "evidence.lineage.json"
     _ = lineage_path.write_text(lineage.model_dump_json(), encoding="utf-8")
     with pytest.raises(
@@ -642,6 +656,12 @@ def test_student_evidence_lineage_is_required_and_binds_evidence(  # noqa: PLR09
         inference_producer_path=inference_producer,
         sources=raw_sources,
         sensor_records=sensor_records,
+        expected_trust_digests={
+            "model_contract_sha256": "a" * 64,
+            "student_architecture_sha256": "b" * 64,
+            "model_load_consensus_payload_sha256": "c" * 64,
+            "model_load_consensus_file_sha256": "d" * 64,
+        },
     )
     for origin, field in (
         (inference_sources, "sources_sha256"),
@@ -1111,6 +1131,10 @@ def test_student_manifest_rejects_invalid_accounting(
         lane="student",
         producer="spatial-student",
         evidence_sha256=hashlib.sha256(evidence.read_bytes()).hexdigest(),
+        model_contract_sha256="a" * 64,
+        student_architecture_sha256="b" * 64,
+        model_load_consensus_payload_sha256="c" * 64,
+        model_load_consensus_file_sha256="d" * 64,
         checkpoint_sha256=hashlib.sha256(checkpoint.read_bytes()).hexdigest(),
         typed_memory_sha256=hashlib.sha256(typed_memory.read_bytes()).hexdigest(),
         inference_manifest_sha256=hashlib.sha256(

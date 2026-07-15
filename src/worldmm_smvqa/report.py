@@ -137,6 +137,25 @@ class StudentRunManifest(_ManifestBase):
 
     result_class: Literal["contract_probe", "mock", "heuristic", "student", "official"]
     execution_profile: Literal["probe", "full", "not-run"] = "not-run"
+    model_contract_sha256: str | None = Field(default=None, pattern=_SHA256)
+    provider_lock_sha256: str | None = Field(default=None, pattern=_SHA256)
+    student_architecture_sha256: str | None = Field(default=None, pattern=_SHA256)
+    model_load_consensus_payload_sha256: str | None = Field(
+        default=None,
+        pattern=_SHA256,
+    )
+    model_load_consensus_file_sha256: str | None = Field(
+        default=None,
+        pattern=_SHA256,
+    )
+    submission_manifest_file_sha256: str | None = Field(
+        default=None,
+        pattern=_SHA256,
+    )
+    student_terminal_payload_sha256: str | None = Field(
+        default=None,
+        pattern=_SHA256,
+    )
     checkpoint_sha256: str | None = Field(default=None, pattern=_SHA256)
     typed_memory_sha256: str | None = Field(default=None, pattern=_SHA256)
     inference_manifest_sha256: str | None = Field(default=None, pattern=_SHA256)
@@ -176,6 +195,25 @@ class StudentRunManifest(_ManifestBase):
                 )
             )
         digest_values = (
+            ("model_contract_sha256", self.model_contract_sha256),
+            ("provider_lock_sha256", self.provider_lock_sha256),
+            ("student_architecture_sha256", self.student_architecture_sha256),
+            (
+                "model_load_consensus_payload_sha256",
+                self.model_load_consensus_payload_sha256,
+            ),
+            (
+                "model_load_consensus_file_sha256",
+                self.model_load_consensus_file_sha256,
+            ),
+            (
+                "submission_manifest_file_sha256",
+                self.submission_manifest_file_sha256,
+            ),
+            (
+                "student_terminal_payload_sha256",
+                self.student_terminal_payload_sha256,
+            ),
             ("code_sha256", self.code_sha256),
             ("checkpoint_sha256", self.checkpoint_sha256),
             ("typed_memory_sha256", self.typed_memory_sha256),
@@ -941,6 +979,25 @@ def _digest_values(manifest: RunManifest) -> tuple[tuple[str, str | None], ...]:
             ("oracle_lineage_sha256", manifest.oracle_lineage_sha256),
         )
     return (
+        ("model_contract_sha256", manifest.model_contract_sha256),
+        ("provider_lock_sha256", manifest.provider_lock_sha256),
+        ("student_architecture_sha256", manifest.student_architecture_sha256),
+        (
+            "model_load_consensus_payload_sha256",
+            manifest.model_load_consensus_payload_sha256,
+        ),
+        (
+            "model_load_consensus_file_sha256",
+            manifest.model_load_consensus_file_sha256,
+        ),
+        (
+            "submission_manifest_file_sha256",
+            manifest.submission_manifest_file_sha256,
+        ),
+        (
+            "student_terminal_payload_sha256",
+            manifest.student_terminal_payload_sha256,
+        ),
         ("checkpoint_sha256", manifest.checkpoint_sha256),
         ("typed_memory_sha256", manifest.typed_memory_sha256),
         ("inference_manifest_sha256", manifest.inference_manifest_sha256),

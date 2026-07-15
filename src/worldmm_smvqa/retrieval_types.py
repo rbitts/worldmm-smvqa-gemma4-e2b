@@ -24,6 +24,22 @@ class EvidenceLineage(FrozenModel):
     lane: EvidenceLane
     producer: EvidenceProducer
     evidence_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_contract_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    student_architecture_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    model_load_consensus_payload_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
+    model_load_consensus_file_sha256: str | None = Field(
+        default=None,
+        pattern=r"^[0-9a-f]{64}$",
+    )
     checkpoint_sha256: str | None = Field(
         default=None,
         pattern=r"^[0-9a-f]{64}$",
@@ -67,6 +83,10 @@ class EvidenceLineage(FrozenModel):
         if self.lane != "student":
             return self
         required = (
+            "model_contract_sha256",
+            "student_architecture_sha256",
+            "model_load_consensus_payload_sha256",
+            "model_load_consensus_file_sha256",
             "checkpoint_sha256",
             "typed_memory_sha256",
             "inference_manifest_sha256",

@@ -47,6 +47,14 @@ JSON report.
 
 Local smoke uses only `tests/fixtures/tiny_smvqa` and the mock QA backend.
 
+The student contract path is separate from the heuristic smoke and EXP-0005:
+`worldmm-smvqa mock-dag --fixture configs/spatial/model_boundary_contract_v1.json`
+runs a CPU/offline, outputless production-consumer wiring check. Its success is only
+`mock` evidence. A remote `contract_probe` proves loadability only; neither result can
+claim real forward compatibility, model quality, or official/student completion.
+Student evidence and reports must bind the model-contract, student-architecture, and
+model-load-consensus digests.
+
 ```bash
 uv run worldmm-smvqa --help
 uv run worldmm-smvqa smoke \

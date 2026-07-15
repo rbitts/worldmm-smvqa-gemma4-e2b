@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import cast
 
@@ -12,9 +13,11 @@ from worldmm_smvqa.qa_transformers import (
     QA_PROMPT_SCHEMA_VERSION,
     QA_RESUME_MANIFEST_VERSION,
     TransformersCliArgs,
+    qa_resume_manifest,
     qa_resume_manifest_path,
     run_transformers_cli,
 )
+from worldmm_smvqa.retrieval_types import EvidenceLineage
 from worldmm_smvqa.smoke import run_smoke_pipeline
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -38,6 +41,10 @@ def test_qa_resume_manifest_binds_inputs_backend_model_and_schema(
         "checkpoint_sha256": "",
         "evidence_lane": "heuristic",
         "evidence_lineage_sha256": "",
+        "model_contract_sha256": "",
+        "student_architecture_sha256": "",
+        "model_load_consensus_payload_sha256": "",
+        "model_load_consensus_file_sha256": "",
         "evidence_sha256": _sha256(args.evidence),
         "expected_variant": "",
         "frame_assets_sha256": "",
@@ -57,6 +64,46 @@ def test_qa_resume_manifest_binds_inputs_backend_model_and_schema(
         "sources_sha256": _sha256(FIXTURE / "sources.jsonl"),
         "typed_memory_sha256": "",
     }
+
+
+def test_student_resume_manifest_propagates_contract_and_consensus(
+    tmp_path: Path,
+) -> None:
+    args = _completed_mock_run(tmp_path)
+    trust = {
+        "model_contract_sha256": "a" * 64,
+        "student_architecture_sha256": "b" * 64,
+        "model_load_consensus_payload_sha256": "c" * 64,
+        "model_load_consensus_file_sha256": "d" * 64,
+    }
+    lineage = EvidenceLineage(
+        lane="student",
+        producer="spatial-student",
+        evidence_sha256=_sha256(args.evidence),
+        checkpoint_sha256="1" * 64,
+        typed_memory_sha256="2" * 64,
+        inference_manifest_sha256="3" * 64,
+        config_sha256="4" * 64,
+        sensor_sha256="5" * 64,
+        data_sha256="6" * 64,
+        memory_manifest_sha256="7" * 64,
+        episodic_memory_sha256="8" * 64,
+        semantic_memory_sha256="9" * 64,
+        visual_memory_sha256="0" * 64,
+        **trust,
+    )
+    lineage_path = tmp_path / "student.lineage.json"
+    _ = lineage_path.write_text(lineage.model_dump_json(), encoding="utf-8")
+
+    manifest = qa_resume_manifest(
+        replace(
+            args,
+            evidence_lane="student",
+            evidence_lineage=lineage_path,
+        ),
+    )
+
+    assert {name: manifest[name] for name in trust} == trust
 
 
 def test_qa_resume_rejects_changed_evidence(tmp_path: Path) -> None:

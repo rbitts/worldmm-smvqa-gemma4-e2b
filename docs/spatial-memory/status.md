@@ -12,6 +12,15 @@
 
 EXP-0005 is an offline teacher-oracle diagnostic. `E0`, `T0`, and `T1` share the 30,000,000-microsecond audit window, causal frame inventory, QA backend, split, and the same serialized-byte cap. The cap is not a claim that realized bytes are equal; each variant's realized bytes must be retained as evidence. Results, if any, are `result_class=teacher_oracle` only, never student/device/official E1/E2/E3 claims.
 
+## Student contract delivery status
+
+The model-free student boundary contract, local mock DAG, checkpoint-v2 wiring, and
+digest propagation are local implementation surfaces only. No production provider lock
+has been accepted, no physical all-rank model-load consensus exists, and no student
+remote plan has been approved or run. Therefore there is no student checkpoint,
+completion terminal, manifest, metric, or quality claim. EXP-0005 remains unchanged and
+authoritative for the teacher-oracle experiment.
+
 ## Local implementation evidence and limits
 
 | Surface | Local implementation | Remote evidence still required |
