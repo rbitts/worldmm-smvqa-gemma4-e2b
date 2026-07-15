@@ -3,6 +3,52 @@ from __future__ import annotations
 
 import hashlib
 from textwrap import dedent
+from typing import Protocol
+
+
+class _StudentStageLike(Protocol):
+    @property
+    def stage_id(self) -> str: ...
+
+    @property
+    def host_class(self) -> str: ...
+
+    @property
+    def nodes(self) -> int: ...
+
+    @property
+    def gpus_per_node(self) -> int: ...
+
+    @property
+    def cpus_per_task(self) -> int: ...
+
+    @property
+    def memory_gb(self) -> int: ...
+
+    @property
+    def time_limit_minutes(self) -> int: ...
+
+    @property
+    def command_key(self) -> str: ...
+
+
+class _StudentEdgeLike(Protocol):
+    @property
+    def from_stage(self) -> str: ...
+
+    @property
+    def to_stage(self) -> str: ...
+
+    @property
+    def dependency_kind(self) -> str: ...
+
+
+class _StudentGraphLike(Protocol):
+    @property
+    def stages(self) -> tuple[_StudentStageLike, ...]: ...
+
+    @property
+    def edges(self) -> tuple[_StudentEdgeLike, ...]: ...
 
 
 def dag_submit_script_text() -> str:
@@ -5935,3 +5981,165 @@ teacher_oracle_finalizer_phase_b)
 esac
 """
     )
+
+
+def student_submit_script_text(graph: _StudentGraphLike) -> str:
+    """Render the reviewed held student graph without submitting it locally."""
+    stages = tuple(graph.stages)
+    edges = tuple(graph.edges)
+    stage_ids = {str(stage.stage_id) for stage in stages}
+    dependency_map: dict[str, tuple[str, list[str]]] = {}
+    for edge in edges:
+        source = str(edge.from_stage)
+        target = str(edge.to_stage)
+        kind = str(edge.dependency_kind)
+        if source not in stage_ids or target not in stage_ids:
+            msg = "student graph edge references an unknown stage"
+            raise ValueError(msg)
+        prior = dependency_map.get(target)
+        if prior is not None and prior[0] != kind:
+            msg = "student graph mixes dependency kinds for one stage"
+            raise ValueError(msg)
+        dependency_map.setdefault(target, (kind, []))[1].append(source)
+    dependency_rows = [
+        f'EDGE["{target}"]="{kind}:{";".join(parents)}"'
+        for target, (kind, parents) in dependency_map.items()
+    ]
+    stage_rows: list[str] = []
+    for stage in stages:
+        stage_id = str(stage.stage_id)
+        host_class = str(stage.host_class)
+        nodes = int(stage.nodes)
+        gpus = int(stage.gpus_per_node)
+        cpus = int(stage.cpus_per_task)
+        memory = int(stage.memory_gb)
+        minutes = int(stage.time_limit_minutes)
+        stage_rows.append(
+            f'STAGE["{stage_id}"]="{host_class}|{nodes}|{gpus}|{cpus}|{memory}|{minutes}"'
+        )
+    unheld = (
+        "model_load_gate",
+        "model_load_terminal",
+        "control_primary",
+        "control_backup",
+        "control_actuator",
+        "student_watchdog",
+    )
+    return dedent(
+        f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            : "${{WORLDMM_SMVQA_REMOTE_APPROVED:?explicit approval is required}}"
+            [[ "$WORLDMM_SMVQA_REMOTE_APPROVED" == "1" ]] || exit 2
+            : "${{WORLDMM_RUN_ID:?WORLDMM_RUN_ID is required}}"
+            : "${{WORLDMM_OUTPUT_ROOT:?WORLDMM_OUTPUT_ROOT is required}}"
+            readonly SBATCH=/opt/slurm/bin/sbatch
+            readonly SCONTROL=/opt/slurm/bin/scontrol
+            readonly SCANCEL=/opt/slurm/bin/scancel
+            readonly STAGE_RUNNER="${{WORLDMM_REMOTE_REPO}}/remote-plan/run_student_stage.sh"
+            declare -A STAGE EDGE JOB
+            {chr(10).join(stage_rows)}
+            {chr(10).join(dependency_rows)}
+            readonly UNHELD_STAGES="{" ".join(unheld)}"
+
+            is_unheld() {{
+              [[ " $UNHELD_STAGES " == *" $1 "* ]]
+            }}
+
+            submit_stage() {{
+              local stage="$1" spec="${{STAGE[$1]}}" host nodes gpus cpus memory minutes
+              IFS='|' read -r host nodes gpus cpus memory minutes <<<"$spec"
+              local args=(
+                "--parsable" "--no-requeue"
+                "--job-name=worldmm-${{WORLDMM_RUN_ID}}-${{stage}}"
+                "--nodes=$nodes" "--cpus-per-task=$cpus"
+                "--mem=${{memory}}G" "--time=$minutes"
+                "--output=${{WORLDMM_OUTPUT_ROOT}}/logs/${{stage}}-%j.log"
+                "--export=NONE"
+              )
+              if [[ "$host" == gpu ]]; then
+                args+=("--partition=gpu-vtt-queue" "--gpus-per-node=$gpus")
+              else
+                args+=("--partition=cpu-prepro-queue")
+              fi
+              if ! is_unheld "$stage"; then args+=("--hold"); fi
+              if [[ -n "${{EDGE[$stage]:-}}" ]]; then
+                local edge="${{EDGE[$stage]}}" kind="${{edge%%:*}}" parents="${{edge#*:}}"
+                local dependency_ids="" parent
+                IFS=';' read -ra parent_stages <<<"$parents"
+                for parent in "${{parent_stages[@]}}"; do
+                  dependency_ids+="${{dependency_ids:+:}}${{JOB[$parent]}}"
+                done
+                args+=("--dependency=${{kind}}:${{dependency_ids}}")
+              fi
+              JOB["$stage"]="$("$SBATCH" "${{args[@]}}" "$STAGE_RUNNER" "$stage")"
+            }}
+
+            # Submission order preserves job-id causality. No workload is released here.
+            submit_stage preflight_ingest
+            submit_stage model_load_workers
+            submit_stage model_load_gate
+            submit_stage model_load_terminal
+            submit_stage control_primary
+            submit_stage control_backup
+            submit_stage control_actuator
+            submit_stage student_watchdog
+            submit_stage teacher_extract
+            submit_stage merge_materialize
+            submit_stage train
+            submit_stage spatial_infer
+            submit_stage qwen_episodic
+            submit_stage qwen_semantic_visual
+            submit_stage retrieval_join
+            submit_stage qa
+            submit_stage metrics_report
+
+            # A controller/actuator validates the immutable submission manifest and approval.
+            # Controllers publish proposals only; only control_actuator may call scontrol/scancel.
+            printf '%s\\n' "held student graph generated; no workload released"
+            """
+    ).lstrip()
+
+
+def student_stage_script_text(graph: _StudentGraphLike) -> str:
+    """Render command-key dispatch for the strict student graph."""
+    rows: list[str] = []
+    for stage in tuple(graph.stages):
+        stage_id = str(stage.stage_id)
+        command_key = str(stage.command_key)
+        rows.append(f'  {stage_id}) command_key="{command_key}" ;;')
+    return dedent(
+        f"""\
+            #!/usr/bin/env bash
+            set -euo pipefail
+            readonly stage="${{1:?student stage id is required}}"
+            case "$stage" in
+            {chr(10).join(rows)}
+              *) exit 2 ;;
+            esac
+            export PYTHONNOUSERSITE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_OFFLINE=1
+            case "$command_key" in
+              student.model_load_workers)
+                exec python -m worldmm_smvqa.model_load worker
+                ;;
+              student.model_load_gate)
+                exec python -m worldmm_smvqa.model_load gate
+                ;;
+              student.model_load_terminal)
+                exec python -m worldmm_smvqa.model_load terminal
+                ;;
+              student.control_primary|student.control_backup)
+                exec python -m worldmm_smvqa.model_load controller "$command_key"
+                ;;
+              student.control_actuator)
+                exec python -m worldmm_smvqa.model_load actuator
+                ;;
+              student.student_watchdog)
+                exec python -m worldmm_smvqa.model_load watchdog
+                ;;
+              *)
+                exec worldmm-smvqa remote-stage --command-key "$command_key"
+                ;;
+            esac
+            """
+    ).lstrip()

@@ -8,6 +8,12 @@ from typing import TYPE_CHECKING, cast
 
 from pydantic import TypeAdapter
 
+from worldmm_smvqa.remote_plan import canonical_student_run_graph
+from worldmm_smvqa.remote_script import (
+    student_stage_script_text,
+    student_submit_script_text,
+)
+
 if TYPE_CHECKING:
     import pytest
 
@@ -454,3 +460,71 @@ def test_teacher_oracle_example_and_wrapper_are_dry_run_only() -> None:
     assert "WORLDMM_EXECUTION_PROFILE=teacher-oracle is required" in wrapper
     assert "launch-remote --dry-run" in wrapper
     assert "--submit" not in wrapper
+
+
+def test_student_graph_closes_fork_join_resources_and_outputs() -> None:
+
+    graph = canonical_student_run_graph(
+        execution_profile="full",
+        model_contract_sha256="1" * 64,
+        provider_lock_sha256="2" * 64,
+        student_architecture_sha256="3" * 64,
+        train_time_limit_minutes=1440,
+        global_deadline_minutes=1800,
+    )
+    stages = {stage.stage_id: stage for stage in graph.stages}
+    assert len(stages) == 17
+    assert (
+        stages["model_load_workers"].nodes,
+        stages["model_load_workers"].gpus_per_node,
+    ) == (
+        10,
+        8,
+    )
+    assert stages["student_watchdog"].output_keys["student_terminal"] == (
+        "summary/student_terminal.json"
+    )
+    assert not {
+        "control_primary",
+        "control_backup",
+        "control_actuator",
+        "student_watchdog",
+    } & {edge.to_stage for edge in graph.edges}
+    retrieval_parents = {
+        edge.from_stage for edge in graph.edges if edge.to_stage == "retrieval_join"
+    }
+    assert retrieval_parents == {"spatial_infer", "qwen_semantic_visual"}
+
+
+def test_student_probe_renderer_is_held_and_has_native_join() -> None:
+
+    graph = canonical_student_run_graph(
+        execution_profile="probe",
+        model_contract_sha256="1" * 64,
+        provider_lock_sha256="2" * 64,
+        student_architecture_sha256="3" * 64,
+        train_time_limit_minutes=30,
+        global_deadline_minutes=60,
+    )
+    assert all(
+        (stage.nodes, stage.gpus_per_node) == (1, 1)
+        for stage in graph.stages
+        if stage.host_class == "gpu"
+    )
+    submit = student_submit_script_text(graph)
+    runner = student_stage_script_text(graph)
+    assert "--hold" in submit
+    assert "--export=NONE" in submit
+    assert (
+        'EDGE["retrieval_join"]="afterok:spatial_infer;qwen_semantic_visual"' in submit
+    )
+    assert "only control_actuator may call scontrol/scancel" in submit
+    assert "worldmm_smvqa.model_load actuator" in runner
+    proof = subprocess.run(
+        ["bash", "-n"],
+        input=submit,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    assert proof.returncode == 0, proof.stderr

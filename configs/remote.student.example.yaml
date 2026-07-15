@@ -1,0 +1,17 @@
+runtime:
+  location: remote
+remote:
+  bastion_host: ${BASTION_HOST}
+  head_node: ${HEAD_NODE}
+  data_root: ${SMVQA_DATA_ROOT}
+  output_root: ${WORLDMM_OUTPUT_ROOT}
+  execution_profile: student
+  student_execution_profile: full
+  model_contract: configs/spatial/model_boundary_contract_v1.json
+  model_contract_sha256: ${WORLDMM_MODEL_CONTRACT_SHA256}
+  student_architecture: configs/spatial/student_architecture_v1.json
+  student_architecture_sha256: ${WORLDMM_STUDENT_ARCHITECTURE_SHA256}
+  provider_lock: ${WORLDMM_PROVIDER_LOCK}
+  provider_lock_sha256: ${WORLDMM_PROVIDER_LOCK_SHA256}
+  train_time_limit_minutes: 1440
+  global_deadline_minutes: 1800

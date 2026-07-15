@@ -7,11 +7,12 @@ import tempfile
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import ClassVar, Final, Literal, TypedDict, override
+from typing import ClassVar, Final, Literal, TypedDict, Unpack, override
 
 from pydantic import (
     BaseModel,
     ConfigDict,
+    Field,
     TypeAdapter,
     ValidationError,
     model_validator,
@@ -218,6 +219,513 @@ class ExperimentGraphV1(BaseModel):
         if self.manifest_job_keys != expected_keys:
             raise ValueError(_MANIFEST_KEYS_MESSAGE)
         return self
+
+
+StudentStageRole = Literal[
+    "preflight",
+    "load",
+    "gate",
+    "terminal",
+    "teacher",
+    "merge",
+    "train",
+    "spatial_infer",
+    "qwen",
+    "retrieval",
+    "qa",
+    "report",
+    "controller",
+    "actuator",
+    "watchdog",
+]
+StudentHostClass = Literal["cpu", "gpu"]
+StudentDependencyKind = Literal["afterok", "afterany"]
+
+
+class StudentStageSpecV1(BaseModel):
+    """One immutable stage in the approved student workload graph."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    stage_id: str
+    role: StudentStageRole
+    host_class: StudentHostClass
+    nodes: int = Field(ge=1)
+    gpus_per_node: int = Field(ge=0)
+    cpus_per_task: int = Field(ge=1)
+    memory_gb: int = Field(ge=1)
+    time_limit_minutes: int = Field(ge=1)
+    command_key: str
+    output_keys: dict[str, str]
+
+    @model_validator(mode="after")
+    def _host_resources_agree(self) -> StudentStageSpecV1:
+        if (self.host_class == "gpu") != (self.gpus_per_node > 0):
+            msg = "student stage host class and GPU resources disagree"
+            raise ValueError(msg)
+        return self
+
+
+class StudentEdgeSpecV1(BaseModel):
+    """A native Slurm edge plus its required durable authorization receipt."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    from_stage: str
+    to_stage: str
+    dependency_kind: StudentDependencyKind
+    requires_receipt_kind: str | None
+
+
+_STUDENT_OUTPUT_CATALOGUE: Final[dict[str, dict[str, str]]] = {
+    "preflight_ingest": {
+        "preflight_contract": "manifests/preflight_contract.json",
+        "preflight_inputs": "manifests/preflight_inputs.json",
+        "preflight_inventory": "manifests/pre_load_artifact_inventory.json",
+    },
+    "model_load_workers": {
+        "rank_receipts": "diagnostics/model_load/ranks/",
+        "worker_log": "logs/model_load_workers.log",
+    },
+    "model_load_gate": {
+        "model_load_consensus": "diagnostics/model_load/model_load_consensus.json",
+        "model_load_continue": "diagnostics/model_load/model_load_continue.json",
+        "gate_log": "logs/model_load_gate.log",
+    },
+    "model_load_terminal": {
+        "model_load_terminal": "diagnostics/model_load/model_load_terminal.json",
+        "terminal_log": "logs/model_load_terminal.log",
+    },
+    "teacher_extract": {
+        "teacher_shards": "teacher/shards/",
+        "teacher_manifest": "teacher/teacher_manifest.json",
+    },
+    "merge_materialize": {
+        "teacher_cache": "training/student_teacher_cache.jsonl",
+        "teacher_cache_contract": "training/teacher_cache.contract.json",
+    },
+    "train": {
+        "student_checkpoint": "checkpoints/spatial_student.pt",
+        "training_metrics": "training/training_metrics.json",
+    },
+    "spatial_infer": {
+        "spatial_inference_load_receipt": (
+            "diagnostics/model_load/spatial_inference_load.json"
+        ),
+        "typed_memory": "memory/spatial.jsonl",
+        "typed_memory_manifest": "memory/spatial_manifest.json",
+    },
+    "qwen_episodic": {
+        "episodic_memory": "memory/episodic.jsonl",
+        "episodic_manifest": "memory/episodic_manifest.json",
+    },
+    "qwen_semantic_visual": {
+        "semantic_memory": "memory/semantic.jsonl",
+        "visual_memory": "memory/visual.jsonl",
+        "qwen_store_envelope": "memory/qwen_store_envelope.json",
+    },
+    "retrieval_join": {
+        "memory_manifest": "memory/memory_manifest.json",
+        "retrieval_records": "retrieval/retrieval_records.jsonl",
+        "evidence_packs": "retrieval/evidence_packs.jsonl",
+    },
+    "qa": {
+        "qa_rank_shards": "qa/ranks/",
+        "qa_manifest": "qa/qa_manifest.json",
+    },
+    "metrics_report": {
+        "metrics": "metrics/metrics.json",
+        "student_run_manifest_provisional": (
+            "summary/student_run_manifest.provisional.json"
+        ),
+        "report": "summary/report.md",
+    },
+    "control_primary": {
+        "controller_primary_arbitration": "summary/controller/arbitration/",
+        "controller_primary_proposals": "summary/controller/proposals/primary/",
+    },
+    "control_backup": {
+        "controller_backup_arbitration": "summary/controller/arbitration/",
+        "controller_backup_proposals": "summary/controller/proposals/backup/",
+    },
+    "control_actuator": {
+        "control_actions": "summary/controller/actions/",
+    },
+    "student_watchdog": {
+        "student_terminal": "summary/student_terminal.json",
+        "accounting": "summary/stage_accounting.json",
+        "control_summary": "summary/control_summary.json",
+    },
+}
+
+_STUDENT_STAGE_DEFINITIONS: Final[
+    tuple[tuple[str, StudentStageRole, StudentHostClass, int, int, int, int, str], ...]
+] = (
+    ("preflight_ingest", "preflight", "cpu", 1, 0, 32, 128, "student.preflight"),
+    (
+        "model_load_workers",
+        "load",
+        "gpu",
+        10,
+        8,
+        16,
+        160,
+        "student.model_load_workers",
+    ),
+    (
+        "model_load_gate",
+        "gate",
+        "cpu",
+        1,
+        0,
+        32,
+        128,
+        "student.model_load_gate",
+    ),
+    (
+        "model_load_terminal",
+        "terminal",
+        "cpu",
+        1,
+        0,
+        32,
+        128,
+        "student.model_load_terminal",
+    ),
+    (
+        "teacher_extract",
+        "teacher",
+        "gpu",
+        10,
+        8,
+        16,
+        160,
+        "student.teacher_extract",
+    ),
+    (
+        "merge_materialize",
+        "merge",
+        "cpu",
+        1,
+        0,
+        32,
+        128,
+        "student.merge_materialize",
+    ),
+    ("train", "train", "gpu", 10, 8, 16, 160, "student.train"),
+    (
+        "spatial_infer",
+        "spatial_infer",
+        "gpu",
+        1,
+        1,
+        32,
+        128,
+        "student.spatial_infer",
+    ),
+    (
+        "qwen_episodic",
+        "qwen",
+        "gpu",
+        10,
+        8,
+        16,
+        160,
+        "student.qwen_episodic",
+    ),
+    (
+        "qwen_semantic_visual",
+        "qwen",
+        "gpu",
+        10,
+        8,
+        16,
+        160,
+        "student.qwen_semantic_visual",
+    ),
+    (
+        "retrieval_join",
+        "retrieval",
+        "cpu",
+        1,
+        0,
+        32,
+        128,
+        "student.retrieval_join",
+    ),
+    ("qa", "qa", "gpu", 10, 8, 16, 160, "student.qa"),
+    (
+        "metrics_report",
+        "report",
+        "cpu",
+        1,
+        0,
+        32,
+        128,
+        "student.metrics_report",
+    ),
+    (
+        "control_primary",
+        "controller",
+        "cpu",
+        1,
+        0,
+        4,
+        16,
+        "student.control_primary",
+    ),
+    (
+        "control_backup",
+        "controller",
+        "cpu",
+        1,
+        0,
+        4,
+        16,
+        "student.control_backup",
+    ),
+    (
+        "control_actuator",
+        "actuator",
+        "cpu",
+        1,
+        0,
+        4,
+        16,
+        "student.control_actuator",
+    ),
+    (
+        "student_watchdog",
+        "watchdog",
+        "cpu",
+        1,
+        0,
+        8,
+        32,
+        "student.student_watchdog",
+    ),
+)
+
+_STUDENT_TIME_LIMITS: Final[dict[str, int]] = {
+    "preflight_ingest": 30,
+    "model_load_workers": 75,
+    "model_load_gate": 30,
+    "model_load_terminal": 30,
+    "teacher_extract": 120,
+    "merge_materialize": 30,
+    "spatial_infer": 60,
+    "qwen_episodic": 120,
+    "qwen_semantic_visual": 120,
+    "retrieval_join": 60,
+    "qa": 60,
+    "metrics_report": 30,
+}
+
+_STUDENT_EDGES: Final[
+    tuple[tuple[str, str, StudentDependencyKind, str | None], ...]
+] = (
+    ("model_load_workers", "model_load_gate", "afterany", None),
+    ("model_load_gate", "model_load_terminal", "afterany", None),
+    (
+        "model_load_gate",
+        "teacher_extract",
+        "afterok",
+        "model_load_continue_v1",
+    ),
+    ("teacher_extract", "merge_materialize", "afterok", "teacher_manifest_v1"),
+    (
+        "merge_materialize",
+        "train",
+        "afterok",
+        "teacher_cache_contract_v1",
+    ),
+    ("train", "spatial_infer", "afterok", "checkpoint_v2"),
+    (
+        "model_load_gate",
+        "qwen_episodic",
+        "afterok",
+        "model_load_continue_v1",
+    ),
+    (
+        "qwen_episodic",
+        "qwen_semantic_visual",
+        "afterok",
+        "episodic_manifest_v1",
+    ),
+    (
+        "spatial_infer",
+        "retrieval_join",
+        "afterok",
+        "spatial_typed_memory_manifest_v1",
+    ),
+    (
+        "qwen_semantic_visual",
+        "retrieval_join",
+        "afterok",
+        "qwen_store_envelope_v1",
+    ),
+    ("retrieval_join", "qa", "afterok", "retrieval_manifest_v1"),
+    ("qa", "metrics_report", "afterok", "qa_manifest_v1"),
+)
+
+
+class StudentRunGraphV1(BaseModel):
+    """Closed, immutable source of truth for the remote student run."""
+
+    model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid", frozen=True)
+
+    schema_version: Literal["student_run_graph_v1"] = "student_run_graph_v1"
+    graph_id: str
+    plan_profile: Literal["student"]
+    execution_profile: Literal["full", "probe"]
+    model_contract_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    provider_lock_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    student_architecture_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    stages: tuple[StudentStageSpecV1, ...]
+    edges: tuple[StudentEdgeSpecV1, ...]
+    terminal_stage_id: Literal["student_watchdog"]
+
+    @model_validator(mode="after")
+    def _closed_catalogue(self) -> StudentRunGraphV1:
+        expected_ids = tuple(row[0] for row in _STUDENT_STAGE_DEFINITIONS)
+        actual_ids = tuple(stage.stage_id for stage in self.stages)
+        if actual_ids != expected_ids:
+            msg = "stages are not the complete canonical student catalogue"
+            raise ValueError(msg)
+        by_id = {stage.stage_id: stage for stage in self.stages}
+        if any(
+            stage.output_keys != _STUDENT_OUTPUT_CATALOGUE[stage.stage_id]
+            for stage in self.stages
+        ):
+            msg = "student stage output catalogue does not match"
+            raise ValueError(msg)
+        expected_edges = tuple(
+            StudentEdgeSpecV1(
+                from_stage=source,
+                to_stage=target,
+                dependency_kind=kind,
+                requires_receipt_kind=receipt,
+            )
+            for source, target, kind, receipt in _STUDENT_EDGES
+        )
+        if self.edges != expected_edges:
+            msg = "edges are not the canonical student fork/join graph"
+            raise ValueError(msg)
+        gpu_nodes = 10 if self.execution_profile == "full" else 1
+        gpu_count = 8 if self.execution_profile == "full" else 1
+        for stage in self.stages:
+            if (
+                stage.host_class == "gpu"
+                and stage.stage_id != "spatial_infer"
+                and (stage.nodes, stage.gpus_per_node) != (gpu_nodes, gpu_count)
+            ):
+                msg = "GPU stage does not cover the execution matrix"
+                raise ValueError(msg)
+            if (
+                self.execution_profile == "probe"
+                and stage.stage_id == "spatial_infer"
+                and (stage.nodes, stage.gpus_per_node) != (1, 1)
+            ):
+                msg = "probe spatial inference is not pinned 1x1"
+                raise ValueError(msg)
+        incoming = {edge.to_stage for edge in self.edges}
+        if any(
+            stage_id in incoming
+            for stage_id in (
+                "control_primary",
+                "control_backup",
+                "control_actuator",
+                "student_watchdog",
+            )
+        ):
+            msg = "control and watchdog stages must be unheld and independent"
+            raise ValueError(msg)
+        if by_id[self.terminal_stage_id].role != "watchdog":
+            msg = "terminal stage must be the independent watchdog"
+            raise ValueError(msg)
+        return self
+
+
+_MAX_TRAIN_TIME_LIMIT_MINUTES: Final = 10_080
+
+
+class StudentGraphBuildOptions(TypedDict):
+    student_architecture_sha256: str
+    train_time_limit_minutes: int
+    global_deadline_minutes: int
+
+
+def canonical_student_run_graph(
+    *,
+    execution_profile: Literal["full", "probe"],
+    model_contract_sha256: str,
+    provider_lock_sha256: str,
+    **options: Unpack[StudentGraphBuildOptions],
+) -> StudentRunGraphV1:
+    """Build the only admitted full/probe graph from reviewed resource constants."""
+    student_architecture_sha256 = options["student_architecture_sha256"]
+    train_time_limit_minutes = options["train_time_limit_minutes"]
+    global_deadline_minutes = options["global_deadline_minutes"]
+    if not 1 <= train_time_limit_minutes <= _MAX_TRAIN_TIME_LIMIT_MINUTES:
+        msg = "train time limit must be in 1..10080 minutes"
+        raise ValueError(msg)
+    if global_deadline_minutes < train_time_limit_minutes:
+        msg = "global deadline cannot precede training timeout"
+        raise ValueError(msg)
+    stages: list[StudentStageSpecV1] = []
+    for (
+        stage_id,
+        role,
+        host_class,
+        nodes,
+        gpus,
+        cpus,
+        memory,
+        command_key,
+    ) in _STUDENT_STAGE_DEFINITIONS:
+        effective_nodes = nodes
+        effective_gpus = gpus
+        if execution_profile == "probe" and host_class == "gpu":
+            effective_nodes, effective_gpus = 1, 1
+        time_limit = _STUDENT_TIME_LIMITS.get(stage_id, global_deadline_minutes)
+        if stage_id == "train":
+            time_limit = train_time_limit_minutes
+        if stage_id == "student_watchdog":
+            time_limit = global_deadline_minutes + 10
+        stages.append(
+            StudentStageSpecV1(
+                stage_id=stage_id,
+                role=role,
+                host_class=host_class,
+                nodes=effective_nodes,
+                gpus_per_node=effective_gpus,
+                cpus_per_task=cpus,
+                memory_gb=memory,
+                time_limit_minutes=time_limit,
+                command_key=command_key,
+                output_keys=_STUDENT_OUTPUT_CATALOGUE[stage_id],
+            )
+        )
+    edges = tuple(
+        StudentEdgeSpecV1(
+            from_stage=source,
+            to_stage=target,
+            dependency_kind=kind,
+            requires_receipt_kind=receipt,
+        )
+        for source, target, kind, receipt in _STUDENT_EDGES
+    )
+    return StudentRunGraphV1(
+        graph_id=f"student-{execution_profile}-v1",
+        plan_profile="student",
+        execution_profile=execution_profile,
+        model_contract_sha256=model_contract_sha256,
+        provider_lock_sha256=provider_lock_sha256,
+        student_architecture_sha256=student_architecture_sha256,
+        stages=tuple(stages),
+        edges=edges,
+        terminal_stage_id="student_watchdog",
+    )
 
 
 _JSON_VALUE_ADAPTER: Final[TypeAdapter[JsonValue]] = TypeAdapter(JsonValue)
