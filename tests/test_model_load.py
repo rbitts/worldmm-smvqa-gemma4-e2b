@@ -68,9 +68,9 @@ def _request(**changes: object) -> dict[str, object]:
 def test_role_mode_matrix_rejects_forbidden_path_and_digest_combinations() -> None:
     assert ModelLoadRequestV1.model_validate(_request()).model_role == "qwen_memory"
     with pytest.raises(ValidationError, match="requires only model_path"):
-        ModelLoadRequestV1.model_validate(_request(checkpoint_path="/forbidden"))
+        _ = ModelLoadRequestV1.model_validate(_request(checkpoint_path="/forbidden"))
     with pytest.raises(ValidationError, match="required expected digests absent"):
-        ModelLoadRequestV1.model_validate(
+        _ = ModelLoadRequestV1.model_validate(
             _request(expected_digests=ExpectedDigestsV1())
         )
 
@@ -120,7 +120,7 @@ def test_provider_environment_drops_network_credentials_and_unrelated_worldmm() 
 
 def test_provider_parser_rejects_second_line_and_exit_mismatch() -> None:
     with pytest.raises(ValueError, match="invalid_provider_output"):
-        parse_provider_output(b"{}\n{}\n", 0)
+        _ = parse_provider_output(b"{}\n{}\n", 0)
     payload = {
         "actual_device": None,
         "actual_loaded_class": None,
@@ -151,7 +151,7 @@ def test_provider_parser_rejects_second_line_and_exit_mismatch() -> None:
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode() + b"\n"
     )
     with pytest.raises(ValueError, match="exit_result_mismatch"):
-        parse_provider_output(encoded, 0)
+        _ = parse_provider_output(encoded, 0)
 
 
 def _genesis() -> ControllerArbitrationRecordV1:
@@ -174,7 +174,7 @@ def _genesis() -> ControllerArbitrationRecordV1:
 
 def test_arbitration_genesis_is_unique_and_chain_is_contiguous(tmp_path: Path) -> None:
     root = tmp_path / "arbitration"
-    append_arbitration_record(root, _genesis())
+    _ = append_arbitration_record(root, _genesis())
     prior = file_sha256(root / "00000000000000000001.json")
     heartbeat = ControllerArbitrationRecordV1(
         sequence=2,
@@ -191,10 +191,10 @@ def test_arbitration_genesis_is_unique_and_chain_is_contiguous(tmp_path: Path) -
             prior_accounting_sha256=SHA,
         ),
     )
-    append_arbitration_record(root, heartbeat)
+    _ = append_arbitration_record(root, heartbeat)
     assert [row.sequence for row in validate_arbitration_log(root)] == [1, 2]
     with pytest.raises(ArbitrationLogError, match="compare-and-swap"):
-        append_arbitration_record(root, heartbeat)
+        _ = append_arbitration_record(root, heartbeat)
 
 
 def test_action_intent_is_non_expiring_and_transition_checked() -> None:
@@ -226,6 +226,6 @@ def test_action_intent_is_non_expiring_and_transition_checked() -> None:
     )
     assert b'"expires_at_ms":null' in encode_control_json(record)
     with pytest.raises(ValidationError, match="illegal stage action transition"):
-        PostApprovalActionIntentPayloadV1.model_validate(
+        _ = PostApprovalActionIntentPayloadV1.model_validate(
             {**payload.model_dump(), "from_state": "cancelled"}
         )
