@@ -42,8 +42,9 @@ RECORD_TYPES: Final = (
     "event",
     "no_write",
 )
-CHECKPOINT_VERSION: Final = 1
+CHECKPOINT_VERSION: Final = 2
 SHA256_HEX_LENGTH: Final = 64
+DEFAULT_MODEL_CONTRACT_SHA256: Final = "0" * SHA256_HEX_LENGTH
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,6 +92,7 @@ class StudentConfig:
     learning_rate: float = 1e-3
     rate_normalizer_bytes: float = 4096.0
     teacher_cache_sha256: str = ""
+    model_contract_sha256: str = DEFAULT_MODEL_CONTRACT_SHA256
 
     def __post_init__(self) -> None:
         integer_fields = {
@@ -109,11 +111,65 @@ class StudentConfig:
             raise SpatialTrainingError(
                 detail="learning rate and rate normalizer must be positive",
             )
-        if self.teacher_cache_sha256 and (
-            len(self.teacher_cache_sha256) != SHA256_HEX_LENGTH
-            or any(char not in "0123456789abcdef" for char in self.teacher_cache_sha256)
+        if self.teacher_cache_sha256:
+            _validate_sha256(self.teacher_cache_sha256, "teacher-cache")
+        _validate_sha256(self.model_contract_sha256, "model-contract")
+
+
+@dataclass(frozen=True, slots=True)
+class LocalMockCheckpointAuthorizationV1:
+    kind: Literal["local_mock_v1"]
+    local_authorization_sha256: str
+    model_contract_sha256: str
+    student_architecture_sha256: str
+
+    def __post_init__(self) -> None:
+        _validate_sha256(self.local_authorization_sha256, "local authorization")
+        _validate_sha256(self.model_contract_sha256, "model contract")
+        _validate_sha256(self.student_architecture_sha256, "student architecture")
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteConsensusCheckpointAuthorizationV1:
+    kind: Literal["remote_consensus_v1"]
+    model_contract_sha256: str
+    student_architecture_sha256: str
+    consensus_payload_sha256: str
+    consensus_file_sha256: str
+    parent_checkpoint_sha256: str | None
+    parent_origin_consensus_payload_sha256: str | None
+    parent_origin_consensus_file_sha256: str | None
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("model contract", self.model_contract_sha256),
+            ("student architecture", self.student_architecture_sha256),
+            ("consensus payload", self.consensus_payload_sha256),
+            ("consensus file", self.consensus_file_sha256),
         ):
-            raise SpatialTrainingError(detail="invalid teacher-cache digest")
+            _validate_sha256(value, name)
+        parent_values = (
+            self.parent_checkpoint_sha256,
+            self.parent_origin_consensus_payload_sha256,
+            self.parent_origin_consensus_file_sha256,
+        )
+        if any(value is None for value in parent_values) and any(
+            value is not None for value in parent_values
+        ):
+            raise SpatialTrainingError(
+                detail=(
+                    "remote parent checkpoint authorization must be all-null "
+                    "or complete"
+                ),
+            )
+        for value in parent_values:
+            if value is not None:
+                _validate_sha256(value, "remote parent authorization")
+
+
+type CheckpointAuthorizationV1 = (
+    LocalMockCheckpointAuthorizationV1 | RemoteConsensusCheckpointAuthorizationV1
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -211,13 +267,19 @@ def distributed_context(env: Mapping[str, str]) -> DistributedContext:
     return DistributedContext(rank=rank, world_size=world_size, local_rank=local_rank)
 
 
-def build_student(config: StudentConfig) -> object:
-    """Build a feature-level candidate head, not a raw RGB/IMU device model."""
-    torch = _require_torch()
+class TypedCandidateHead:
+    """Lazy constructor for the promoted remote student class.
 
-    class TypedCandidateHead(torch.nn.Module):
-        def __init__(self) -> None:
-            super().__init__()
+    Torch remains an optional dependency at module-import time. Instantiation returns
+    a real ``torch.nn.Module`` whose public module/name identity is this class.
+    """
+
+    def __new__(cls, config: StudentConfig) -> object:
+        """Build the lazily imported torch module."""
+        torch = _require_torch()
+
+        def initialize(self: object) -> None:
+            torch.nn.Module.__init__(self)
             self.encoder = torch.nn.Sequential(
                 torch.nn.Linear(config.input_dim, config.hidden_dim),
                 torch.nn.ReLU(),
@@ -243,7 +305,7 @@ def build_student(config: StudentConfig) -> object:
                 config.teacher_dim,
             )
 
-        def forward(self, features: object) -> dict[str, object]:
+        def forward(self: object, features: object) -> dict[str, object]:
             hidden = self.encoder(features)
             return {
                 "type_logits": self.type_head(hidden),
@@ -260,7 +322,22 @@ def build_student(config: StudentConfig) -> object:
                 "distillation": self.distillation_head(hidden),
             }
 
-    return TypedCandidateHead()
+        implementation = type(
+            cls.__name__,
+            (torch.nn.Module,),
+            {
+                "__module__": __name__,
+                "__doc__": cls.__doc__,
+                "__init__": initialize,
+                "forward": forward,
+            },
+        )
+        return implementation()
+
+
+def build_student(config: StudentConfig) -> object:
+    """Build a feature-level candidate head, not a raw RGB/IMU device model."""
+    return TypedCandidateHead(config)
 
 
 def compute_losses(
@@ -444,16 +521,21 @@ def save_checkpoint_atomic(  # noqa: PLR0913
     model: object,
     optimizer: object,
     config: StudentConfig,
+    authorization: CheckpointAuthorizationV1,
     next_epoch: int,
     global_step: int,
 ) -> None:
     torch = _require_torch()
+    _validate_checkpoint_authorization(authorization, config)
+    if next_epoch < 0 or global_step < 0:
+        raise SpatialTrainingError(detail="checkpoint counters must be non-negative")
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
     module = model.module if hasattr(model, "module") else model
     payload = {
         "version": CHECKPOINT_VERSION,
         "config": asdict(config),
+        "authorization": asdict(authorization),
         "next_epoch": next_epoch,
         "global_step": global_step,
         "model": module.state_dict(),
@@ -466,36 +548,112 @@ def save_checkpoint_atomic(  # noqa: PLR0913
         temporary.unlink(missing_ok=True)
 
 
-def load_checkpoint(
+def load_checkpoint(  # noqa: PLR0913
     path: Path,
     *,
     model: object,
     optimizer: object,
     device: object,
     expected_config: StudentConfig | None = None,
+    expected_authorization: CheckpointAuthorizationV1 | None = None,
 ) -> tuple[int, int]:
+    payload = _load_checkpoint_payload(path, device)
+    _validate_loaded_checkpoint(
+        payload,
+        path,
+        expected_config=expected_config,
+        expected_authorization=expected_authorization,
+    )
+    load_model_state(payload, path=path, model=model)
+    restore_optimizer_state(payload, path=path, optimizer=optimizer)
+    next_epoch = int(cast("int", payload["next_epoch"]))
+    global_step = int(cast("int", payload["global_step"]))
+    return next_epoch, global_step
+
+
+def load_model_state(
+    payload: Mapping[str, object],
+    *,
+    path: Path,
+    model: object,
+) -> None:
+    try:
+        model.load_state_dict(payload["model"])
+    except (KeyError, TypeError, RuntimeError, ValueError) as exc:
+        raise SpatialTrainingError(
+            detail=f"invalid model state in {path}: {exc}"
+        ) from exc
+
+
+def restore_optimizer_state(
+    payload: Mapping[str, object],
+    *,
+    path: Path,
+    optimizer: object,
+) -> None:
+    try:
+        optimizer.load_state_dict(payload["optimizer"])
+    except (KeyError, TypeError, RuntimeError, ValueError) as exc:
+        raise SpatialTrainingError(
+            detail=f"invalid optimizer state in {path}: {exc}"
+        ) from exc
+
+
+def _load_checkpoint_payload(path: Path, device: object) -> dict[str, object]:
     torch = _require_torch()
     try:
         payload = torch.load(path, map_location=device, weights_only=True)
     except (OSError, RuntimeError, ValueError) as exc:
         raise SpatialTrainingError(detail=f"cannot load {path}: {exc}") from exc
-    if not isinstance(payload, dict) or payload.get("version") != CHECKPOINT_VERSION:
+    if not isinstance(payload, dict):
+        raise SpatialTrainingError(detail=f"unsupported checkpoint: {path}")
+    return cast("dict[str, object]", payload)
+
+
+def _validate_loaded_checkpoint(
+    payload: Mapping[str, object],
+    path: Path,
+    *,
+    expected_config: StudentConfig | None,
+    expected_authorization: CheckpointAuthorizationV1 | None,
+) -> None:
+    if (
+        tuple(payload)
+        != (
+            "version",
+            "config",
+            "authorization",
+            "next_epoch",
+            "global_step",
+            "model",
+            "optimizer",
+        )
+        or payload.get("version") != CHECKPOINT_VERSION
+    ):
         raise SpatialTrainingError(detail=f"unsupported checkpoint: {path}")
     if expected_config is not None and payload.get("config") != asdict(expected_config):
         raise SpatialTrainingError(detail=f"checkpoint config mismatch: {path}")
+    authorization = _authorization_from_payload(payload.get("authorization"), path)
+    config_value = payload.get("config")
+    if not isinstance(config_value, dict):
+        raise SpatialTrainingError(detail=f"invalid checkpoint config: {path}")
+    contract_sha256 = config_value.get("model_contract_sha256")
+    if authorization.model_contract_sha256 != contract_sha256:
+        raise SpatialTrainingError(
+            detail=f"checkpoint authorization/config mismatch: {path}"
+        )
+    if expected_authorization is not None and authorization != expected_authorization:
+        raise SpatialTrainingError(detail=f"checkpoint authorization mismatch: {path}")
     try:
-        model.load_state_dict(payload["model"])
-        optimizer.load_state_dict(payload["optimizer"])
-        next_epoch = int(payload["next_epoch"])
-        global_step = int(payload["global_step"])
-    except (KeyError, TypeError, RuntimeError, ValueError) as exc:
+        next_epoch = int(cast("int", payload["next_epoch"]))
+        global_step = int(cast("int", payload["global_step"]))
+    except (KeyError, TypeError, ValueError) as exc:
         raise SpatialTrainingError(detail=f"invalid checkpoint {path}: {exc}") from exc
     if next_epoch < 0 or global_step < 0:
         raise SpatialTrainingError(detail=f"invalid counters in {path}")
-    return next_epoch, global_step
 
 
-def train(  # noqa: PLR0913, PLR0915
+def train(  # noqa: PLR0912, PLR0913, PLR0915
     teacher_cache: Path,
     checkpoint: Path,
     *,
@@ -505,10 +663,18 @@ def train(  # noqa: PLR0913, PLR0915
     hidden_dim: int,
     learning_rate: float,
     env: Mapping[str, str],
+    checkpoint_authorization: CheckpointAuthorizationV1 | None = None,
 ) -> dict[str, object]:
     if epochs < 1 or batch_size < 1 or learning_rate <= 0.0:
         raise SpatialTrainingError(
             detail="epochs, batch-size, and learning-rate must be positive",
+        )
+    if checkpoint_authorization is None:
+        raise SpatialTrainingError(
+            detail=(
+                "checkpoint authorization must be validated before "
+                "torch/model/optimizer"
+            ),
         )
     torch = _require_torch()
     context = distributed_context(env)
@@ -555,6 +721,7 @@ def train(  # noqa: PLR0913, PLR0915
                 optimizer=optimizer,
                 device=device,
                 expected_config=config,
+                expected_authorization=None,
             )
             if start_epoch >= epochs:
                 raise SpatialTrainingError(
@@ -617,6 +784,7 @@ def train(  # noqa: PLR0913, PLR0915
                     model=model,
                     optimizer=optimizer,
                     config=config,
+                    authorization=checkpoint_authorization,
                     next_epoch=epoch + 1,
                     global_step=global_step,
                 )
@@ -899,6 +1067,64 @@ def _replace_config(
             config.learning_rate if learning_rate is None else learning_rate
         ),
     )
+
+
+def _validate_sha256(value: str, name: str) -> None:
+    if len(value) != SHA256_HEX_LENGTH or any(
+        char not in "0123456789abcdef" for char in value
+    ):
+        raise SpatialTrainingError(detail=f"invalid {name} digest")
+
+
+def _validate_checkpoint_authorization(
+    authorization: CheckpointAuthorizationV1,
+    config: StudentConfig,
+) -> None:
+    if authorization.model_contract_sha256 != config.model_contract_sha256:
+        raise SpatialTrainingError(
+            detail="checkpoint authorization model-contract mismatch",
+        )
+
+
+def _authorization_from_payload(
+    value: object,
+    path: Path,
+) -> CheckpointAuthorizationV1:
+    if not isinstance(value, dict):
+        raise SpatialTrainingError(detail=f"invalid checkpoint authorization: {path}")
+    try:
+        kind = value.get("kind")
+        if kind == "local_mock_v1":
+            if tuple(value) != (
+                "kind",
+                "local_authorization_sha256",
+                "model_contract_sha256",
+                "student_architecture_sha256",
+            ):
+                raise SpatialTrainingError(
+                    detail=f"invalid local checkpoint authorization: {path}",
+                )
+            return LocalMockCheckpointAuthorizationV1(**value)
+        if kind == "remote_consensus_v1":
+            if tuple(value) != (
+                "kind",
+                "model_contract_sha256",
+                "student_architecture_sha256",
+                "consensus_payload_sha256",
+                "consensus_file_sha256",
+                "parent_checkpoint_sha256",
+                "parent_origin_consensus_payload_sha256",
+                "parent_origin_consensus_file_sha256",
+            ):
+                raise SpatialTrainingError(
+                    detail=f"invalid remote checkpoint authorization: {path}",
+                )
+            return RemoteConsensusCheckpointAuthorizationV1(**value)
+    except TypeError as exc:
+        raise SpatialTrainingError(
+            detail=f"invalid checkpoint authorization {path}: {exc}",
+        ) from exc
+    raise SpatialTrainingError(detail=f"unknown checkpoint authorization: {path}")
 
 
 def _require_torch() -> ModuleType:

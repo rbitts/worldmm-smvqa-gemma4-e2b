@@ -20,6 +20,7 @@ import pytest
 from worldmm_smvqa.spatial_train import (
     DEFAULT_LOSS_WEIGHTS,
     RECORD_TYPES,
+    LocalMockCheckpointAuthorizationV1,
     SpatialTrainingError,
     StudentConfig,
     TeacherCacheDataset,
@@ -35,6 +36,20 @@ from worldmm_smvqa.spatial_train import (
 
 ROOT = Path(__file__).resolve().parents[1]
 HAS_TORCH = importlib.util.find_spec("torch") is not None
+
+
+DIGEST = "1" * 64
+
+
+def _authorization(
+    model_contract_sha256: str = "0" * 64,
+) -> LocalMockCheckpointAuthorizationV1:
+    return LocalMockCheckpointAuthorizationV1(
+        kind="local_mock_v1",
+        local_authorization_sha256=DIGEST,
+        model_contract_sha256=model_contract_sha256,
+        student_architecture_sha256="2" * 64,
+    )
 
 
 def _row(
@@ -297,6 +312,7 @@ def test_checkpoint_is_atomic_and_resumable(tmp_path: Path) -> None:
         model=model,
         optimizer=optimizer,
         config=config,
+        authorization=_authorization(config.model_contract_sha256),
         next_epoch=4,
         global_step=17,
     )
@@ -309,6 +325,7 @@ def test_checkpoint_is_atomic_and_resumable(tmp_path: Path) -> None:
         optimizer=optimizer,
         device=torch.device("cpu"),
         expected_config=config,
+        expected_authorization=_authorization(config.model_contract_sha256),
     )
 
     assert counters == (4, 17)
