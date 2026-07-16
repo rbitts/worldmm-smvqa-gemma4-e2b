@@ -82,6 +82,28 @@ def qwen_bindings(env: Mapping[str, str]) -> LLMMemoryBindings:
     return LLMMemoryBindings(generate=generate, caption=caption)
 
 
+def memory_bindings(env: Mapping[str, str]) -> LLMMemoryBindings:
+    """Bind model-neutral v2 memory construction to the reviewed model path."""
+    model_ref = _required_env(env, "WORLDMM_MEMORY_MODEL_PATH")
+    from worldmm_smvqa.transformers_backend import (  # noqa: PLC0415
+        generate_transformers_multimodal,
+    )
+
+    def generate(prompt: str) -> str:
+        return generate_transformers_multimodal(prompt, model_ref, ())
+
+    def caption(path: Path) -> str:
+        frame = QAVideoFrame(
+            video_id=path.parent.name,
+            frame_ref=path.stem,
+            timestamp=0.0,
+            path=path,
+        )
+        return generate_transformers_multimodal(CAPTION_PROMPT, model_ref, (frame,))
+
+    return LLMMemoryBindings(generate=generate, caption=caption)
+
+
 def _required_env(env: Mapping[str, str], name: str) -> str:
     value = env.get(name)
     if value:

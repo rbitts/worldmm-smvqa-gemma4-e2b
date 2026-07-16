@@ -36,6 +36,8 @@ from worldmm_smvqa.config import (
     RemoteOnlyError,
 )
 from worldmm_smvqa.fixtures import FixtureValidationError
+from worldmm_smvqa.memory_alignment_config import MemoryAlignmentConfigError
+from worldmm_smvqa.memory_contract_v2 import MemoryContractV2Error
 from worldmm_smvqa.metrics import (
     InvalidPredictionError,
 )
@@ -207,6 +209,8 @@ def main() -> int:
         QAParseError,
         MissingGroundingError,
         MissingRemoteConfigError,
+        MemoryAlignmentConfigError,
+        MemoryContractV2Error,
         ExplicitApprovalRequiredError,
         TeacherOraclePlanRequiredError,
         MalformedConfigError,

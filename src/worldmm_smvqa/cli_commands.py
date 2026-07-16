@@ -18,9 +18,15 @@ from worldmm_smvqa.cli_args import (
     CommandResult,
     ParsedArgs,
 )
-from worldmm_smvqa.config import load_config, require_remote
+from worldmm_smvqa.config import (
+    REMOTE_ENV_FLAG,
+    RemoteOnlyError,
+    load_config,
+    require_remote,
+)
 from worldmm_smvqa.fixture_cli import prepare_fixture_stdout, validate_schema_stdout
 from worldmm_smvqa.fixtures import read_fixture_questions
+from worldmm_smvqa.memory_alignment_config import load_memory_alignment_config
 from worldmm_smvqa.memory_sources import write_fixture_source_memories
 from worldmm_smvqa.metrics import (
     InvalidPredictionError,
@@ -56,6 +62,7 @@ from worldmm_smvqa.worldmm.episodic import write_fixture_episodic_memory
 from worldmm_smvqa.worldmm.llm_memory_io import (
     LLMMemoryBindings,
     distributed_env,
+    memory_bindings,
     partition_by_video,
     qwen_bindings,
     write_distributed_jsonl,
@@ -81,7 +88,7 @@ if TYPE_CHECKING:
 SUPPORTED_BUILD_STORES: Final = frozenset(
     {"episodic", "semantic", "visual", "spatial"},
 )
-SUPPORTED_MEMORY_BACKENDS: Final = frozenset({"mock", "qwen"})
+SUPPORTED_MEMORY_BACKENDS: Final = frozenset({"mock", "qwen", "memory"})
 DEFAULT_RETRIEVAL_STORES: Final = "episodic,semantic,visual,spatial"
 DEFAULT_MAX_FRAME_REFS: Final = 32
 
@@ -183,6 +190,8 @@ def handle_audit_sensors(args: ParsedArgs) -> CommandResult:
 
 
 def handle_build_memory(args: ParsedArgs) -> CommandResult:
+    if args.backend == "memory":
+        return _handle_memory_build(args)
     _config = load_config(args.config)
     if args.backend not in SUPPORTED_MEMORY_BACKENDS:
         raise CliUsageError(detail=f"unsupported build-memory backend: {args.backend}")
@@ -210,6 +219,53 @@ def handle_build_memory(args: ParsedArgs) -> CommandResult:
     if stores <= {"semantic", "visual", "spatial"}:
         return _handle_semantic_visual_build(args)
     raise CliUsageError(detail="build-memory stores must not mix episodic with others")
+
+
+def _handle_memory_build(args: ParsedArgs) -> CommandResult:
+    if args.stage is not None:
+        raise CliUsageError(
+            detail="build-memory --backend memory does not support stages"
+        )
+    if args.store is None:
+        raise CliUsageError(
+            detail="build-memory --backend memory requires --store/--stores"
+        )
+    stores = _requested_stores(args.store)
+    if not stores:
+        raise CliUsageError(
+            detail="build-memory requires at least one non-empty --store/--stores value"
+        )
+    if stores == frozenset({"episodic"}):
+        if args.out is None:
+            raise CliUsageError(detail="build-memory --store episodic requires --out")
+    elif stores and stores <= {"semantic", "visual"}:
+        if args.out is None:
+            raise CliUsageError(detail="build-memory semantic/visual requires --out")
+        if "semantic" in stores and args.input is None:
+            raise CliUsageError(
+                detail=(
+                    "build-memory --backend memory semantic requires "
+                    "--input <episodic.jsonl>"
+                )
+            )
+    else:
+        invalid = ",".join(sorted(stores - {"episodic", "semantic", "visual"}))
+        if invalid:
+            raise CliUsageError(
+                detail=f"unsupported build-memory --backend memory store: {invalid}"
+            )
+        detail = (
+            "build-memory --backend memory stores must not mix episodic with others"
+        )
+        raise CliUsageError(detail=detail)
+
+    _ = load_memory_alignment_config(args.config, Path.cwd())
+    if os.environ.get(REMOTE_ENV_FLAG) != "1":
+        raise RemoteOnlyError(action="build-memory memory")
+    bindings = memory_bindings(os.environ)
+    if stores == frozenset({"episodic"}):
+        return _handle_episodic_build(args, bindings)
+    return _handle_semantic_visual_build(args, bindings)
 
 
 def handle_retrieve(args: ParsedArgs) -> CommandResult:
@@ -542,13 +598,17 @@ def _handle_source_memory_build(args: ParsedArgs) -> CommandResult:
     )
 
 
-def _handle_episodic_build(args: ParsedArgs) -> CommandResult:
+def _handle_episodic_build(
+    args: ParsedArgs, bindings: LLMMemoryBindings | None = None
+) -> CommandResult:
     if args.out is None:
         raise CliUsageError(detail="build-memory --store episodic requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
-    if args.backend == "qwen":
-        bindings = _llm_bindings(args)
-        summary = write_llm_episodic_memory(fixture_dir, args.out, bindings.generate)
+    if args.backend in {"qwen", "memory"}:
+        active_bindings = bindings or _llm_bindings(args)
+        summary = write_llm_episodic_memory(
+            fixture_dir, args.out, active_bindings.generate
+        )
     else:
         summary = write_fixture_episodic_memory(fixture_dir, args.out)
     return CommandResult(
@@ -560,14 +620,16 @@ def _handle_episodic_build(args: ParsedArgs) -> CommandResult:
     )
 
 
-def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
+def _handle_semantic_visual_build(
+    args: ParsedArgs, bindings: LLMMemoryBindings | None = None
+) -> CommandResult:
     if args.out is None:
         raise CliUsageError(detail="build-memory semantic/visual requires --out")
     fixture_dir = args.fixture or Path("tests/fixtures/tiny_smvqa")
     stores = _requested_stores(args.store or "")
-    bindings = (
-        _llm_bindings(args)
-        if args.backend == "qwen" and stores & {"semantic", "visual"}
+    active_bindings = (
+        bindings or _llm_bindings(args)
+        if args.backend in {"qwen", "memory"} and stores & {"semantic", "visual"}
         else None
     )
     args.out.mkdir(parents=True, exist_ok=True)
@@ -575,7 +637,7 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
     visual_records = 0
     spatial_records = 0
     if "semantic" in stores:
-        if bindings is not None:
+        if active_bindings is not None:
             if args.input is None:
                 detail = (
                     "build-memory --backend qwen semantic requires "
@@ -587,7 +649,7 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
             semantic_records = write_llm_semantic_memory(
                 args.input,
                 args.out / "semantic.jsonl",
-                bindings.generate,
+                active_bindings.generate,
             ).records
         else:
             semantic_records = write_fixture_semantic_memory(
@@ -595,12 +657,12 @@ def _handle_semantic_visual_build(args: ParsedArgs) -> CommandResult:
                 args.out / "semantic.jsonl",
             ).records
     if "visual" in stores:
-        if bindings is not None:
+        if active_bindings is not None:
             visual_records = write_llm_visual_memory(
                 fixture_dir,
                 args.out / "visual.jsonl",
                 frame_root=_frame_root(fixture_dir),
-                caption=bindings.caption,
+                caption=active_bindings.caption,
             ).records
         else:
             visual_records = write_fixture_visual_memory(

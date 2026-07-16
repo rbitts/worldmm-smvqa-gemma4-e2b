@@ -1,5 +1,11 @@
 from __future__ import annotations
 
+# ruff: noqa: EM101, EM102, TRY003
+# pyright: reportAny=false
+# pyright: reportExplicitAny=false
+# pyright: reportImplicitOverride=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
 import hashlib
 import json
 from collections.abc import Mapping, Sequence
@@ -114,7 +120,13 @@ def validate_memory_store_envelope_v2(value: object) -> tuple[object, ...]:
     root = _mapping(value, "memory envelope")
     _keys(
         root,
-        ("schema_version", "contract_id", "store_kind", "record_contract_id", "records"),
+        (
+            "schema_version",
+            "contract_id",
+            "store_kind",
+            "record_contract_id",
+            "records",
+        ),
         "memory envelope",
     )
     if root["schema_version"] != ENVELOPE_SCHEMA_ID:

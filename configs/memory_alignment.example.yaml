@@ -1,0 +1,12 @@
+schema_version: memory-alignment-config-v1
+runtime:
+  location: remote
+memory_alignment:
+  backend: memory
+  artifact_role: memory_builder
+  model_family: gemma
+  model_variant: Gemma-4-E2B-IT
+  model_path: ${WORLDMM_MEMORY_MODEL_PATH}
+  contract_id: worldmm-smvqa-memory-v2
+  contract_path: configs/spatial/model_boundary_contract_v2.json
+  contract_sha256: 6d7ad8546e63bd5d25260c8a6b5fe04e9bb23a424e726a09a44946435016fe77
