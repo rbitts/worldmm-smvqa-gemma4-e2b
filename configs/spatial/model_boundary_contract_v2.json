@@ -1,0 +1,34 @@
+{
+  "schema_version": "model-boundary-contract-v2",
+  "contract_id": "worldmm-smvqa-memory-v2",
+  "request_schema_id": "memory-request-v2",
+  "response_schema_id": "memory-response-v2",
+  "envelope_schema_id": "memory-store-envelope-v2",
+  "record_contracts": [
+    {
+      "store_kind": "visual",
+      "record_contract_id": "memory-visual-record-contract-v2",
+      "record_types": ["visual"],
+      "row_store": "visual"
+    },
+    {
+      "store_kind": "episodic",
+      "record_contract_id": "memory-episodic-record-contract-v2",
+      "record_types": ["node", "edge"],
+      "row_store": null
+    },
+    {
+      "store_kind": "semantic",
+      "record_contract_id": "memory-semantic-record-contract-v2",
+      "record_types": ["semantic_triple"],
+      "row_store": "semantic"
+    },
+    {
+      "store_kind": "semantic_rebuild",
+      "record_contract_id": "memory-semantic-record-contract-v2",
+      "record_types": ["semantic_triple"],
+      "row_store": "semantic"
+    }
+  ],
+  "dataflow": ["visual", "episodic", "semantic", "semantic_rebuild"]
+}
