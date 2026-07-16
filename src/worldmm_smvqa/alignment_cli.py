@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, Protocol, cast
+from typing import Final, Literal, Protocol, cast
 
 from worldmm_smvqa.memory_alignment_plan import render_comparison_plan
 
@@ -140,7 +140,7 @@ def _validate_contract(command: _Command) -> int:
             Path(command.options["--repository-root"]),
             command.options["--contract-path"],
             command.options["--expected-contract-sha256"],
-            version=cast("object", version),
+            version=cast("Literal['v1', 'v2']", version),
         )
     except (FileNotFoundError, OSError):
         raise

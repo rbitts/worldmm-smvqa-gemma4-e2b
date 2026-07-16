@@ -228,7 +228,10 @@ def _load_reviewed_config(path: Path, root: Path) -> _ReviewedConfig:
             load_memory_alignment_config,
         )
 
-        return cast("_ReviewedConfig", load_memory_alignment_config(path, root))
+        return cast(
+            "_ReviewedConfig",
+            cast("object", load_memory_alignment_config(path, root)),
+        )
     except Exception as exc:
         raise PlanRenderError(f"reviewed memory config is invalid: {exc}") from exc
 

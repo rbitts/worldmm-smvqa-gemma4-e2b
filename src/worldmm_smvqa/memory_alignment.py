@@ -11,7 +11,7 @@ from collections.abc import Iterable, Mapping, Sequence
 from dataclasses import dataclass
 from fractions import Fraction
 from pathlib import Path, PurePosixPath
-from typing import Annotated, Final, Literal, Self, cast
+from typing import Annotated, Final, Literal, Self, cast, override
 
 from pydantic import Field, TypeAdapter, model_validator
 
@@ -61,6 +61,7 @@ class AlignmentValidationError(Exception):
     code: ValidationCode
     detail: str
 
+    @override
     def __str__(self) -> str:
         return f"{self.code}: {self.detail}"
 
@@ -75,7 +76,7 @@ class ContractSelectionV1(FrozenModel):
     @model_validator(mode="after")
     def _validate_semantics(self) -> Self:
         require_nfc_nonempty(self.contract_id, "contract_id")
-        validate_relative_path(self.contract_path)
+        _ = validate_relative_path(self.contract_path)
         return self
 
 
@@ -89,7 +90,7 @@ class SealedArtifactReferenceV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_path(self) -> Self:
-        validate_relative_path(self.path)
+        _ = validate_relative_path(self.path)
         return self
 
 
@@ -102,8 +103,8 @@ class BundleStoreV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_values(self) -> Self:
-        validate_relative_path(self.path)
-        parse_canonical_count(self.record_count)
+        _ = validate_relative_path(self.path)
+        _ = parse_canonical_count(self.record_count)
         return self
 
 
@@ -114,7 +115,7 @@ class BundleCoverageReferenceV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_path(self) -> Self:
-        validate_relative_path(self.path)
+        _ = validate_relative_path(self.path)
         return self
 
 
@@ -153,7 +154,7 @@ class SealedMemoryBundleV1(FrozenModel):
             self.source_manifest_path,
             self.retrieval_config_path,
         ):
-            validate_relative_path(path)
+            _ = validate_relative_path(path)
         expected = (
             (
                 "baseline",
@@ -220,7 +221,7 @@ class MemoryCoverageManifestV1(FrozenModel):
 
     @model_validator(mode="after")
     def _validate_values(self) -> Self:
-        validate_relative_path(self.store_path)
+        _ = validate_relative_path(self.store_path)
         for value in (
             self.expected_count,
             self.attempted_count,
@@ -228,7 +229,7 @@ class MemoryCoverageManifestV1(FrozenModel):
             self.written_count,
             self.coverage_basis_points,
         ):
-            parse_canonical_count(value)
+            _ = parse_canonical_count(value)
         if int(self.coverage_basis_points) > COVERAGE_BASIS_POINTS_FULL:
             msg = "coverage_basis_points must not exceed 10000"
             raise ValueError(msg)
@@ -259,7 +260,7 @@ class MemoryProjectionV1(FrozenModel):
             (self.video_id, "video_id"),
         ):
             require_nfc_nonempty(value, field)
-        parse_canonical_count(self.base_score_ppm)
+        _ = parse_canonical_count(self.base_score_ppm)
         point = self.projection_kind == "visual_point_projection"
         if point:
             if (
@@ -270,7 +271,7 @@ class MemoryProjectionV1(FrozenModel):
                 msg = "visual projection requires frame_ref and timestamp_us"
                 raise ValueError(msg)
             require_nfc_nonempty(self.frame_ref, "frame_ref")
-            parse_evaluator_microseconds(self.timestamp_us)
+            _ = parse_evaluator_microseconds(self.timestamp_us)
             if self.start_us is not None or self.end_us is not None:
                 msg = "visual projection cannot carry an interval"
                 raise ValueError(msg)
@@ -308,7 +309,7 @@ class MemoryRequestV2(FrozenModel):
             (self.query_text, "query_text"),
         ):
             require_nfc_nonempty(value, field)
-        parse_evaluator_microseconds(self.query_time_us)
+        _ = parse_evaluator_microseconds(self.query_time_us)
         if len(set(self.expected_evidence_ids)) != len(self.expected_evidence_ids):
             msg = "expected evidence IDs must be unique"
             raise ValueError(msg)
@@ -464,7 +465,7 @@ def parse_evaluator_microseconds(value: object) -> int:
 
 
 def validate_relative_path(value: str) -> PurePosixPath:
-    if not isinstance(value, str) or not value or "\\" in value or "\x00" in value:
+    if not value or "\\" in value or "\x00" in value:
         msg = "path must be a normalized relative POSIX path"
         raise ValueError(msg)
     path = PurePosixPath(value)
@@ -487,7 +488,7 @@ def _sha256(path: Path) -> str:
 
 
 def resolve_regular_file(root: Path, relative: str) -> Path:
-    validate_relative_path(relative)
+    _ = validate_relative_path(relative)
     current = root.resolve(strict=True)
     for part in PurePosixPath(relative).parts:
         current = current / part
@@ -496,7 +497,7 @@ def resolve_regular_file(root: Path, relative: str) -> Path:
             raise ValueError(msg)
     resolved = current.resolve(strict=True)
     try:
-        resolved.relative_to(root.resolve(strict=True))
+        _ = resolved.relative_to(root.resolve(strict=True))
     except ValueError as exc:
         msg = f"path escapes root: {relative}"
         raise ValueError(msg) from exc
@@ -549,7 +550,7 @@ def load_contract_selection(
 
 def _read_json_object(path: Path) -> dict[str, object]:
     try:
-        value = json.loads(path.read_bytes())
+        value = cast("object", json.loads(path.read_bytes()))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
         msg = f"invalid JSON: {path}"
         raise ValueError(msg) from exc
@@ -561,7 +562,7 @@ def _read_json_object(path: Path) -> dict[str, object]:
 
 def _seal_digest(manifest: Mapping[str, object]) -> str:
     payload = dict(manifest)
-    payload.pop("seal_sha256", None)
+    _ = payload.pop("seal_sha256", None)
     return hashlib.sha256(canonicalize(payload)).hexdigest()
 
 
@@ -582,37 +583,41 @@ def _strict_rows(  # noqa: PLR0912
             msg = f"blank JSONL row at line {number}"
             raise ValueError(msg)
         try:
-            value = json.loads(content)
+            value = cast("object", json.loads(content))
         except (UnicodeDecodeError, json.JSONDecodeError) as exc:
             msg = f"invalid JSONL row at line {number}"
             raise ValueError(msg) from exc
         if not isinstance(value, dict):
             msg = f"JSONL row {number} is not an object"
             raise TypeError(msg)
+        row_data = cast("dict[str, object]", value)
         if store == "visual":
-            if value.get("record_type") != "visual" or value.get("store") != "visual":
+            if (
+                row_data.get("record_type") != "visual"
+                or row_data.get("store") != "visual"
+            ):
                 msg = f"visual row {number} lacks physical discriminators"
                 raise ValueError(msg)
-            row = VisualMemoryRecord.model_validate(value)
+            row = VisualMemoryRecord.model_validate(row_data)
         elif store == "episodic":
-            if value.get("record_type") == "node":
-                if "summary" not in value:
+            if row_data.get("record_type") == "node":
+                if "summary" not in row_data:
                     msg = f"episodic node {number} lacks physical summary"
                     raise ValueError(msg)
-                row = EpisodicNodeRecord.model_validate(value)
-            elif value.get("record_type") == "edge":
-                row = EpisodicEdgeRecord.model_validate(value)
+                row = EpisodicNodeRecord.model_validate(row_data)
+            elif row_data.get("record_type") == "edge":
+                row = EpisodicEdgeRecord.model_validate(row_data)
             else:
                 msg = f"episodic row {number} has invalid discriminator"
                 raise ValueError(msg)
         else:
             if (
-                value.get("record_type") != "semantic_triple"
-                or value.get("store") != "semantic"
+                row_data.get("record_type") != "semantic_triple"
+                or row_data.get("store") != "semantic"
             ):
                 msg = f"semantic row {number} lacks physical discriminators"
                 raise ValueError(msg)
-            row = SemanticTripleRecord.model_validate(value)
+            row = SemanticTripleRecord.model_validate(row_data)
         rows.append(row)
     return tuple(rows)
 
@@ -859,7 +864,7 @@ def paired_bootstrap_comparison(
     seed = hashlib.sha256(
         (seed_identifier + "\x00" + comparison_id).encode("utf-8")
     ).digest()
-    replicates = []
+    replicates: list[Fraction] = []
     for replicate in range(BOOTSTRAP_REPLICATES):
         indexes = _bootstrap_indexes(seed, replicate, count)
         replicates.append(sum((deltas[index] for index in indexes), Fraction()) / count)
@@ -912,7 +917,7 @@ def coverage_report_row(
 
 def _cohort_semantic_digest(payload: Mapping[str, object]) -> str:
     semantic = dict(payload)
-    semantic.pop("cohort_sha256", None)
+    _ = semantic.pop("cohort_sha256", None)
     return hashlib.sha256(canonicalize(semantic)).hexdigest()
 
 
@@ -1187,7 +1192,7 @@ def atomic_write_report_no_clobber(path: Path, report: MemoryAlignmentReportV1) 
         descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
         with os.fdopen(descriptor, "wb", closefd=True) as stream:
             descriptor = None
-            stream.write(payload)
+            _ = stream.write(payload)
             stream.flush()
             os.fsync(stream.fileno())
         try:

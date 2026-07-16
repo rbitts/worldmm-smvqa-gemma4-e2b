@@ -65,13 +65,13 @@ def _point(**updates: object) -> MemoryProjectionV1:
 )
 def test_evaluator_microseconds_reject_noncanonical_values(value: object) -> None:
     with pytest.raises(ValueError, match=r"canonical|signed int64"):
-        parse_evaluator_microseconds(value)
+        _ = parse_evaluator_microseconds(value)
 
 
 def test_relative_paths_reject_escape_and_links_are_not_normalized() -> None:
     for value in ("", "/absolute", "../escape", "a/../b", "a\\b", "./a"):
         with pytest.raises(ValueError, match="normalized relative POSIX"):
-            validate_relative_path(value)
+            _ = validate_relative_path(value)
     assert (
         validate_relative_path("stores/visual.jsonl").as_posix()
         == "stores/visual.jsonl"
@@ -193,7 +193,7 @@ def test_paired_bootstrap_fails_below_noninferiority_bound() -> None:
 
 def test_zero_pair_count_has_public_validation_code() -> None:
     with pytest.raises(AlignmentValidationError) as caught:
-        paired_bootstrap_comparison("episodic_primary", [])
+        _ = paired_bootstrap_comparison("episodic_primary", [])
     assert caught.value.code == "zero_pair_count"
 
 
