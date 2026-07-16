@@ -9,8 +9,10 @@
 
 ## 핵심 요약
 
-- **현재 결론:** 로컬 contract와 heuristic baseline은 준비됐지만, 공식
-  learned-method 보고는 아직 차단 상태다.
+- **제안 framing:** 제품 단위를 QA 모델이 아닌 QA·Visual Routine이 공유하는
+  온디바이스 멀티모달 메모리 런타임으로 둔다.
+- **현재 증거:** 로컬 spatial contract와 heuristic baseline은 준비됐지만,
+  lifecycle·routine·실기기와 공식 learned-method 결과는 없다.
 - **즉시 실행:** [현재 상태](spatial-memory/status.md)의 sensor audit와
   teacher-oracle gate부터 수행한다. 해당 gate 통과 전 benchmark 성능을 주장하지
   않는다.
@@ -21,14 +23,16 @@
 
 | 확인 목적 | 시작 문서 |
 |---|---|
+| 임원 제안과 승인 요청 | [온디바이스 메모리 런타임 제안](spatial-memory/on-device-memory-runtime-proposal.md) |
+| 공통 write/read runtime과 QA·Visual Routine 구조 | [멀티모달 메모리 런타임 아키텍처](spatial-memory/memory-runtime-architecture.md) |
 | 현재 go/no-go와 다음 gate | [현재 상태](spatial-memory/status.md) |
-| 제안 시스템과 control | [아키텍처](spatial-memory/architecture.md) |
+| Spatial component와 geometry control | [Spatial 아키텍처](spatial-memory/architecture.md) |
 | 실행 순서 | [연구 로드맵](spatial-memory/roadmap.md) |
 | 결정별 근거 | [추적성](spatial-memory/traceability.md) |
 | 측정 결과 | [실험](spatial-memory/experiments/README.md) |
 | 회사 compute 실행 | [Company-compute handoff](../HANDOFF.md) |
 
-프로젝트 홈: [SuperMemory-VQA Spatial Memory](spatial-memory/README.md).
+현재 구현 프로젝트 홈: [SuperMemory-VQA Spatial Memory](spatial-memory/README.md).
 
 ## 관리 원칙
 

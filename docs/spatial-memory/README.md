@@ -5,13 +5,14 @@
 | Page ID | SM-ROOT |
 | Confluence parent | SM-DOCS |
 | 상태 | 로컬 준비 진행 |
-| 최종 갱신 | 2026-07-14 |
+| 최종 갱신 | 2026-07-16 |
 | 목표 | Geometry-grounded QA용 explicit compressed spatial memory |
 
 ## 핵심 결론
 
 | 항목 | 결정 |
 |---|---|
+| 상위 제품 제안 | QA·Visual Routine이 공유하는 on-device multimodal memory runtime |
 | 기술 방향 | Explicit typed spatial record를 유지하고 dense geometry는 transient하게 사용 |
 | 현재 Goal | Raw student 전 causal teacher-oracle object/location ceiling 검증 |
 | 현재 준비도 | Sensor/target/proof local contract 구현; real oracle 미실행 |
@@ -69,8 +70,10 @@ uncertainty, validity, provenance, evidence reference를 저장한다. Language 
 
 | 질문 | 문서 |
 |---|---|
+| 임원에게 무엇을 제안하고 승인받을 것인가? | [온디바이스 메모리 런타임 제안](on-device-memory-runtime-proposal.md) |
+| QA·Visual Routine이 공유할 runtime은 어떻게 동작하는가? | [멀티모달 메모리 런타임 아키텍처](memory-runtime-architecture.md) |
 | 문제와 성공 기준은 무엇인가? | [문제 정의와 연구 질문](problem.md) |
-| 어떤 시스템과 control을 사용할 것인가? | [아키텍처](architecture.md) |
+| Spatial component와 geometry control은 무엇인가? | [Spatial 아키텍처](architecture.md) |
 | 어떤 claim에 근거가 있는가? | [추적성](traceability.md) |
 | 다음 실행은 무엇인가? | [연구 로드맵](roadmap.md) |
 | 현재 go/no-go는 무엇인가? | [현재 상태](status.md) |
@@ -86,7 +89,7 @@ uncertainty, validity, provenance, evidence reference를 저장한다. Language 
 |---|---|---|
 | `docs/README.md` | `SM-DOCS` | `SPACE-HOME` |
 | `docs/spatial-memory/README.md` | `SM-ROOT` | `SM-DOCS` |
-| `{problem,architecture,traceability,roadmap,status}.md` | Page metadata | `SM-ROOT` |
+| `{on-device-memory-runtime-proposal,memory-runtime-architecture,problem,architecture,traceability,roadmap,status}.md` | Page metadata | `SM-ROOT` |
 | `source/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-SOURCE` |
 | `papers/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-PAPERS` |
 | `decisions/README.md`와 non-template child | Page metadata | `SM-ROOT` / `SM-DECISIONS` |
