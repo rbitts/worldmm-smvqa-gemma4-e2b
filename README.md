@@ -271,6 +271,51 @@ end-to-end completeness certificate establishes label uniqueness; the generated
 production DAG does not issue one. Pair proofs use the records' actual local
 frame and reject cross-video pairs.
 
+## Opt-in Gemma memory-alignment candidate
+
+The `memory` backend and v2 envelope are additive candidate surfaces. The default
+and existing `qwen`/v1 artifacts remain unchanged. A reviewed
+`configs/memory_alignment.example.yaml` binds the candidate to the exact Gemma
+model role and the SHA-256 of
+`configs/spatial/model_boundary_contract_v2.json`; there is no contract
+discovery, qwen fallback, or model interpolation during config validation.
+
+A separately authorized remote build uses the existing memory command with the
+backend selected explicitly:
+
+```bash
+worldmm-smvqa build-memory \
+  --backend memory \
+  --config configs/memory_alignment.example.yaml \
+  --store episodic \
+  --fixture "$SMVQA_DATA_ROOT" \
+  --out "$WORLDMM_OUTPUT_ROOT/memory/episodic.jsonl"
+```
+
+Do not run that example locally: `memory` is remote-only and requires
+`WORLDMM_MEMORY_MODEL_PATH`. Visual and Semantic are also opt-in; Semantic
+requires its sealed Episodic input. Spatial, preparation stages, empty stores,
+and Episodic mixtures are rejected.
+
+The isolated alignment tool validates contracts and trusted sealed bundles; it
+does not produce bundles or load models. Its `render-plan` command is the only
+planning surface:
+
+```bash
+worldmm-memory-alignment render-plan \
+  --config configs/memory_alignment.example.yaml \
+  --repository-root "$PWD" \
+  --baseline-manifest /path/to/trusted-baseline/bundle.json \
+  --candidate-manifest /path/to/trusted-candidate/bundle.json \
+  --cohort /path/to/fixed-cohort.json \
+  --out /path/to/new/comparison-plan
+```
+
+The output is a new, no-clobber directory containing only
+`comparison-plan.json` and `review.md`; the plan records `submission=false` and
+contains no command, host, scheduler, secret, approval, or execution data.
+Evaluation and any remote operation remain separate actions with separate
+authorization.
 ## Learned-Path Boundary
 
 Local preparation now contains a strict causal sensor schema and a selected

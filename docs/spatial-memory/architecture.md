@@ -158,6 +158,18 @@ sensor encoder, learned open-world association, mobile executable은 소유하�
 동일 byte budget의 object/location utility를 입증하기 전에는 generic all-type
 decoder나 새 memory abstraction을 추가하지 않는다.
 
+## Model-neutral memory alignment boundary
+
+The opt-in Gemma `memory` backend reuses the existing Visual, Episodic, and
+Semantic row contracts; v2 is an envelope and reviewed role binding, not a row
+migration. The immutable qwen/v1 path remains the baseline. Trusted sealed
+stores are evaluated independently in four fixed Recall@6 arms, including a
+Semantic-rebuild arm that still contains unchanged Semantic rows.
+
+The alignment renderer is deliberately non-operational. It records exact input
+and contract digests, fixed comparison mappings, bootstrap policy, blockers,
+and deferrals, and always declares `submission=false`. It has no remote,
+scheduler, model-load, bundle-production, promotion, or Android path.
 ## 채택한 결정
 
 - [ADR-0001: Explicit typed memory](decisions/adr-0001-explicit-typed-memory.md)

@@ -1,4 +1,9 @@
-# ruff: noqa: EM101, EM102, PLR0912, PLR0913, TRY003
+# ruff: noqa: EM101, EM102, PLC0415, PLR0913, TRY003
+# pyright: reportAny=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnusedCallResult=false
+# pyright: reportMissingImports=false
 from __future__ import annotations
 
 import hashlib
@@ -8,7 +13,7 @@ from collections.abc import Mapping
 from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Final, cast
+from typing import Final, Protocol, cast
 
 PLAN_SCHEMA: Final = "memory-alignment-plan-v1"
 SUITE_ID: Final = "memory-alignment-four-store-suite-v1"
@@ -18,6 +23,12 @@ SHA256_LENGTH: Final = 64
 
 class PlanRenderError(ValueError):
     """Raised when render-only planning inputs are invalid."""
+
+
+class _ReviewedConfig(Protocol):
+    contract_relative_path: str
+    contract_sha256: str
+    contract_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,13 +105,13 @@ def render_comparison_plan(
     candidate_bytes = _read(candidate_path, "candidate manifest")
     cohort_bytes = _read(cohort_path, "cohort")
 
-    config_values = _parse_simple_yaml(config_bytes, config_path)
+    reviewed_config = _load_reviewed_config(config_path, root)
     baseline = _parse_json_object(baseline_bytes, baseline_path)
     candidate = _parse_json_object(candidate_bytes, candidate_path)
     cohort_value = _parse_json_object(cohort_bytes, cohort_path)
     contract = _validate_inputs(
         root=root,
-        config_values=config_values,
+        reviewed_config=reviewed_config,
         baseline=baseline,
         candidate=candidate,
         cohort=cohort_value,
@@ -141,22 +152,15 @@ def render_comparison_plan(
 def _validate_inputs(
     *,
     root: Path,
-    config_values: Mapping[str, Mapping[str, str]],
+    reviewed_config: _ReviewedConfig,
     baseline: Mapping[str, object],
     candidate: Mapping[str, object],
     cohort: Mapping[str, object],
 ) -> dict[str, object]:
-    alignment = config_values.get("memory_alignment")
-    if alignment is None:
-        raise PlanRenderError("config missing memory_alignment section")
-    required = {"contract_id", "contract_path", "contract_sha256"}
-    if not required <= alignment.keys():
-        missing = ", ".join(sorted(required - alignment.keys()))
-        raise PlanRenderError(f"config missing memory_alignment fields: {missing}")
-    if alignment["contract_id"] != "worldmm-smvqa-memory-v2":
+    candidate_contract_path = reviewed_config.contract_relative_path
+    candidate_contract_sha = reviewed_config.contract_sha256
+    if reviewed_config.contract_id != "worldmm-smvqa-memory-v2":
         raise PlanRenderError("config candidate contract ID is not reviewed v2")
-    candidate_contract_path = alignment["contract_path"]
-    candidate_contract_sha = alignment["contract_sha256"]
     _validate_sha(candidate_contract_sha, "config candidate contract digest")
     contract_path = _repository_file(root, candidate_contract_path)
     if _sha256(_read(contract_path, "candidate contract")) != candidate_contract_sha:
@@ -172,7 +176,7 @@ def _validate_inputs(
         raise PlanRenderError("cohort has wrong schema_version")
     if baseline.get("role") != "baseline" or candidate.get("role") != "candidate":
         raise PlanRenderError("bundle roles must be baseline and candidate")
-    if candidate_selection["contract_id"] != alignment["contract_id"]:
+    if candidate_selection["contract_id"] != reviewed_config.contract_id:
         raise PlanRenderError("candidate manifest contract ID differs from config")
     if candidate_selection["contract_path"] != candidate_contract_path:
         raise PlanRenderError("candidate manifest contract path differs from config")
@@ -218,41 +222,15 @@ def _contract_selection(manifest: Mapping[str, object], label: str) -> dict[str,
     return {key: value[key] for key in fields}
 
 
-def _parse_simple_yaml(data: bytes, path: Path) -> dict[str, dict[str, str]]:
+def _load_reviewed_config(path: Path, root: Path) -> _ReviewedConfig:
     try:
-        text = data.decode("utf-8")
-    except UnicodeDecodeError as exc:
-        raise PlanRenderError(f"config is not UTF-8: {path}") from exc
-    values: dict[str, dict[str, str]] = {}
-    section: str | None = None
-    for line_number, raw in enumerate(text.splitlines(), start=1):
-        line = raw.split("#", 1)[0].rstrip()
-        if not line:
-            continue
-        if not line.startswith(" "):
-            if not line.endswith(":"):
-                key, separator, value = line.partition(":")
-                if separator and value.strip():
-                    values.setdefault("_root", {})[key.strip()] = _yaml_scalar(value)
-                    section = None
-                    continue
-                raise PlanRenderError(f"config line {line_number} is invalid")
-            section = line[:-1].strip()
-            if not section or section in values:
-                raise PlanRenderError(f"config line {line_number} has invalid section")
-            values[section] = {}
-            continue
-        if section is None:
-            raise PlanRenderError(f"config line {line_number} has no section")
-        key, separator, value = line.strip().partition(":")
-        if not separator or not key or key in values[section]:
-            raise PlanRenderError(f"config line {line_number} is invalid")
-        values[section][key] = _yaml_scalar(value)
-    return values
+        from worldmm_smvqa.memory_alignment_config import (
+            load_memory_alignment_config,
+        )
 
-
-def _yaml_scalar(value: str) -> str:
-    return value.strip().strip('"').strip("'")
+        return cast("_ReviewedConfig", load_memory_alignment_config(path, root))
+    except Exception as exc:
+        raise PlanRenderError(f"reviewed memory config is invalid: {exc}") from exc
 
 
 def _parse_json_object(data: bytes, path: Path) -> dict[str, object]:

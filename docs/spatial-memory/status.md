@@ -20,6 +20,15 @@ has been accepted, no physical all-rank model-load consensus exists, and no stud
 remote plan has been approved or run. Therefore there is no student checkpoint,
 completion terminal, manifest, metric, or quality claim. EXP-0005 remains unchanged and
 authoritative for the teacher-oracle experiment.
+## Memory-alignment candidate status
+
+The model-neutral v2 contract, opt-in Gemma memory role, sealed-bundle
+comparison semantics, and render-only plan are local implementation surfaces.
+They do not change qwen/v1 production behavior and are not evidence that any
+candidate bundle exists. No production model was loaded, no bundle was
+generated, and no remote comparison was run. Scientific status therefore
+remains unavailable until separately approved operations supply trusted sealed
+stores, complete coverage, and a fixed cohort.
 
 ## Local implementation evidence and limits
 

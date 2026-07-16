@@ -1,8 +1,16 @@
+# pyright: reportAny=false
+# pyright: reportUnknownArgumentType=false
+# pyright: reportUnknownVariableType=false
+# pyright: reportUnusedCallResult=false
+# pyright: reportAttributeAccessIssue=false
+# pyright: reportUnusedFunction=false
 from __future__ import annotations
 
 import hashlib
 import json
+import sys
 from pathlib import Path
+from types import ModuleType, SimpleNamespace
 
 import pytest
 
@@ -14,6 +22,30 @@ from worldmm_smvqa.memory_alignment_plan import (
 
 def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+@pytest.fixture(autouse=True)
+def _reviewed_config_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    module = ModuleType("worldmm_smvqa.memory_alignment_config")
+
+    def load_memory_alignment_config(path: Path, _root: Path) -> object:
+        values = {}
+        for raw in path.read_text(encoding="utf-8").splitlines():
+            key, separator, value = raw.strip().partition(":")
+            if separator:
+                values[key] = value.strip()
+        return SimpleNamespace(
+            contract_relative_path=values["contract_path"],
+            contract_sha256=values["contract_sha256"],
+            contract_id=values["contract_id"],
+        )
+
+    module.load_memory_alignment_config = load_memory_alignment_config  # type: ignore[attr-defined]
+    monkeypatch.setitem(
+        sys.modules,
+        "worldmm_smvqa.memory_alignment_config",
+        module,
+    )
 
 
 def _write_inputs(root: Path) -> tuple[Path, Path, Path, Path]:

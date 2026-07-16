@@ -28,6 +28,20 @@ under a new `WORLDMM_RUN_ID`; never reuse or overwrite its output root. Copy bac
 approved lightweight metrics, reports, receipts, manifests, diagnostics, redacted logs,
 and plots—not datasets, weights, checkpoints, memory stores, predictions, or evidence
 packs.
+## Memory-alignment candidate boundary
+
+The opt-in `memory` backend, model-neutral v2 envelope, trusted sealed-bundle
+evaluator, and render-only comparison plan are separate from EXP-0005 and do
+not authorize company execution. Existing qwen/v1 behavior remains the
+production-compatible baseline. Candidate construction requires the reviewed
+Gemma config and exact v2 contract digest; comparison requires externally
+produced trusted sealed baseline/candidate bundles and a fixed cohort.
+
+`worldmm-memory-alignment render-plan` only creates a new no-clobber review
+directory with `comparison-plan.json` and `review.md`. It cannot submit, invoke
+a scheduler, load a model, or generate evaluation inputs. Bundle production,
+remote evaluation, QA attestation, publication, promotion/rollback, and Android
+work require separately approved operational plans.
 
 Set the reviewed run identity explicitly; never derive it from the clock:
 

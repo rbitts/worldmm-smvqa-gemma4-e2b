@@ -31,6 +31,14 @@ P0 is blocked until company-only inputs are reviewed: selected RGB/calibration/c
 | Scientific result | Frozen per-variant byte/frame/metric/risk evidence, byte-matched caps for E0/T0/T1 | Teacher-oracle Go/No-Go only |
 
 `summary/dag_jobs.teacher_oracle.env`, `summary/teacher_oracle_continue.json`, and `summary/teacher_oracle_terminal.json` are Phase-A conditional artifacts; `summary/dag_jobs.phase_b.env` is conditional on Phase-B admission. Fake test receipts/job IDs demonstrate local behavior only. The terminal operational record is distinct from a scientific conclusion. A provider operational Go is not QA improvement. Equal byte caps are not equal realized bytes.
+## Separate memory-alignment candidate lane
+
+The Gemma `memory` backend and v2 envelope are additive and opt-in; they do not
+replace P0 or the qwen/v1 baseline. Local contract validation, sealed-input
+evaluation code, and render-only planning may proceed offline. Candidate bundle
+production, remote evaluation, QA attestation, promotion/rollback, and Android
+work remain deferred until separately approved plans provide exact immutable
+inputs and compute authorization.
 
 ## Priority after P0
 
