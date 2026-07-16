@@ -185,11 +185,19 @@ class SealedMemoryBundleV1(FrozenModel):
         ):
             msg = "baseline stores must not declare v2 record contracts"
             raise ValueError(msg)
-        if self.role == "candidate" and any(
-            not item.record_contract_id for item in self.stores
-        ):
-            msg = "candidate stores require v2 record contracts"
-            raise ValueError(msg)
+        if self.role == "candidate":
+            expected_contracts = {
+                "visual": "memory-visual-record-contract-v2",
+                "episodic": "memory-episodic-record-contract-v2",
+                "semantic": "memory-semantic-record-contract-v2",
+                "semantic_rebuild": "memory-semantic-record-contract-v2",
+            }
+            if any(
+                item.record_contract_id != expected_contracts[item.store_kind]
+                for item in self.stores
+            ):
+                msg = "candidate store record-contract mapping is invalid"
+                raise ValueError(msg)
         paths = tuple(item.path for item in self.sealed_artifacts)
         if paths != tuple(sorted(paths)) or len(paths) != len(set(paths)):
             msg = "sealed artifact paths must be unique and sorted"
@@ -337,9 +345,45 @@ class IntervalLabelV1(FrozenModel):
 
 
 MemoryLabelV1 = VisualPointLabelV1 | IntervalLabelV1
-_LABEL_ADAPTER: Final = TypeAdapter(
-    Annotated[MemoryLabelV1, Field(discriminator="label_kind")]
+MemoryLabelDiscriminatedV1 = Annotated[MemoryLabelV1, Field(discriminator="label_kind")]
+_LABEL_ADAPTER: Final[TypeAdapter[MemoryLabelDiscriminatedV1]] = TypeAdapter(
+    MemoryLabelDiscriminatedV1
 )
+
+
+class MemoryComparisonCohortV1(FrozenModel):
+    schema_version: Literal["memory-comparison-cohort-v1"]
+    cohort_id: str
+    cohort_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    baseline_contract: ContractSelectionV1
+    candidate_contract: ContractSelectionV1
+    source_manifest_file_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    question_manifest_file_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    retrieval_config_file_sha256: Annotated[str, Field(pattern=r"^[0-9a-f]{64}$")]
+    k: Literal["6"]
+    comparison_suite_id: Literal["memory-alignment-four-store-suite-v1"]
+    requests: tuple[MemoryRequestV2, ...]
+    labels: tuple[MemoryLabelDiscriminatedV1, ...]
+    projections: tuple[MemoryProjectionV1, ...]
+
+    @model_validator(mode="after")
+    def _validate_cohort(self) -> Self:
+        require_nfc_nonempty(self.cohort_id, "cohort_id")
+        request_ids = tuple(item.request_id for item in self.requests)
+        label_ids = tuple(item.evidence_id for item in self.labels)
+        projection_ids = tuple(item.projection_id for item in self.projections)
+        for values, name in (
+            (request_ids, "request"),
+            (label_ids, "label"),
+            (projection_ids, "projection"),
+        ):
+            if len(values) != len(set(values)):
+                msg = f"{name} IDs must be unique"
+                raise ValueError(msg)
+        if request_ids != tuple(sorted(request_ids)):
+            msg = "requests must be ordered by request ID"
+            raise ValueError(msg)
+        return self
 
 
 class CoverageReportRowV1(FrozenModel):
@@ -864,6 +908,273 @@ def coverage_report_row(
         decision="pass" if passed else "fail",
         scientific_failure=None if passed else "coverage_below_100_percent",
     )
+
+
+def _cohort_semantic_digest(payload: Mapping[str, object]) -> str:
+    semantic = dict(payload)
+    semantic.pop("cohort_sha256", None)
+    return hashlib.sha256(canonicalize(semantic)).hexdigest()
+
+
+def _validation_report(
+    code: ValidationCode,
+    *,
+    baseline_digest: str | None,
+    candidate_digest: str | None,
+    cohort_digest: str | None,
+    coverage: tuple[CoverageReportRowV1, ...] = (),
+) -> MemoryAlignmentReportV1:
+    return MemoryAlignmentReportV1(
+        status="validation_fail",
+        baseline_bundle_sha256=baseline_digest,
+        candidate_bundle_sha256=candidate_digest,
+        cohort_sha256=cohort_digest,
+        coverage=coverage,
+        comparisons=(),
+        validation_error=code,
+    )
+
+
+def _validate_root_bindings(  # noqa: PLR0913
+    baseline_root: SealedMemoryBundleV1,
+    candidate_root: SealedMemoryBundleV1,
+    cohort: MemoryComparisonCohortV1,
+    *,
+    baseline_contract: ContractSelectionV1,
+    candidate_contract: ContractSelectionV1,
+    cohort_file_sha256: str,
+) -> None:
+    if (
+        baseline_root.contract_selection != baseline_contract
+        or candidate_root.contract_selection != candidate_contract
+        or cohort.baseline_contract != baseline_contract
+        or cohort.candidate_contract != candidate_contract
+    ):
+        raise AlignmentValidationError(
+            "contract_invalid", "root contract bindings do not match preflight bytes"
+        )
+    if (
+        baseline_root.cohort_id != cohort.cohort_id
+        or candidate_root.cohort_id != cohort.cohort_id
+        or baseline_root.cohort_file_sha256 != cohort_file_sha256
+        or candidate_root.cohort_file_sha256 != cohort_file_sha256
+        or baseline_root.source_manifest_file_sha256
+        != candidate_root.source_manifest_file_sha256
+        or baseline_root.source_manifest_file_sha256
+        != cohort.source_manifest_file_sha256
+        or baseline_root.retrieval_config_file_sha256
+        != candidate_root.retrieval_config_file_sha256
+        or baseline_root.retrieval_config_file_sha256
+        != cohort.retrieval_config_file_sha256
+    ):
+        raise AlignmentValidationError(
+            "cross_bundle_mismatch", "bundle/cohort identities do not reconcile"
+        )
+    if (
+        baseline_root.model_artifact_id == candidate_root.model_artifact_id
+        or baseline_root.model_config_file_sha256
+        == candidate_root.model_config_file_sha256
+    ):
+        raise AlignmentValidationError(
+            "cross_bundle_mismatch",
+            "baseline and candidate model identities must differ",
+        )
+
+
+def _require_label_causal(request: MemoryRequestV2, label: MemoryLabelV1) -> None:
+    query_time = parse_evaluator_microseconds(request.query_time_us)
+    endpoint = (
+        parse_evaluator_microseconds(label.timestamp_us)
+        if isinstance(label, VisualPointLabelV1)
+        else parse_evaluator_microseconds(label.end_us)
+    )
+    if endpoint > query_time:
+        raise AlignmentValidationError(
+            "label_invalid", "label is not causal for request"
+        )
+
+
+def evaluate_comparison_suite(
+    cohort: MemoryComparisonCohortV1,
+) -> tuple[ComparisonReportRowV1, ...]:
+    labels = {item.evidence_id: item for item in cohort.labels}
+    projections = cohort.projections
+    mappings: tuple[
+        tuple[
+            ComparisonId,
+            Literal["visual", "episodic", "semantic"],
+            StoreKind,
+            ProjectionRole,
+        ],
+        ...,
+    ] = (
+        ("visual_primary", "visual", "visual", "candidate"),
+        ("episodic_primary", "episodic", "episodic", "candidate"),
+        ("semantic_primary", "semantic", "semantic", "candidate"),
+        (
+            "semantic_rebuild",
+            "semantic",
+            "semantic_rebuild",
+            "candidate_semantic_rebuild",
+        ),
+    )
+    rows: list[ComparisonReportRowV1] = []
+    for comparison_id, request_store, candidate_store, candidate_role in mappings:
+        requests = tuple(
+            item for item in cohort.requests if item.store == request_store
+        )
+        if not requests:
+            raise AlignmentValidationError(
+                "zero_pair_count", f"{comparison_id} has no requests"
+            )
+        baseline_store: StoreKind = request_store
+        pairs: list[tuple[str, Fraction, Fraction]] = []
+        for request in requests:
+            for evidence_id in request.expected_evidence_ids:
+                label = labels.get(evidence_id)
+                if label is None:
+                    raise AlignmentValidationError(
+                        "label_invalid", "request references an absent label"
+                    )
+                _require_label_causal(request, label)
+            baseline_ranked = rank_at_6(
+                request,
+                projections,
+                role="baseline",
+                store_kind=baseline_store,
+            )
+            candidate_ranked = rank_at_6(
+                request,
+                projections,
+                role=candidate_role,
+                store_kind=candidate_store,
+            )
+            if not baseline_ranked or not candidate_ranked:
+                raise AlignmentValidationError(
+                    "comparison_role_invalid",
+                    f"{comparison_id} has an empty eligible operand",
+                )
+            baseline_recall = recall_at_6(
+                request, labels, baseline_ranked, logical_store=request_store
+            )
+            candidate_recall = recall_at_6(
+                request, labels, candidate_ranked, logical_store=request_store
+            )
+            pairs.append((request.request_id, baseline_recall, candidate_recall))
+        rows.append(paired_bootstrap_comparison(comparison_id, pairs))
+    return tuple(rows)
+
+
+def build_alignment_report(
+    baseline: ValidatedBundle,
+    candidate: ValidatedBundle,
+    cohort: MemoryComparisonCohortV1,
+    *,
+    cohort_file_sha256: str,
+) -> MemoryAlignmentReportV1:
+    coverage = tuple(
+        coverage_report_row("baseline", baseline.coverage[store])
+        for store in ("visual", "episodic", "semantic")
+    ) + tuple(
+        coverage_report_row("candidate", candidate.coverage[store])
+        for store in ("visual", "episodic", "semantic", "semantic_rebuild")
+    )
+    comparisons = evaluate_comparison_suite(cohort)
+    scientific_failure = any(item.decision == "fail" for item in coverage) or any(
+        item.decision == "fail" for item in comparisons
+    )
+    return MemoryAlignmentReportV1(
+        status="scientific_fail" if scientific_failure else "pass",
+        baseline_bundle_sha256=baseline.bundle_sha256,
+        candidate_bundle_sha256=candidate.bundle_sha256,
+        cohort_sha256=cohort_file_sha256,
+        coverage=coverage,
+        comparisons=comparisons,
+        validation_error=None,
+    )
+
+
+def evaluate_memory_alignment(  # noqa: PLR0913
+    *,
+    repository_root: Path,
+    baseline_contract_path: str,
+    baseline_contract_sha256: str,
+    candidate_contract_path: str,
+    candidate_contract_sha256: str,
+    baseline_bundle: Path,
+    candidate_bundle: Path,
+    cohort_path: Path,
+) -> MemoryAlignmentReportV1:
+    baseline_contract = load_contract_selection(
+        repository_root,
+        baseline_contract_path,
+        baseline_contract_sha256,
+        version="v1",
+    )
+    candidate_contract = load_contract_selection(
+        repository_root,
+        candidate_contract_path,
+        candidate_contract_sha256,
+        version="v2",
+    )
+    if baseline_contract.contract_path == candidate_contract.contract_path:
+        msg = "baseline and candidate contract paths must be distinct"
+        raise ValueError(msg)
+
+    baseline_manifest_path = resolve_regular_file(baseline_bundle, "bundle.json")
+    candidate_manifest_path = resolve_regular_file(candidate_bundle, "bundle.json")
+    cohort_file = cohort_path.resolve(strict=True)
+    if cohort_file.is_symlink() or not cohort_file.is_file():
+        msg = "cohort must be a regular file without links"
+        raise ValueError(msg)
+    baseline_digest = _sha256(baseline_manifest_path)
+    candidate_digest = _sha256(candidate_manifest_path)
+    cohort_digest = _sha256(cohort_file)
+    try:
+        baseline_root = SealedMemoryBundleV1.model_validate(
+            _read_json_object(baseline_manifest_path)
+        )
+        candidate_root = SealedMemoryBundleV1.model_validate(
+            _read_json_object(candidate_manifest_path)
+        )
+        cohort_payload = _read_json_object(cohort_file)
+        cohort = MemoryComparisonCohortV1.model_validate(cohort_payload)
+        if _cohort_semantic_digest(cohort_payload) != cohort.cohort_sha256:
+            raise AlignmentValidationError(
+                "cohort_invalid", "cohort semantic digest mismatch"
+            )
+        _validate_root_bindings(
+            baseline_root,
+            candidate_root,
+            cohort,
+            baseline_contract=baseline_contract,
+            candidate_contract=candidate_contract,
+            cohort_file_sha256=cohort_digest,
+        )
+        baseline = validate_sealed_bundle(
+            baseline_bundle, baseline_contract, expected_role="baseline"
+        )
+        candidate = validate_sealed_bundle(
+            candidate_bundle, candidate_contract, expected_role="candidate"
+        )
+        return build_alignment_report(
+            baseline, candidate, cohort, cohort_file_sha256=cohort_digest
+        )
+    except AlignmentValidationError as exc:
+        return _validation_report(
+            exc.code,
+            baseline_digest=baseline_digest,
+            candidate_digest=candidate_digest,
+            cohort_digest=cohort_digest,
+        )
+    except (TypeError, ValueError) as exc:
+        _ = exc
+        return _validation_report(
+            "cohort_invalid",
+            baseline_digest=baseline_digest,
+            candidate_digest=candidate_digest,
+            cohort_digest=cohort_digest,
+        )
 
 
 def atomic_write_report_no_clobber(path: Path, report: MemoryAlignmentReportV1) -> None:
